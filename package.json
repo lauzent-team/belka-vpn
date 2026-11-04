@@ -1,0 +1,49 @@
+{
+  "name": "belka-vpn",
+  "productName": "Belka VPN",
+  "version": "0.1.0",
+  "description": "Belka VPN - a modern desktop VPN client",
+  "main": "main.js",
+  "author": "Belka VPN",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --x64",
+    "dist:linux": "electron-builder --linux --x64"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.belka.vpn",
+    "productName": "Belka VPN",
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Belka VPN"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Network"
+    }
+  },
+  "allowScripts": {
+    "electron@31.7.7": true
+  }
+}

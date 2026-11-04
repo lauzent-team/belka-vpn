@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+  <title>Belka VPN</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app" id="app" data-state="disconnected">
+
+    <!-- Top bar -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">
+          <svg viewBox="0 0 32 32" width="26" height="26">
+            <path d="M16 3c-4 0-7 2-9 3 1 6 3 11 9 15 6-4 8-9 9-15-2-1-5-3-9-3z" fill="url(#fur)"/>
+            <path d="M22 4c3 1 5 3 5 7 0 1-1 2-2 2l-4-9z" fill="#c98a5b"/>
+            <circle cx="12" cy="12" r="1.6" fill="#12161A"/>
+            <circle cx="20" cy="12" r="1.6" fill="#12161A"/>
+            <path d="M16 16l-1.5 2h3z" fill="#12161A"/>
+            <defs>
+              <linearGradient id="fur" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#f0a868"/>
+                <stop offset="1" stop-color="#c9752f"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </span>
+        <span class="brand-name">belka <b>VPN</b></span>
+      </div>
+      <div class="topbar-actions">
+        <button class="icon-btn" id="settingsBtn" title="Settings" aria-label="Settings">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H1a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 2.6 7a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H7a1.7 1.7 0 0 0 1-1.5V1a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V7a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>
+          </svg>
+        </button>
+        <button class="icon-btn" id="minBtn" title="Minimize" aria-label="Minimize">
+          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="1.8"><path d="M5 12h14"/></svg>
+        </button>
+        <button class="icon-btn danger" id="closeBtn" title="Close" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="1.8"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="content">
+      <!-- Status header -->
+      <section class="status">
+        <h1 class="status-title" id="statusTitle">VPN is off</h1>
+        <p class="status-sub" id="statusSub">Your traffic is not protected</p>
+      </section>
+
+      <!-- Power button -->
+      <section class="power-wrap">
+        <button class="power" id="powerBtn" aria-label="Connect">
+          <span class="ring"></span>
+          <span class="ring pulse"></span>
+          <span class="power-core">
+            <svg class="ic-power" viewBox="0 0 24 24" width="40" height="40" stroke="currentColor" stroke-width="2.2" fill="none">
+              <path d="M12 3v9"/>
+              <path d="M6.6 6.6a8 8 0 1 0 10.8 0"/>
+            </svg>
+            <svg class="ic-check" viewBox="0 0 24 24" width="34" height="34" stroke="currentColor" stroke-width="3" fill="none">
+              <path d="M4 12.5l5 5L20 6.5"/>
+            </svg>
+          </span>
+          <span class="badge">
+            <svg viewBox="0 0 24 24" width="14" height="14" stroke="#12161A" stroke-width="3.4" fill="none"><path d="M4 12.5l5 5L20 6.5"/></svg>
+          </span>
+        </button>
+        <p class="cta" id="cta">Click to connect</p>
+      </section>
+
+      <!-- Session timer -->
+      <section class="timer">
+        <span class="timer-label" id="timerLabel">LAST SESSION</span>
+        <span class="timer-value" id="timerValue">00:00:00</span>
+      </section>
+
+      <!-- Current server -->
+      <section class="card server-card" id="currentServer">
+        <div class="flag" id="curFlag">🇳🇱</div>
+        <div class="server-info">
+          <div class="server-name" id="curName">Netherlands, Amsterdam</div>
+          <div class="server-meta"><span id="curIp">185.24.9.11</span> · <span class="ping" id="curPing">24 ms</span></div>
+        </div>
+        <button class="chev" id="serverDropBtn" aria-label="Change server">
+          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="dropdown" id="serverList"></div>
+      </section>
+
+      <!-- Quick connect -->
+      <section class="quick">
+        <div class="quick-head">
+          <span>Quick connect</span>
+          <a href="#" class="link" id="allLocations">All locations ↗</a>
+        </div>
+        <div class="quick-grid" id="quickGrid"></div>
+      </section>
+    </main>
+
+    <!-- Bottom bar -->
+    <footer class="bottombar">
+      <div class="proto">
+        <span class="proto-label">Protocol</span>
+        <button class="proto-btn" id="protoBtn">WireGuard ⌵</button>
+        <div class="dropdown up" id="protoList"></div>
+      </div>
+      <div class="encrypted" id="encrypted">
+        <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="1.8" fill="none">
+          <rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>
+        </svg>
+        <span id="encText">Traffic encrypted</span>
+      </div>
+    </footer>
+
+    <!-- Kill switch -->
+    <section class="killswitch">
+      <div class="ks-text">
+        <div class="ks-title">Kill Switch</div>
+        <div class="ks-sub">Always protecting you</div>
+      </div>
+      <button class="toggle" id="killToggle" role="switch" aria-checked="true">
+        <span class="knob"></span>
+      </button>
+    </section>
+
+    <!-- Add-config modal -->
+    <div class="modal" id="configModal" hidden>
+      <div class="modal-card">
+        <h2>Add your VPN key</h2>
+        <p class="modal-sub">Paste your personal WireGuard config or subscription link. It stays on your device.</p>
+        <textarea id="configInput" placeholder="[Interface]&#10;PrivateKey = ...&#10;[Peer]&#10;Endpoint = ..."></textarea>
+        <div class="modal-actions">
+          <button class="btn ghost" id="configCancel">Cancel</button>
+          <button class="btn primary" id="configSave">Save</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  <script src="renderer.js"></script>
+</body>
+</html>
