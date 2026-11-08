@@ -47,10 +47,22 @@ fs.mkdirSync(OUT, { recursive: true });
   await new Promise((r) => setTimeout(r, 600));
   await win.screenshot({ path: path.join(OUT, '3-chat.png') });
 
+  await win.click('#btn-my-profile');
+  await win.waitForSelector('#profile-backdrop:not([hidden])');
+  await new Promise((r) => setTimeout(r, 400));
+  await win.screenshot({ path: path.join(OUT, '4-profile.png') });
+  await win.click('#btn-profile-close');
+
   await win.click('#btn-settings');
   await win.waitForSelector('#settings-backdrop:not([hidden])');
   await new Promise((r) => setTimeout(r, 400));
-  await win.screenshot({ path: path.join(OUT, '4-settings.png') });
+  await win.screenshot({ path: path.join(OUT, '5-settings.png') });
+
+  await win.click('#btn-settings-close');
+  await win.click('#btn-chat-menu');
+  await win.waitForSelector('#chatmenu-backdrop:not([hidden])');
+  await new Promise((r) => setTimeout(r, 400));
+  await win.screenshot({ path: path.join(OUT, '6-chat-menu.png') });
 
   await app.close();
   server.kill('SIGTERM');

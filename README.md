@@ -10,12 +10,30 @@ and forwards ciphertext it cannot read.
 
 ## What works
 
+**Accounts and profiles**
 - Create an account and sign in (password-protected keys on your device)
-- Start a chat with any username and exchange text messages
-- **End-to-end encryption** — the relay never sees plaintext
+- **Claim a username** — it is unique, and nobody else can take it
+- **Change your username** at any time; the old one is freed immediately
+- Profile: display name, bio and avatar colour, visible to your contacts
+
+**Messaging**
+- Search for users by username and start a chat
+- Text messages with **end-to-end encryption** — the relay never sees plaintext
+- **Saved Messages** — notes you send to yourself, readable only by you
+- **Replies** with a quoted original
+- **Edit and delete** your own messages
+- **Reactions** (👍 ❤️ 😂 🔥 😮 😢)
+- **Typing indicators** and **online presence**
 - Offline delivery: messages sent while you were away arrive on reconnect
-- Message history, decrypted locally
-- Desktop build for Windows (`.exe`) and Linux (AppImage)
+- Message history, decrypted locally, grouped by day
+
+**Chat management**
+- Pin, mute and archive conversations
+- Unread badges, with a separate section for archived chats
+- Mark as read, clear history, delete a chat
+
+**Desktop**
+- Build for Windows (`.exe`) and Linux (AppImage)
 
 ## How the encryption works
 
@@ -84,7 +102,7 @@ overrides it.
 ## Build a Windows installer
 
 ```bash
-npm run dist:win      # -> dist/SleePhy-Setup-0.2.0.exe
+npm run dist:win      # -> dist/SleePhy-Setup-0.3.0.exe
 ```
 
 Building a Windows `.exe` from Linux/macOS uses Wine; the CI workflow does this
@@ -93,9 +111,11 @@ on a native Windows runner instead. See `.github/workflows/build.yml`.
 ## Tests
 
 ```bash
-node test/e2e.js                       # real server + real crypto (11 checks)
-xvfb-run -a node test/ui.js            # drives the real Electron UI (9 checks)
-xvfb-run -a node test/connection.js    # connection and error handling (4 checks)
+node test/e2e.js                          # real server + real crypto (11 checks)
+node test/features.js                     # profiles, chats, replies (22 checks)
+xvfb-run -a node test/ui.js               # drives the real Electron UI (9 checks)
+xvfb-run -a node test/ui-features.js      # the new features, clicked for real (15 checks)
+xvfb-run -a node test/connection.js       # connection and error handling (4 checks)
 ```
 
 The end-to-end suite verifies, among other things, that the plaintext never
@@ -124,6 +144,13 @@ This is an honest list. The app should not be described as more secure than it i
   sizes.
 - **No multi-device support** — one key per account, tied to one device.
 - **No file or image attachments, no group chats, no calls.**
+- **Message history lives on the server** until you clear the chat. It is stored
+  as ciphertext the server cannot read, and "Clear history" deletes it — but a
+  copy exists on the relay until then.
+- **Deleting a message leaves a tombstone** in the other person's copy so the row
+  cannot be silently rewritten; the ciphertext is wiped.
+- **Profiles and usernames are public metadata** — anyone can search for a
+  username and see the display name, bio and avatar colour.
 - **The relay has no rate limiting or abuse protection** — needed before it
   faces the public internet.
 - **Accounts cannot be recovered.** Lose the password, lose the keys.
@@ -131,11 +158,11 @@ This is an honest list. The app should not be described as more secure than it i
 ## Layout
 
 ```
-server/index.js        WebSocket relay + accounts (node:sqlite)
+server/index.js        WebSocket relay + accounts, profiles and chats (node:sqlite)
 src/lib/crypto.js      libsodium + scrypt helpers (main process)
 src/lib/client.js      connection, identity, encryption (main process)
 main.js                Electron main process and IPC
 preload.js             the only renderer bridge (window.sleephy)
 src/index.html|css|js  interface
-test/                  end-to-end and UI tests
+test/                  end-to-end, feature and UI tests
 ```

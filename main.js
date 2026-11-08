@@ -69,6 +69,20 @@ app.whenReady().then(() => {
     return { username, publicKey };
   });
 
+  ipcMain.handle('sleephy:edit', async (_e, payload) => client.editMessage(payload));
+  ipcMain.handle('sleephy:delete', async (_e, id) => client.deleteMessage({ id }));
+  ipcMain.handle('sleephy:react', async (_e, payload) => client.react(payload));
+  ipcMain.handle('sleephy:typing', async (_e, payload) => client.typing(payload));
+  ipcMain.handle('sleephy:profile', async (_e, username) => client.getProfile(username));
+  ipcMain.handle('sleephy:saveProfile', async (_e, payload) => client.saveProfile(payload));
+  ipcMain.handle('sleephy:changeUsername', async (_e, username) => client.changeUsername(username));
+  ipcMain.handle('sleephy:searchUsers', async (_e, query) => client.searchUsers(query));
+  ipcMain.handle('sleephy:listChats', async () => client.listChats());
+  ipcMain.handle('sleephy:chatSettings', async (_e, payload) => client.setChatSettings(payload));
+  ipcMain.handle('sleephy:markRead', async (_e, peer) => client.markRead(peer));
+  ipcMain.handle('sleephy:clearChat', async (_e, peer) => client.clearChat(peer));
+  ipcMain.handle('sleephy:deleteChat', async (_e, peer) => client.deleteChat(peer));
+
   createWindow();
   client.connect().catch(() => {});
 

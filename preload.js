@@ -17,6 +17,19 @@ contextBridge.exposeInMainWorld('sleephy', {
   send: (payload) => ipcRenderer.invoke('sleephy:send', payload),
   history: (payload) => ipcRenderer.invoke('sleephy:history', payload),
   directory: (username) => ipcRenderer.invoke('sleephy:directory', username),
+  edit: (payload) => ipcRenderer.invoke('sleephy:edit', payload),
+  remove: (id) => ipcRenderer.invoke('sleephy:delete', id),
+  react: (payload) => ipcRenderer.invoke('sleephy:react', payload),
+  typing: (payload) => ipcRenderer.invoke('sleephy:typing', payload),
+  profile: (username) => ipcRenderer.invoke('sleephy:profile', username),
+  saveProfile: (payload) => ipcRenderer.invoke('sleephy:saveProfile', payload),
+  changeUsername: (username) => ipcRenderer.invoke('sleephy:changeUsername', username),
+  searchUsers: (query) => ipcRenderer.invoke('sleephy:searchUsers', query),
+  listChats: () => ipcRenderer.invoke('sleephy:listChats'),
+  chatSettings: (payload) => ipcRenderer.invoke('sleephy:chatSettings', payload),
+  markRead: (peer) => ipcRenderer.invoke('sleephy:markRead', peer),
+  clearChat: (peer) => ipcRenderer.invoke('sleephy:clearChat', peer),
+  deleteChat: (peer) => ipcRenderer.invoke('sleephy:deleteChat', peer),
   onEvent: (handler) => {
     const listener = (_e, evt) => handler(evt);
     ipcRenderer.on('sleephy:event', listener);

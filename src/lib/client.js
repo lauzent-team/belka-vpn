@@ -46,6 +46,8 @@ class SleePhyClient {
     this.pending = new Map(); // requestId -> {resolve, reject}
     this.reqSeq = 0;
     this.peerKeys = new Map(); // username -> publicKey
+    this.peerProfiles = new Map(); // username -> profile
+    this.peerPresence = new Map(); // username -> bool
     this.reconnectTimer = null;
     this.reconnectDelay = RECONNECT_BASE_MS;
     this.intentionalClose = false;
@@ -175,9 +177,38 @@ class SleePhyClient {
       this.receiveMessage(msg).catch(() => {});
       return;
     }
+    if (msg.t === 'edited') {
+      this.receiveEdit(msg).catch(() => {});
+      return;
+    }
+    if (msg.t === 'deleted') {
+      this.emit({ type: 'deleted', id: msg.id, from: msg.from || this.username });
+      return;
+    }
+    if (msg.t === 'reactions') {
+      this.emit({ type: 'reactions', id: msg.id, reactions: msg.reactions || [] });
+      return;
+    }
+    if (msg.t === 'typing') {
+      this.emit({ type: 'typing', from: msg.from, state: msg.state });
+      return;
+    }
+    if (msg.t === 'presence') {
+      this.emit({ type: 'presence', username: msg.username, online: !!msg.online });
+      return;
+    }
+    if (msg.t === 'profile') {
+      this.peerProfiles.set(msg.username, msg.profile);
+      this.emit({ type: 'profile', username: msg.username, profile: msg.profile });
+      return;
+    }
     if (msg.t === 'key') {
       this.peerKeys.set(msg.username, msg.publicKey);
-      this.emit({ type: 'key', username: msg.username, publicKey: msg.publicKey });
+      if (msg.profile) this.peerProfiles.set(msg.username, msg.profile);
+      this.emit({
+        type: 'key', username: msg.username, publicKey: msg.publicKey,
+        profile: msg.profile, online: !!msg.online
+      });
       return;
     }
     if (msg.t === 'ok') {
@@ -189,6 +220,22 @@ class SleePhyClient {
     if (msg.token) this.token = msg.token;
     if (msg.username) this.username = msg.username;
     if (msg.publicKey) this.publicKey = msg.publicKey;
+    if (msg.profile) this.profile = msg.profile;
+  }
+
+  /** Fold a late-arriving edit into a message we already showed. */
+  async receiveEdit(msg) {
+    const peer = msg.from === this.username ? (msg.to || msg.from) : msg.from;
+    let text;
+    if (this.secretKey) {
+      try {
+        const peerKey = await this.ensurePeerKey(msg.from);
+        text = await cryptoLib.decryptMessage(msg.box, msg.nonce, peerKey, this.secretKey);
+      } catch {
+        text = '⚠ Message could not be decrypted';
+      }
+    }
+    this.emit({ type: 'edited', id: msg.id, from: msg.from, text, ts: msg.ts, editedAt: msg.editedAt, peer });
   }
 
   /* -------------------------------- actions -------------------------------- */
@@ -262,15 +309,39 @@ class SleePhyClient {
     if (this.peerKeys.has(username)) return this.peerKeys.get(username);
     const res = await this.request({ t: 'directory', username });
     this.peerKeys.set(res.username, res.publicKey);
+    if (res.profile) this.peerProfiles.set(res.username, res.profile);
+    if (typeof res.online === 'boolean') this.peerPresence.set(res.username, res.online);
     return res.publicKey;
   }
 
-  async sendMessage({ to, text }) {
+  async sendMessage({ to, text, replyTo }) {
     if (!this.secretKey) throw new Error('Vault is locked');
     const peerKey = await this.ensurePeerKey(to);
     const { box, nonce } = await cryptoLib.encryptMessage(text, peerKey, this.secretKey);
-    const res = await this.request({ t: 'send', to, box, nonce });
-    return { id: res.id, ts: res.ts, to, text };
+    const res = await this.request({ t: 'send', to, box, nonce, replyTo: replyTo || undefined });
+    return { id: res.id, ts: res.ts, to, text, replyTo: res.replyTo || null, mine: true };
+  }
+
+  async editMessage({ id, to, text }) {
+    if (!this.secretKey) throw new Error('Vault is locked');
+    const peerKey = await this.ensurePeerKey(to);
+    const { box, nonce } = await cryptoLib.encryptMessage(text, peerKey, this.secretKey);
+    const res = await this.request({ t: 'message.edit', id, box, nonce });
+    return { id: res.id, editedAt: res.editedAt, text };
+  }
+
+  async deleteMessage({ id }) {
+    const res = await this.request({ t: 'message.delete', id });
+    return { id: res.id };
+  }
+
+  async react({ id, emoji }) {
+    const res = await this.request({ t: 'reaction', id, emoji: emoji || '' });
+    return { id: res.id, reactions: res.reactions };
+  }
+
+  async typing({ to, state }) {
+    try { await this.request({ t: 'typing', to, state }); } catch { /* best effort */ }
   }
 
   async receiveMessage(msg) {
@@ -285,7 +356,9 @@ class SleePhyClient {
     } catch {
       text = '⚠ Message could not be decrypted';
     }
-    this.emit({ type: 'message', id: msg.id, from: msg.from, text, ts: msg.ts });
+    this.emit({
+      type: 'message', id: msg.id, from: msg.from, text, ts: msg.ts, replyTo: msg.replyTo || null
+    });
   }
 
   async history({ with: other, limit }) {
@@ -294,15 +367,84 @@ class SleePhyClient {
     const peerKey = await this.ensurePeerKey(other);
     const items = [];
     for (const m of res.items) {
-      let text;
-      try {
-        text = await cryptoLib.decryptMessage(m.box, m.nonce, peerKey, this.secretKey);
-      } catch {
-        text = '⚠ Message could not be decrypted';
+      let text = '';
+      if (!m.deleted) {
+        try {
+          text = await cryptoLib.decryptMessage(m.box, m.nonce, peerKey, this.secretKey);
+        } catch {
+          text = '⚠ Message could not be decrypted';
+        }
       }
-      items.push({ id: m.id, from: m.from, to: m.to, text, ts: m.ts, mine: m.from === this.username });
+      items.push({
+        id: m.id, from: m.from, to: m.to, text, ts: m.ts,
+        mine: m.from === this.username, replyTo: m.replyTo || null,
+        editedAt: m.editedAt || null, deleted: !!m.deleted,
+        reactions: m.reactions || []
+      });
     }
     return items;
+  }
+
+  /* ------------------------------ profile ------------------------------ */
+  async getProfile(username) {
+    const res = await this.request({ t: 'profile.get', username });
+    if (res.profile && res.profile.username) {
+      this.peerProfiles.set(res.profile.username, res.profile);
+    }
+    return { profile: res.profile, online: !!res.online, isSelf: !!res.isSelf };
+  }
+
+  async saveProfile({ displayName, bio, avatarColor }) {
+    const res = await this.request({
+      t: 'profile.set',
+      displayName: displayName === undefined ? undefined : displayName,
+      bio: bio === undefined ? undefined : bio,
+      avatarColor
+    });
+    this.profile = res.profile;
+    return res.profile;
+  }
+
+  async changeUsername(username) {
+    const res = await this.request({ t: 'profile.username', username });
+    const old = this.username;
+    this.username = res.username;
+    if (res.profile) this.profile = res.profile;
+
+    // The rename rewrites history, so drop cached per-peer state.
+    this.peerKeys.delete(old);
+    const id = this.readIdentity();
+    if (id) this.writeIdentity({ ...id, username: res.username });
+    return { username: res.username, previous: old };
+  }
+
+  async searchUsers(query) {
+    const res = await this.request({ t: 'users.search', query });
+    return res.items || [];
+  }
+
+  /* ------------------------------- chats ------------------------------- */
+  async listChats() {
+    const res = await this.request({ t: 'chats.list' });
+    return res.items || [];
+  }
+
+  async setChatSettings({ peer, pinned, muted, archived }) {
+    const res = await this.request({ t: 'chat.settings', peer, pinned, muted, archived });
+    return { peer: res.peer, pinned: res.pinned, muted: res.muted, archived: res.archived };
+  }
+
+  async markRead(peer) {
+    const res = await this.request({ t: 'chat.read', peer });
+    return res.lastRead;
+  }
+
+  async clearChat(peer) {
+    await this.request({ t: 'chat.clear', peer });
+  }
+
+  async deleteChat(peer) {
+    await this.request({ t: 'chat.delete', peer });
   }
 
   status() {
@@ -310,6 +452,7 @@ class SleePhyClient {
       online: !!(this.ws && this.ws.readyState === WebSocket.OPEN),
       username: this.username,
       publicKey: this.publicKey,
+      profile: this.profile,
       unlocked: !!this.secretKey,
       serverUrl: this.serverUrl
     };
