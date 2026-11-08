@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws: wss:;" />
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws: wss:;" />
   <title>SleePhy</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -155,7 +155,7 @@
 
         <footer class="sidebar-foot">
           <span class="foot-note">End-to-end encrypted</span>
-          <span class="foot-ver" id="foot-ver">v0.3.0</span>
+          <span class="foot-ver" id="foot-ver">v0.4.0</span>
         </footer>
       </aside>
 
@@ -184,6 +184,12 @@
               </div>
             </button>
             <div class="chat-head-actions">
+              <button class="icon-btn" id="btn-chat-search" title="Search in chat">
+                <svg viewBox="0 0 24 24" width="18" height="18">
+                  <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/>
+                  <path d="M16 16l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                </svg>
+              </button>
               <span class="enc-badge" title="Messages are end-to-end encrypted">
                 <svg viewBox="0 0 24 24" width="14" height="14">
                   <rect x="5" y="10" width="14" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/>
@@ -200,6 +206,28 @@
               </button>
             </div>
           </header>
+
+          <div class="pinned-bar" id="pinned-bar" hidden>
+            <span class="pinned-stripe"></span>
+            <div class="pinned-body">
+              <span class="pinned-title" id="pinned-title">Pinned message</span>
+              <span class="pinned-text" id="pinned-text"></span>
+            </div>
+            <button class="icon-btn" id="btn-pinned-unpin" title="Unpin">✕</button>
+          </div>
+
+          <div class="chat-search-bar" id="chat-search-bar" hidden>
+            <span class="search-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="15" height="15">
+                <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/>
+                <path d="M16 16l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <input id="chat-search-input" class="chat-search-input" type="text"
+                   placeholder="Search in this chat…" spellcheck="false" autocomplete="off" />
+            <span class="chat-search-count" id="chat-search-count"></span>
+            <button class="icon-btn" id="btn-chat-search-close" title="Close">✕</button>
+          </div>
 
           <div class="messages" id="messages"></div>
 
@@ -219,15 +247,52 @@
             <button class="icon-btn" id="btn-edit-cancel" title="Cancel">✕</button>
           </div>
 
+          <div class="emoji-panel" id="emoji-panel" hidden>
+            <div class="emoji-tabs" id="emoji-tabs"></div>
+            <div class="emoji-grid" id="emoji-grid"></div>
+          </div>
+
           <form class="composer" id="composer">
+            <button class="icon-btn attach-btn" type="button" id="btn-attach" title="Attach">
+              <svg viewBox="0 0 24 24" width="20" height="20">
+                <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+            </button>
+            <button class="icon-btn attach-btn" type="button" id="btn-emoji" title="Emoji">
+              <svg viewBox="0 0 24 24" width="20" height="20">
+                <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7"/>
+                <circle cx="9" cy="10" r="1.2" fill="currentColor"/>
+                <circle cx="15" cy="10" r="1.2" fill="currentColor"/>
+                <path d="M8.5 14.5a4.5 4.5 0 0 0 7 0" fill="none" stroke="currentColor"
+                      stroke-width="1.7" stroke-linecap="round"/>
+              </svg>
+            </button>
             <input id="composer-input" class="composer-input" type="text"
                    placeholder="Write a message…" spellcheck="false" autocomplete="off" />
+            <button class="icon-btn mic-btn" type="button" id="btn-voice" title="Voice message">
+              <svg viewBox="0 0 24 24" width="20" height="20">
+                <rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="1.7"/>
+                <path d="M5 11a7 7 0 0 0 14 0M12 18v3" fill="none" stroke="currentColor"
+                      stroke-width="1.7" stroke-linecap="round"/>
+              </svg>
+            </button>
             <button class="send-btn" type="submit" title="Send">
               <svg viewBox="0 0 24 24" width="20" height="20">
                 <path d="M4 12l16-8-6 8 6 8-16-8z" fill="currentColor"/>
               </svg>
             </button>
           </form>
+
+          <div class="attach-backdrop" id="attach-backdrop" hidden>
+            <div class="attach-menu" id="attach-menu">
+              <button class="menu-item" data-attach="image">
+                <span class="menu-ico">🖼️</span><span>Photo</span>
+              </button>
+              <button class="menu-item" data-attach="file">
+                <span class="menu-ico">📄</span><span>File</span>
+              </button>
+            </div>
+          </div>
         </div>
       </main>
     </section>
@@ -348,6 +413,20 @@
           <button class="btn-secondary" id="btn-apply-server">Apply server</button>
 
           <div class="setting-sep"></div>
+          <span class="setting-title">Appearance</span>
+          <div class="setting-row">
+            <div>
+              <span class="setting-title">Theme</span>
+              <span class="setting-sub" id="set-theme-sub">Dark</span>
+            </div>
+            <button class="btn-secondary btn-compact" id="btn-theme-toggle">Toggle</button>
+          </div>
+          <div class="field">
+            <span class="field-label">Chat wallpaper</span>
+            <div class="wallpaper-picker" id="wallpaper-picker"></div>
+          </div>
+
+          <div class="setting-sep"></div>
           <span class="setting-title">Your public key</span>
           <code class="key-box" id="set-pubkey">—</code>
           <p class="setting-note">
@@ -381,9 +460,13 @@
     <!-- ======================= MESSAGE CONTEXT ======================= -->
     <div class="ctx-backdrop" id="ctx-backdrop" hidden>
       <div class="ctx-menu" id="ctx-menu">
+        <div class="ctx-reactions" id="ctx-reactions"></div>
         <button class="menu-item" data-action="reply"><span class="menu-ico">↩️</span><span>Reply</span></button>
         <button class="menu-item" data-action="edit" id="ctx-edit"><span class="menu-ico">✏️</span><span>Edit</span></button>
+        <button class="menu-item" data-action="pin" id="ctx-pin"><span class="menu-ico">📌</span><span id="ctx-pin-label">Pin</span></button>
+        <button class="menu-item" data-action="forward" id="ctx-forward"><span class="menu-ico">➡️</span><span>Forward</span></button>
         <button class="menu-item" data-action="copy"><span class="menu-ico">📋</span><span>Copy text</span></button>
+        <button class="menu-item" data-action="select"><span class="menu-ico">☑️</span><span>Select</span></button>
         <button class="menu-item danger" data-action="delete" id="ctx-delete"><span class="menu-ico">🗑️</span><span>Delete</span></button>
       </div>
     </div>
@@ -402,6 +485,27 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- ========================= FORWARD ========================= -->
+    <div class="modal-backdrop" id="forward-backdrop" hidden>
+      <div class="modal modal-sheet">
+        <header class="modal-head">
+          <h3>Forward to…</h3>
+          <button class="icon-btn" id="btn-forward-close" title="Close">✕</button>
+        </header>
+        <div class="modal-body">
+          <ul class="chat-list" id="forward-list"></ul>
+          <p class="panel-empty" id="forward-empty" hidden>No other chats to forward to yet.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="select-bar" id="select-bar" hidden>
+      <button class="icon-btn" id="btn-select-cancel" title="Cancel">✕</button>
+      <span class="select-count" id="select-count">0 selected</span>
+      <button class="btn-secondary btn-compact" id="btn-select-forward">Forward</button>
+      <button class="btn-danger btn-compact" id="btn-select-delete">Delete</button>
     </div>
 
     <div class="toast" id="toast" hidden></div>

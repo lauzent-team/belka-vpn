@@ -52,28 +52,32 @@ async function main() {
 
   const A = makeClient('a');
   const B = makeClient('b');
+  const C = makeClient('c');
   const suffix = Math.random().toString(36).slice(2, 7);
   const alice = `alice_${suffix}`;
   const bob = `bob_${suffix}`;
+  const carol = `carol_${suffix}`;
 
   await A.client.connect(URL);
   await B.client.connect(URL);
+  await C.client.connect(URL);
 
   await step('register two accounts', async () => {
     await A.client.register({ username: alice, password: 'password-1234' });
     await B.client.register({ username: bob, password: 'password-1234' });
+    await C.client.register({ username: carol, password: 'password-1234' });
     assert.strictEqual(A.client.status().username, alice);
     assert.strictEqual(B.client.status().username, bob);
   });
 
   await step('a username cannot be claimed twice', async () => {
-    const C = makeClient('c');
-    await C.client.connect(URL);
+    const dup = makeClient('dup');
+    await dup.client.connect(URL);
     let failed = false;
-    try { await C.client.register({ username: alice, password: 'password-1234' }); }
+    try { await dup.client.register({ username: alice, password: 'password-1234' }); }
     catch (err) { failed = /taken/i.test(err.message); }
     assert.ok(failed, 'the second registration should be refused');
-    C.client.disconnect();
+    dup.client.disconnect();
   });
 
   await step('profile defaults to the username', async () => {
@@ -276,8 +280,115 @@ async function main() {
     assert.ok(!chats.some((c) => c.peer === peer), 'the chat should be gone');
   });
 
+  await step('an attachment is stored as ciphertext and decrypts for the peer', async () => {
+    const bytes = new TextEncoder().encode('hello from an attachment');
+    const res = await A.client.sendMessage({
+      to: B.client.status().username, text: 'see file',
+      attachment: { kind: 'file', bytes, name: 'note.txt', mime: 'text/plain' }
+    });
+    const got = await waitFor(() => B.events.find((e) => e.type === 'message' && e.id === res.id));
+    assert.equal(got.kind, 'file', 'kind should be file');
+    const att = JSON.parse(got.attachment);
+    assert.equal(att.name, 'note.txt');
+    // The relay holds the ciphertext, never the plaintext bytes.
+    assert.ok(!att.box.includes('hello from an attachment'), 'plaintext must not appear');
+    const opened = await B.client.openAttachment({ id: res.id, peer: A.client.status().username });
+    assert.equal(Buffer.from(opened.dataUrl.split(',')[1], 'base64').toString(), 'hello from an attachment');
+  });
+
+  await step('an oversized attachment is rejected', async () => {
+    const bytes = new Uint8Array(6 * 1024 * 1024);
+    await assert.rejects(
+      () => A.client.sendMessage({
+        to: B.client.status().username, text: '',
+        attachment: { kind: 'file', bytes, name: 'big.bin', mime: 'application/octet-stream' }
+      }),
+      /too large/i
+    );
+  });
+
+  await step('a message can be pinned and unpinned, both sides notified', async () => {
+    const res = await A.client.sendMessage({ to: B.client.status().username, text: 'pin me' });
+    const got = await waitFor(() => B.events.find((e) => e.type === 'message' && e.id === res.id));
+    const pin = await A.client.pinMessage({ id: res.id, pinned: true });
+    assert.equal(pin.pinned, true);
+    assert.ok(await waitFor(() => B.events.find((e) => e.type === 'pinned' && e.id === res.id)));
+    const pinned = await A.client.pinnedMessages({ peer: B.client.status().username });
+    assert.ok(pinned.some((m) => m.id === res.id), 'the message should be in the pinned list');
+    const unpin = await A.client.pinMessage({ id: res.id, pinned: false });
+    assert.equal(unpin.pinned, false);
+  });
+
+  await step('history carries attachment, kind and pinned flags', async () => {
+    const res = await A.client.sendMessage({ to: B.client.status().username, text: 'flag check' });
+    await A.client.pinMessage({ id: res.id, pinned: true });
+    const items = await A.client.history({ with: B.client.status().username, limit: 50 });
+    const found = items.find((m) => m.id === res.id);
+    assert.ok(found, 'the message should be in history');
+    assert.equal(found.pinned, true);
+  });
+
+  await step('a message can be fetched by id for opening attachments', async () => {
+    const bytes = new TextEncoder().encode('fetch me');
+    const res = await A.client.sendMessage({
+      to: B.client.status().username, text: '',
+      attachment: { kind: 'image', bytes, name: 'p.png', mime: 'image/png' }
+    });
+    const opened = await B.client.openAttachment({ id: res.id, peer: A.client.status().username });
+    assert.ok(opened.dataUrl.startsWith('data:image/png;base64,'), 'should return a png data url');
+    assert.equal(Buffer.from(opened.dataUrl.split(',')[1], 'base64').toString(), 'fetch me');
+  });
+
+  await step('a third party cannot fetch or open someone else\'s message', async () => {
+    const res = await A.client.sendMessage({ to: B.client.status().username, text: 'private' });
+    await assert.rejects(
+      () => C.client.openAttachment({ id: res.id, peer: B.client.status().username }),
+      /no such message|not your conversation/i
+    );
+  });
+
+  await step('search matches on peer and attachment name', async () => {
+    const bytes = new TextEncoder().encode('searchable');
+    await A.client.sendMessage({
+      to: B.client.status().username, text: '',
+      attachment: { kind: 'file', bytes, name: 'findme-unique.txt', mime: 'text/plain' }
+    });
+    const hits = await A.client.searchMessages({ query: 'findme-unique' });
+    assert.ok(hits.length >= 1, 'the attachment name should match');
+  });
+
+  await step('settings round-trip and merge partial updates', async () => {
+    const first = await A.client.saveSettings({ theme: 'light', wallpaper: 'dots' });
+    assert.equal(first.theme, 'light');
+    assert.equal(first.wallpaper, 'dots');
+    const second = await A.client.saveSettings({ wallpaper: 'grid' });
+    assert.equal(second.theme, 'light', 'unrelated keys must survive a partial update');
+    assert.equal(second.wallpaper, 'grid');
+    const read = await A.client.getSettings();
+    assert.equal(read.theme, 'light');
+    assert.equal(read.wallpaper, 'grid');
+  });
+
+  await step('settings are per account', async () => {
+    const s = await B.client.getSettings();
+    assert.notEqual(s.theme, 'light', 'B should not inherit A\'s theme');
+  });
+
+  await step('a voice note round-trips with a duration', async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+    const res = await A.client.sendMessage({
+      to: B.client.status().username, text: '',
+      attachment: { kind: 'voice', bytes, name: 'voice-3s.webm', mime: 'audio/webm', duration: 3 }
+    });
+    const got = await waitFor(() => B.events.find((e) => e.type === 'message' && e.id === res.id));
+    assert.equal(got.kind, 'voice');
+    const opened = await B.client.openAttachment({ id: res.id, peer: A.client.status().username });
+    assert.equal(opened.mime, 'audio/webm');
+  });
+
   A.client.disconnect();
   B.client.disconnect();
+  C.client.disconnect();
   server.kill('SIGTERM');
   await wait(300);
   for (const f of [DB, `${DB}-wal`, `${DB}-shm`]) {

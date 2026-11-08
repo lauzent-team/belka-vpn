@@ -65,6 +65,11 @@ db.exec(`
     ts         INTEGER NOT NULL,
     PRIMARY KEY (message_id, username)
   );
+  CREATE TABLE IF NOT EXISTS user_settings (
+    username   TEXT PRIMARY KEY,
+    settings   TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
 `);
 
 // Columns added after the first release. Existing databases are upgraded in
@@ -76,7 +81,11 @@ for (const sql of [
   'ALTER TABLE users ADD COLUMN updated_at INTEGER',
   'ALTER TABLE messages ADD COLUMN reply_to INTEGER',
   'ALTER TABLE messages ADD COLUMN edited_at INTEGER',
-  'ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0'
+  'ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE messages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE messages ADD COLUMN kind TEXT',
+  'ALTER TABLE messages ADD COLUMN attachment TEXT',
+  'ALTER TABLE chats ADD COLUMN pinned_message INTEGER'
 ]) {
   try { db.exec(sql); } catch { /* column already present */ }
 }
@@ -95,13 +104,16 @@ const q = {
       WHERE username LIKE ? OR display_name LIKE ? ORDER BY username ASC LIMIT 20`
   ),
   insertMessage: db.prepare(
-    `INSERT INTO messages (sender, recipient, box, nonce, ts, delivered, reply_to)
-     VALUES (?, ?, ?, ?, ?, 0, ?)`
+    `INSERT INTO messages (sender, recipient, box, nonce, ts, delivered, reply_to, kind, attachment)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`
   ),
   getMessage: db.prepare('SELECT * FROM messages WHERE id = ?'),
   markDelivered: db.prepare('UPDATE messages SET delivered = 1 WHERE id = ?'),
   editMessage: db.prepare('UPDATE messages SET box = ?, nonce = ?, edited_at = ? WHERE id = ?'),
-  deleteMessage: db.prepare("UPDATE messages SET deleted = 1, box = '', nonce = '' WHERE id = ?"),
+  deleteMessage: db.prepare(
+    "UPDATE messages SET deleted = 1, box = '', nonce = '', attachment = NULL, pinned = 0 WHERE id = ?"
+  ),
+  setPinned: db.prepare('UPDATE messages SET pinned = ? WHERE id = ?'),
   undeliveredFor: db.prepare(
     'SELECT * FROM messages WHERE recipient = ? AND delivered = 0 AND deleted = 0 ORDER BY id ASC LIMIT 500'
   ),
@@ -156,7 +168,27 @@ const q = {
      ON CONFLICT(message_id, username) DO UPDATE SET emoji = excluded.emoji, ts = excluded.ts`
   ),
   clearReaction: db.prepare('DELETE FROM reactions WHERE message_id = ? AND username = ?'),
-  reactionsFor: db.prepare('SELECT username, emoji FROM reactions WHERE message_id = ?')
+  reactionsFor: db.prepare('SELECT username, emoji FROM reactions WHERE message_id = ?'),
+  // Pinned messages in a conversation, newest first.
+  pinnedIn: db.prepare(
+    `SELECT * FROM messages
+      WHERE ((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?))
+        AND pinned = 1 AND deleted = 0
+      ORDER BY id DESC`
+  ),
+  getUserSettings: db.prepare('SELECT settings FROM user_settings WHERE username = ?'),
+  setUserSettings: db.prepare(
+    `INSERT INTO user_settings (username, settings, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(username) DO UPDATE SET settings = excluded.settings, updated_at = excluded.updated_at`
+  ),
+  // The relay holds no plaintext, so a search can only prefilter on the peer and
+  // the (client-supplied) attachment file name. The client filters message text.
+  searchMessages: db.prepare(
+    `SELECT * FROM messages
+      WHERE (sender = ? OR recipient = ?) AND deleted = 0
+        AND (sender LIKE ? OR recipient LIKE ? OR attachment LIKE ?)
+      ORDER BY id DESC LIMIT ?`
+  )
 };
 
 /* Statements used only by the username rename, which rewrites every reference. */
@@ -294,7 +326,8 @@ function flushUndelivered(username) {
   for (const row of q.undeliveredFor.all(username)) {
     const delivered = deliverToUser(username, {
       t: 'message', id: row.id, from: row.sender, box: row.box, nonce: row.nonce,
-      ts: row.ts, replyTo: row.reply_to
+      ts: row.ts, replyTo: row.reply_to,
+      kind: row.kind || null, attachment: row.attachment || null
     });
     if (delivered) q.markDelivered.run(row.id);
   }
@@ -462,21 +495,67 @@ function handleUserSearch(ws, msg, rid) {
   reply(ws, rid, { t: 'users', items });
 }
 
+const ATTACHMENT_KINDS = new Set(['image', 'file', 'voice']);
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
+/** Validate the attachment envelope. Ciphertext only; the relay never sees plaintext. */
+function parseAttachment(value) {
+  if (value === undefined || value === null) return { kind: null, attachment: null };
+  if (typeof value !== 'object') return { error: 'Malformed attachment' };
+  const kind = value.kind;
+  if (!ATTACHMENT_KINDS.has(kind)) return { error: 'Unsupported attachment type' };
+  // The length cap only guards the frame budget; the byte check below produces
+  // the user-facing "too large" message.
+  if (!validB64(value.box, 12 * 1024 * 1024) || !validB64(value.nonce, 100)) {
+    return { error: 'Malformed attachment payload' };
+  }
+  // base64 length overestimates bytes by ~4/3; this keeps the stored blob bounded.
+  const approxBytes = Math.floor(value.box.length * 3 / 4);
+  if (approxBytes > MAX_ATTACHMENT_BYTES) return { error: 'Attachment is too large' };
+  const name = cleanText(value.name, 120) || null;
+  const mime = cleanText(value.mime, 80) || null;
+  const size = Number.isFinite(value.size) ? Math.max(0, Math.floor(value.size)) : approxBytes;
+  const duration = Number.isFinite(value.duration) ? Math.max(0, Math.floor(value.duration)) : null;
+  return {
+    kind,
+    attachment: JSON.stringify({ kind, name, mime, size, duration, box: value.box, nonce: value.nonce })
+  };
+}
+
 function handleSend(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
   const { to, box, nonce } = msg;
   // Sending to yourself is allowed: that is how Saved Messages works.
   if (typeof to !== 'string' || !q.getUser.get(to)) return bad(ws, rid, 'No such recipient');
-  if (!validB64(box, 100000) || !validB64(nonce, 100)) return bad(ws, rid, 'Malformed payload');
+
+  const parsed = parseAttachment(msg.attachment);
+  if (parsed.error) return bad(ws, rid, parsed.error);
+  const isAttachment = !!parsed.attachment;
+
+  // A caption-less text message must still carry a box; an attachment may have an
+  // empty caption, in which case box/nonce are allowed to be blank.
+  if (isAttachment) {
+    if (box !== undefined && box !== '' && (!validB64(box, 100000) || !validB64(nonce, 100))) {
+      return bad(ws, rid, 'Malformed payload');
+    }
+  } else if (!validB64(box, 100000) || !validB64(nonce, 100)) {
+    return bad(ws, rid, 'Malformed payload');
+  }
 
   const replyTo = Number.isInteger(msg.replyTo) ? msg.replyTo : null;
   const ts = Date.now();
-  const info = q.insertMessage.run(ws.username, to, box, nonce, ts, replyTo);
+  const safeBox = typeof box === 'string' ? box : '';
+  const safeNonce = typeof nonce === 'string' ? nonce : '';
+  const kind = parsed.kind;
+  const info = q.insertMessage.run(
+    ws.username, to, safeBox, safeNonce, ts, replyTo, kind, parsed.attachment
+  );
   const id = Number(info.lastInsertRowid);
 
-  reply(ws, rid, { t: 'sent', id, ts, to, replyTo });
+  reply(ws, rid, { t: 'sent', id, ts, to, replyTo, kind, attachment: parsed.attachment });
   const delivered = deliverToUser(to, {
-    t: 'message', id, from: ws.username, box, nonce, ts, replyTo
+    t: 'message', id, from: ws.username, box: safeBox, nonce: safeNonce, ts, replyTo,
+    kind, attachment: parsed.attachment
   });
   if (delivered) q.markDelivered.run(id);
 }
@@ -498,6 +577,7 @@ function handleHistory(ws, msg, rid) {
       id: r.id, from: r.sender, to: r.recipient,
       box: r.box, nonce: r.nonce, ts: r.ts,
       replyTo: r.reply_to, editedAt: r.edited_at, deleted: !!r.deleted,
+      kind: r.kind || null, attachment: r.attachment || null, pinned: !!r.pinned,
       reactions: reactionsOf(r.id)
     }))
   });
@@ -634,6 +714,105 @@ function handleChatDelete(ws, msg, rid) {
   reply(ws, rid, { t: 'chat.deleted', peer: msg.peer });
 }
 
+function handleMessageGet(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const row = q.getMessage.get(Number(msg.id));
+  if (!row) return bad(ws, rid, 'No such message');
+  if (row.sender !== ws.username && row.recipient !== ws.username) {
+    return bad(ws, rid, 'Not your conversation');
+  }
+  reply(ws, rid, {
+    t: 'message', message: {
+      id: row.id, from: row.sender, to: row.recipient, ts: row.ts,
+      box: row.box, nonce: row.nonce, kind: row.kind || null,
+      attachment: row.attachment || null, deleted: !!row.deleted
+    }
+  });
+}
+
+function handleMessagesPinned(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const peer = msg.peer;
+  if (typeof peer !== 'string') return bad(ws, rid, 'Bad request');
+  const rows = q.pinnedIn.all(ws.username, peer, peer, ws.username);
+  reply(ws, rid, {
+    t: 'messages.pinned',
+    items: rows.map((r) => ({
+      id: r.id, from: r.sender, to: r.recipient, ts: r.ts,
+      box: r.box, nonce: r.nonce, kind: r.kind || null, attachment: r.attachment || null
+    }))
+  });
+}
+
+function handleMessagePin(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const row = q.getMessage.get(Number(msg.id));
+  if (!row) return bad(ws, rid, 'No such message');
+  if (row.sender !== ws.username && row.recipient !== ws.username) {
+    return bad(ws, rid, 'Not your conversation');
+  }
+  if (row.deleted) return bad(ws, rid, 'Message was deleted');
+
+  const pin = msg.pinned === undefined ? !row.pinned : !!msg.pinned;
+  q.setPinned.run(pin ? 1 : 0, row.id);
+  const peer = row.sender === ws.username ? row.recipient : row.sender;
+
+  reply(ws, rid, { t: 'message.pinned', id: row.id, pinned: pin, peer });
+  // Both sides see the pinned banner, so notify the counterpart too.
+  if (peer !== ws.username) {
+    deliverToUser(peer, { t: 'pinned', id: row.id, pinned: pin, peer: ws.username });
+  }
+}
+
+function handleMessagesSearch(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const query = cleanText(msg.query, 120);
+  if (!query) return bad(ws, rid, 'Empty query');
+  const limit = Math.min(Math.max(Number(msg.limit) || 50, 1), 200);
+  const peer = typeof msg.peer === 'string' ? msg.peer : null;
+
+  // The relay cannot read message text, so it can only match metadata it holds:
+  // the peer and the attachment file name. The client filters decrypted text.
+  const rows = q.searchMessages.all(
+    ws.username, ws.username, `%${query}%`, `%${query}%`, `%${query}%`, limit
+  );
+  reply(ws, rid, {
+    t: 'messages.search',
+    items: rows
+      .filter((r) => !peer || r.sender === peer || r.recipient === peer)
+      .map((r) => ({
+        id: r.id, from: r.sender, to: r.recipient, ts: r.ts,
+        replyTo: r.reply_to, editedAt: r.edited_at,
+        kind: r.kind || null, attachment: r.attachment || null
+      }))
+  });
+}
+
+function handleSettingsGet(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const row = q.getUserSettings.get(ws.username);
+  let settings = {};
+  if (row) { try { settings = JSON.parse(row.settings) || {}; } catch { settings = {}; } }
+  reply(ws, rid, { t: 'settings', settings });
+}
+
+function handleSettingsSet(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const incoming = msg.settings;
+  if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+    return bad(ws, rid, 'Malformed settings');
+  }
+  const row = q.getUserSettings.get(ws.username);
+  let current = {};
+  if (row) { try { current = JSON.parse(row.settings) || {}; } catch { current = {}; } }
+  // Shallow merge so a partial update never wipes unrelated keys.
+  const merged = { ...current, ...incoming };
+  const json = JSON.stringify(merged);
+  if (json.length > 20000) return bad(ws, rid, 'Settings too large');
+  q.setUserSettings.run(ws.username, json, Date.now());
+  reply(ws, rid, { t: 'settings', settings: merged });
+}
+
 const handlers = {
   register: handleRegister,
   login: handleLogin,
@@ -647,13 +826,19 @@ const handlers = {
   history: handleHistory,
   'message.edit': handleMessageEdit,
   'message.delete': handleMessageDelete,
+  'message.get': handleMessageGet,
+  'message.pin': handleMessagePin,
+  'messages.pinned': handleMessagesPinned,
+  'messages.search': handleMessagesSearch,
   reaction: handleReaction,
   typing: handleTyping,
   'chats.list': handleChatsList,
   'chat.settings': handleChatSettings,
   'chat.read': handleChatRead,
   'chat.clear': handleChatClear,
-  'chat.delete': handleChatDelete
+  'chat.delete': handleChatDelete,
+  'settings.get': handleSettingsGet,
+  'settings.set': handleSettingsSet
 };
 
 /* -------------------------------- server -------------------------------- */
@@ -667,7 +852,9 @@ const server = http.createServer((req, res) => {
   res.end();
 });
 
-const wss = new WebSocketServer({ server, maxPayload: 512 * 1024 });
+// Attachments are capped at 5 MB of ciphertext, which base64-encodes to ~6.7 MB,
+// plus JSON overhead; 16 MB leaves headroom without allowing unbounded frames.
+const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 * 1024 });
 
 wss.on('connection', (ws) => {
   ws.isAlive = true;

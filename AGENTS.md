@@ -101,3 +101,28 @@ requests.
 - CommonJS (`require`) — the app is not bundled, so the renderer cannot use ESM.
 - No build step for the client: `src/` is shipped as-is.
 - Comments explain *why*, not *what*.
+
+## Attachments, pins, search and settings (v0.4.0)
+
+- **Attachments are `crypto_box_easy` blobs, like message bodies.** `src/lib/crypto.js`
+  exports `encryptBytes`/`decryptBytes`; the relay stores only `{kind, name, mime,
+  size, duration, box, nonce}` as JSON in `messages.attachment`. The cap is 5 MB of
+  ciphertext, enforced server-side in `parseAttachment` — the base64 length check
+  (`validB64(value.box, 12MB)`) only guards the frame budget, so keep the byte check
+  *after* it or the user sees "Malformed" instead of "too large".
+- **`wss` `maxPayload` is 16 MB**, sized for a 5 MB attachment after base64 and JSON
+  overhead. Raising the attachment cap means raising this too.
+- **The relay cannot search message text** (it holds ciphertext). `messages.search`
+  prefilters on peer and the client-supplied attachment file name; the client
+  decrypts each hit and filters on the real text. Do not "fix" this by storing text.
+- **`openAttachment` fetches the message with `message.get` first.** The renderer
+  never holds key material, so decryption happens in the main process and only a
+  data URL crosses the bridge.
+- **Pins live on the message row (`messages.pinned`), not the chat.** `message.pin`
+  notifies the counterpart via a `pinned` event so both sides show the banner.
+- **Settings are per account** in `user_settings.settings` (JSON, shallow-merged).
+  `settings.set` merges, so a partial update never wipes unrelated keys.
+- **Image previews use `blob:` URLs**, which the CSP must allow: `img-src 'self'
+  data: blob:` and `media-src 'self' data: blob:`.
+- **Select mode is `state.selecting` (a Set of ids).** `messageEl` branches on it;
+  right-click and left-click both toggle while it is active.

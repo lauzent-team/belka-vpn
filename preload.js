@@ -30,6 +30,12 @@ contextBridge.exposeInMainWorld('sleephy', {
   markRead: (peer) => ipcRenderer.invoke('sleephy:markRead', peer),
   clearChat: (peer) => ipcRenderer.invoke('sleephy:clearChat', peer),
   deleteChat: (peer) => ipcRenderer.invoke('sleephy:deleteChat', peer),
+  openAttachment: (payload) => ipcRenderer.invoke('sleephy:openAttachment', payload),
+  pinMessage: (payload) => ipcRenderer.invoke('sleephy:pinMessage', payload),
+  pinnedMessages: (peer) => ipcRenderer.invoke('sleephy:pinnedMessages', peer),
+  searchMessages: (payload) => ipcRenderer.invoke('sleephy:searchMessages', payload),
+  getSettings: () => ipcRenderer.invoke('sleephy:getSettings'),
+  saveSettings: (settings) => ipcRenderer.invoke('sleephy:saveSettings', settings),
   onEvent: (handler) => {
     const listener = (_e, evt) => handler(evt);
     ipcRenderer.on('sleephy:event', listener);

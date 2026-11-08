@@ -83,8 +83,30 @@ async function decryptMessage(boxB64, nonceB64, senderPublicKeyB64, recipientSec
   return sodium.to_string(plain);
 }
 
+/**
+ * Encrypt raw bytes (an attachment) for a recipient. Same primitive as messages,
+ * so the relay sees only an opaque base64 blob and a nonce.
+ */
+async function encryptBytes(bytes, recipientPublicKeyB64, senderSecretKeyB64) {
+  await ready();
+  const nonce = sodium.randombytes_buf(sodium.crypto_box_NONCEBYTES);
+  const box = sodium.crypto_box_easy(bytes, nonce, unb64(recipientPublicKeyB64), unb64(senderSecretKeyB64));
+  return { box: b64(box), nonce: b64(nonce) };
+}
+
+/** Decrypt attachment bytes. Throws if the blob was tampered with. */
+async function decryptBytes(boxB64, nonceB64, senderPublicKeyB64, recipientSecretKeyB64) {
+  await ready();
+  const plain = sodium.crypto_box_open_easy(
+    unb64(boxB64), unb64(nonceB64), unb64(senderPublicKeyB64), unb64(recipientSecretKeyB64)
+  );
+  if (!plain) throw new Error('Attachment could not be authenticated');
+  return plain;
+}
+
 module.exports = {
   ready, makeSalt, deriveKey, passwordVerifier,
   generateIdentity, sealSecret, openSecret,
-  encryptMessage, decryptMessage
+  encryptMessage, decryptMessage,
+  encryptBytes, decryptBytes
 };

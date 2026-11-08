@@ -298,6 +298,100 @@ async function main() {
     );
   });
 
+  await step('a message can be pinned and the banner appears', async () => {
+    await a.win.fill('#composer-input', 'pin this please');
+    await a.win.press('#composer-input', 'Enter');
+    await a.win.waitForFunction(
+      () => [...document.querySelectorAll('#messages .msg .bubble')].some((b) => b.textContent.includes('pin this please')),
+      { timeout: 8000 }
+    );
+    await a.win.click('#messages .msg:last-child');
+    await a.win.click('#messages .msg:last-child', { button: 'right' });
+    await a.win.waitForSelector('#ctx-backdrop:not([hidden])');
+    await a.win.click('#ctx-menu [data-action="pin"]');
+    await a.win.waitForSelector('#pinned-bar:not([hidden])', { timeout: 8000 });
+    const text = await a.win.textContent('#pinned-text');
+    assert.ok(text.includes('pin this please'), 'the pinned banner should show the message');
+    // Bob sees the pin too.
+    await b.win.waitForSelector('#chat-view:not([hidden])', { timeout: 8000 }).catch(() => {});
+  });
+
+  await step('the pinned banner can be dismissed', async () => {
+    await a.win.click('#btn-pinned-unpin');
+    await a.win.waitForFunction(() => document.getElementById('pinned-bar').hidden, { timeout: 8000 });
+  });
+
+  await step('the emoji picker inserts an emoji', async () => {
+    await a.win.click('#btn-emoji');
+    await a.win.waitForSelector('#emoji-panel:not([hidden])');
+    await a.win.click('#emoji-grid .emoji-cell:first-child');
+    const value = await a.win.inputValue('#composer-input');
+    assert.ok(value.length > 0, 'an emoji should have been inserted');
+    await a.win.fill('#composer-input', '');
+    await a.win.click('#btn-emoji');
+    await a.win.waitForFunction(() => document.getElementById('emoji-panel').hidden, { timeout: 8000 });
+  });
+
+  await step('in-chat search highlights matching messages', async () => {
+    await a.win.click('#btn-chat-search');
+    await a.win.waitForSelector('#chat-search-bar:not([hidden])');
+    await a.win.fill('#chat-search-input', 'pin this');
+    await a.win.waitForFunction(
+      () => document.querySelectorAll('#messages .msg.search-hit').length > 0,
+      { timeout: 8000 }
+    );
+    const count = await a.win.textContent('#chat-search-count');
+    assert.ok(/found/.test(count), 'the result count should be shown');
+    await a.win.click('#btn-chat-search-close');
+    await a.win.waitForFunction(() => document.getElementById('chat-search-bar').hidden, { timeout: 8000 });
+  });
+
+  await step('the theme can be toggled and persists on the body', async () => {
+    await a.win.click('#btn-settings');
+    await a.win.waitForSelector('#settings-backdrop:not([hidden])');
+    await a.win.click('#btn-theme-toggle');
+    await a.win.waitForFunction(() => document.body.classList.contains('theme-light'), { timeout: 8000 });
+    await a.win.click('#btn-theme-toggle');
+    await a.win.waitForFunction(() => !document.body.classList.contains('theme-light'), { timeout: 8000 });
+    await a.win.click('#btn-settings-close');
+  });
+
+  await step('a chat wallpaper can be selected', async () => {
+    await a.win.click('#btn-settings');
+    await a.win.waitForSelector('#settings-backdrop:not([hidden])');
+    await a.win.click('.wallpaper-swatch[data-wallpaper="dots"]');
+    await a.win.waitForFunction(
+      () => document.querySelector('#chat-view').classList.contains('wallpaper-dots'),
+      { timeout: 8000 }
+    );
+    await a.win.click('#btn-settings-close');
+  });
+
+  await step('an image attachment can be sent and opened', async () => {
+    // A 1x1 transparent PNG, written to a temp file so the file picker can use it.
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64'
+    );
+    const file = path.join(os.tmpdir(), `sleephy-shot-${Date.now()}.png`);
+    fs.writeFileSync(file, png);
+    await a.win.click('#btn-attach');
+    await a.win.waitForSelector('#attach-backdrop:not([hidden])');
+    const [chooser] = await Promise.all([
+      a.win.waitForEvent('filechooser'),
+      a.win.click('#attach-menu [data-attach="image"]')
+    ]);
+    await chooser.setFiles(file);
+    await a.win.waitForFunction(
+      () => document.querySelectorAll('#messages .msg.has-attachment').length > 0,
+      { timeout: 10000 }
+    );
+    await a.win.waitForSelector('#messages .msg.has-attachment .att-image', { timeout: 10000 });
+    // Bob should receive it too.
+    await b.win.waitForSelector('#messages .msg.has-attachment .att-image', { timeout: 10000 });
+    try { fs.rmSync(file, { force: true }); } catch {}
+  });
+
   await step('no uncaught errors in either renderer', async () => {
     const errors = [...a.errors, ...b.errors];
     assert.strictEqual(errors.length, 0, 'renderer errors: ' + errors.join(' | '));

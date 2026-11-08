@@ -120,6 +120,45 @@ const els = {
   ctxMenu: $('ctx-menu'),
   ctxEdit: $('ctx-edit'),
   ctxDelete: $('ctx-delete'),
+  ctxPin: $('ctx-pin'),
+  ctxPinLabel: $('ctx-pin-label'),
+  ctxReactions: $('ctx-reactions'),
+  ctxForward: $('ctx-forward'),
+
+  btnChatSearch: $('btn-chat-search'),
+  chatSearchBar: $('chat-search-bar'),
+  chatSearchInput: $('chat-search-input'),
+  chatSearchCount: $('chat-search-count'),
+  btnChatSearchClose: $('btn-chat-search-close'),
+
+  pinnedBar: $('pinned-bar'),
+  pinnedTitle: $('pinned-title'),
+  pinnedText: $('pinned-text'),
+  btnPinnedUnpin: $('btn-pinned-unpin'),
+
+  btnAttach: $('btn-attach'),
+  btnEmoji: $('btn-emoji'),
+  btnVoice: $('btn-voice'),
+  attachBackdrop: $('attach-backdrop'),
+  attachMenu: $('attach-menu'),
+  emojiPanel: $('emoji-panel'),
+  emojiTabs: $('emoji-tabs'),
+  emojiGrid: $('emoji-grid'),
+
+  btnThemeToggle: $('btn-theme-toggle'),
+  setThemeSub: $('set-theme-sub'),
+  wallpaperPicker: $('wallpaper-picker'),
+
+  forwardBackdrop: $('forward-backdrop'),
+  forwardList: $('forward-list'),
+  forwardEmpty: $('forward-empty'),
+  btnForwardClose: $('btn-forward-close'),
+
+  selectBar: $('select-bar'),
+  selectCount: $('select-count'),
+  btnSelectCancel: $('btn-select-cancel'),
+  btnSelectForward: $('btn-select-forward'),
+  btnSelectDelete: $('btn-select-delete'),
 
   confirmBackdrop: $('confirm-backdrop'),
   confirmTitle: $('confirm-title'),
@@ -144,9 +183,15 @@ const state = {
   typing: new Map(), // username -> timeout id
   replyTo: null, // { id, text, from, mine }
   editing: null, // { id, original }
-  ctxTarget: null, // { id, mine, text }
+  ctxTarget: null, // { id, mine, text, pinned }
   profileTarget: null, // username being shown
-  editingProfile: false
+  editingProfile: false,
+  searchQuery: '', // active in-chat search
+  searchHits: [],
+  searchIndex: -1,
+  settings: { theme: 'dark', wallpaper: 'none' },
+  recording: null, // MediaRecorder state for voice notes
+  selecting: null // Set of message ids while in select mode
 };
 
 /* ------------------------------ utilities ------------------------------ */
@@ -343,7 +388,10 @@ async function refreshVisibleLastMessages() {
     try {
       const items = await api.history({ with: peer, limit: 1 });
       const last = items.at(-1);
-      if (last) chat.last = last.deleted ? 'Message deleted' : last.text;
+      if (last) chat.last = last.kind === 'image' ? '🖼️ Photo'
+        : last.kind === 'voice' ? '🎤 Voice message'
+        : last.kind === 'file' ? `📄 ${(last.attachment && last.attachment.name) || 'File'}`
+        : (last.deleted ? 'Message deleted' : last.text);
     } catch { /* leave the placeholder */ }
   }
   renderChatList();
@@ -416,6 +464,10 @@ function renderChatList() {
 
 function renderMessageBody(m) {
   if (m.deleted) return '<span class="deleted-text">This message was deleted</span>';
+  if (m.kind && m.attachment) {
+    const cap = m.text ? `<div class="caption">${escapeHtml(m.text)}</div>` : '';
+    return `<div class="att-wrap" data-kind="${escapeHtml(m.kind)}"></div>${cap}`;
+  }
   return escapeHtml(m.text);
 }
 
@@ -443,23 +495,50 @@ function quoteHtml(m) {
 
 function messageEl(m) {
   const el = document.createElement('div');
+  const hit = state.searchQuery && state.searchHits.includes(m.id);
+  const current = hit && state.searchHits[state.searchIndex] === m.id;
   el.className = 'msg ' + (m.mine ? 'out' : 'in')
     + (m.deleted ? ' deleted' : '')
     + (m.pending ? ' pending' : '')
-    + (m.failed ? ' failed' : '');
+    + (m.failed ? ' failed' : '')
+    + (m.kind && m.attachment ? ' has-attachment' : '')
+    + (hit ? ' search-hit' : '')
+    + (current ? ' search-current' : '');
   el.dataset.id = m.id;
   const meta = [escapeHtml(timeLabel(m.ts))];
   if (m.editedAt) meta.push('<span class="edited">edited</span>');
+  if (m.pinned) meta.push('<span class="pinned-mark" title="Pinned">📌</span>');
+  const hasMedia = !!(m.kind && m.attachment);
   el.innerHTML = `
-    <div class="bubble">${quoteHtml(m)}${renderMessageBody(m)}</div>
+    <div class="bubble${hasMedia ? ' has-media' : ''}">${quoteHtml(m)}${renderMessageBody(m)}</div>
     ${reactionsHtml(m)}
     <div class="meta">${meta.join('')}</div>
   `;
+
+  if (hasMedia) {
+    const wrap = el.querySelector('.att-wrap');
+    if (m.kind === 'image') renderImageAttachment(m, wrap);
+    else renderFileAttachment(m, wrap, m.kind);
+  }
+
   el.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     if (m.pending || m.deleted) return;
+    if (state.selecting) { toggleSelected(m.id); return; }
     openContextMenu(m, e.clientX, e.clientY);
   });
+  if (state.selecting) {
+    el.classList.add('selectable');
+    if (state.selecting.has(m.id)) el.classList.add('selected');
+    const tick = document.createElement('span');
+    tick.className = 'select-tick';
+    tick.textContent = state.selecting.has(m.id) ? '✓' : '';
+    el.appendChild(tick);
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleSelected(m.id);
+    });
+  }
   el.querySelectorAll('.reaction-chip').forEach((chip) => {
     chip.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -474,10 +553,10 @@ function appendMessage(m) {
   els.messages.scrollTop = els.messages.scrollHeight;
 }
 
-function scrollToMessage(id) {
+function scrollToMessage(id, { smooth = true } = {}) {
   const el = els.messages.querySelector(`.msg[data-id="${id}"]`);
   if (!el) return;
-  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el.scrollIntoView({ block: 'center', behavior: smooth ? 'smooth' : 'auto' });
   el.classList.add('flash');
   setTimeout(() => el.classList.remove('flash'), 900);
 }
@@ -522,6 +601,8 @@ async function openChat(key) {
   els.messages.innerHTML = '';
   clearReply();
   clearEditing();
+  closeChatSearch();
+  if (state.selecting) exitSelectMode();
 
   const known = state.profiles.get(peer);
   els.peerName.textContent = key === SAVED ? 'Saved Messages' : displayNameFor(peer);
@@ -544,6 +625,7 @@ async function openChat(key) {
     renderMessages();
   }
   try { await api.markRead(peer); } catch { /* best effort */ }
+  updatePinnedBar();
   renderChatList();
   els.composerInput.focus();
 }
@@ -773,9 +855,23 @@ els.btnEditCancel.addEventListener('click', () => { clearEditing(); els.composer
 
 /* ---------------------------- context menu ---------------------------- */
 function openContextMenu(m, x, y) {
-  state.ctxTarget = { id: m.id, mine: m.mine, text: m.text };
-  els.ctxEdit.hidden = !m.mine;
+  state.ctxTarget = { id: m.id, mine: m.mine, text: m.text, pinned: !!m.pinned };
+  els.ctxEdit.hidden = !m.mine || !!m.kind;
   els.ctxDelete.hidden = !m.mine;
+  els.ctxPinLabel.textContent = m.pinned ? 'Unpin' : 'Pin';
+  // Quick reactions in the menu header.
+  els.ctxReactions.innerHTML = '';
+  for (const emoji of QUICK_REACTIONS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ctx-reaction';
+    b.textContent = emoji;
+    b.addEventListener('click', async () => {
+      closeContextMenu();
+      await toggleReaction(m.id, emoji);
+    });
+    els.ctxReactions.appendChild(b);
+  }
   els.ctxBackdrop.hidden = false;
   const menu = els.ctxMenu;
   const rect = menu.getBoundingClientRect();
@@ -814,6 +910,30 @@ els.ctxMenu.addEventListener('click', async (e) => {
   if (action === 'edit') {
     const m = findMessage(id);
     if (m) setEditing(m);
+    return;
+  }
+  if (action === 'pin') {
+    const m = findMessage(id);
+    if (!m) return;
+    try {
+      const res = await api.pinMessage({ id, pinned: !m.pinned });
+      m.pinned = res.pinned;
+      updatePinnedBar();
+      renderMessages();
+      toast(res.pinned ? 'Pinned' : 'Unpinned');
+    } catch (err) {
+      toast(err.message || 'Could not pin');
+    }
+    return;
+  }
+  if (action === 'forward') {
+    const m = findMessage(id);
+    if (m) openForward(m);
+    return;
+  }
+  if (action === 'select') {
+    const m = findMessage(id);
+    if (m) enterSelectMode(m);
     return;
   }
   if (action === 'delete') {
@@ -1285,23 +1405,39 @@ api.onEvent((evt) => {
       const chat = ensureChat(key);
       const m = {
         id: evt.id, text: evt.text, ts: evt.ts, mine: false,
-        replyTo: evt.replyTo || null, reactions: []
+        replyTo: evt.replyTo || null, reactions: [],
+        kind: evt.kind || null, attachment: evt.attachment || null
       };
       if (m.replyTo) {
         const orig = findMessage(m.replyTo);
         if (orig) m.quote = { from: orig.mine ? state.username : evt.from, text: orig.text, mine: orig.mine };
       }
       chat.messages.push(m);
-      chat.last = evt.text;
+      chat.last = m.kind === 'image' ? '🖼️ Photo'
+        : m.kind === 'voice' ? '🎤 Voice message'
+        : m.kind === 'file' ? `📄 ${(m.attachment && m.attachment.name) || 'File'}`
+        : evt.text;
       chat.lastTs = evt.ts;
       if (state.activePeer === key) {
         renderMessages();
+        updatePinnedBar();
         api.markRead(peerUsername(key)).catch(() => {});
       } else {
         chat.unread += 1;
-        if (!chat.muted) toast(`${displayNameFor(evt.from)}: ${evt.text.slice(0, 40)}`);
+        if (!chat.muted) toast(`${displayNameFor(evt.from)}: ${(evt.text || 'Attachment').slice(0, 40)}`);
       }
       renderChatList();
+      break;
+    }
+
+    case 'pinned': {
+      const key = chatKey(evt.peer);
+      const chat = state.chats.get(key);
+      if (chat) {
+        const m = chat.messages.find((x) => x.id === evt.id);
+        if (m) m.pinned = evt.pinned;
+      }
+      if (state.activePeer === key) { renderMessages(); updatePinnedBar(); }
       break;
     }
 
@@ -1340,14 +1476,557 @@ api.onEvent((evt) => {
   }
 });
 
+/* ============================ attachments ============================ */
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
+function humanSize(bytes) {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / Math.pow(1024, i)).toFixed(i ? 1 : 0)} ${units[i]}`;
+}
+
+function fileToBase64Bytes(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(new Uint8Array(reader.result));
+    reader.onerror = () => reject(new Error('Could not read the file'));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function pickFile(accept) {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    if (accept) input.accept = accept;
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    input.addEventListener('change', () => {
+      const file = input.files && input.files[0];
+      input.remove();
+      resolve(file || null);
+    });
+    input.click();
+  });
+}
+
+async function attachFile(kind, file) {
+  if (!file || !state.activePeer) return;
+  if (file.size > MAX_ATTACHMENT_BYTES) {
+    toast(`Too large — the limit is ${humanSize(MAX_ATTACHMENT_BYTES)}`);
+    return;
+  }
+  let bytes;
+  try {
+    bytes = await fileToBase64Bytes(file);
+  } catch (err) {
+    toast(err.message || 'Could not read the file');
+    return;
+  }
+  await sendWithAttachment({
+    kind, bytes,
+    name: file.name || (kind === 'voice' ? 'voice-message' : 'file'),
+    mime: file.type || 'application/octet-stream',
+    duration: null,
+    preview: kind === 'image' ? URL.createObjectURL(file) : null
+  });
+}
+
+async function sendWithAttachment(att) {
+  const key = state.activePeer;
+  const peer = peerUsername(key);
+  const chat = ensureChat(key);
+  const replyTo = state.replyTo;
+  const caption = els.composerInput.value.trim();
+  els.composerInput.value = '';
+
+  const optimistic = {
+    id: 'tmp-' + Date.now(), text: caption, ts: Date.now(), mine: true,
+    replyTo: replyTo ? replyTo.id : null,
+    quote: replyTo ? { from: replyTo.from, text: replyTo.text, mine: replyTo.mine } : null,
+    pending: true, reactions: [],
+    kind: att.kind,
+    attachment: { kind: att.kind, name: att.name, mime: att.mime, size: att.bytes.length, duration: att.duration },
+    previewUrl: att.preview || null
+  };
+  chat.messages.push(optimistic);
+  chat.last = att.kind === 'image' ? '🖼️ Photo' : (att.kind === 'voice' ? '🎤 Voice message' : `📄 ${att.name}`);
+  chat.lastTs = optimistic.ts;
+  clearReply();
+  renderMessages();
+  renderChatList();
+
+  try {
+    const res = await api.send({
+      to: peer, text: caption, replyTo: replyTo ? replyTo.id : undefined,
+      attachment: { kind: att.kind, bytes: att.bytes, name: att.name, mime: att.mime, duration: att.duration }
+    });
+    optimistic.id = res.id;
+    optimistic.pending = false;
+    optimistic.attachment = res.attachment || optimistic.attachment;
+    renderMessages();
+    renderChatList();
+  } catch (err) {
+    optimistic.pending = false;
+    optimistic.failed = true;
+    renderMessages();
+    toast(err.message || 'Could not send the attachment');
+  }
+}
+
+/** Render an image attachment, decrypting it lazily the first time it is shown. */
+function renderImageAttachment(m, wrap) {
+  const img = document.createElement('img');
+  img.className = 'att-image loading';
+  img.alt = m.attachment.name || 'image';
+  if (m.previewUrl) {
+    img.src = m.previewUrl;
+    img.classList.remove('loading');
+  } else if (m.dataUrl) {
+    img.src = m.dataUrl;
+    img.classList.remove('loading');
+  } else {
+    img.addEventListener('click', async () => {
+      if (img.dataset.loaded) return;
+      try {
+        const peer = m.mine ? peerUsername(state.activePeer) : peerUsername(chatKey(m.from));
+        const res = await api.openAttachment({ id: m.id, peer });
+        m.dataUrl = res.dataUrl;
+        img.src = res.dataUrl;
+        img.classList.remove('loading');
+        img.dataset.loaded = '1';
+      } catch (err) {
+        toast(err.message || 'Could not open the image');
+      }
+    });
+  }
+  wrap.appendChild(img);
+}
+
+function renderFileAttachment(m, wrap, kind) {
+  const box = document.createElement('div');
+  box.className = kind === 'voice' ? 'att-voice' : 'att-file';
+  const ico = kind === 'voice' ? '🎤' : '📄';
+  const sizeLabel = kind === 'voice' && m.attachment.duration
+    ? `${m.attachment.duration}s`
+    : humanSize(m.attachment.size);
+  box.innerHTML = `
+    <span class="att-ico">${ico}</span>
+    <span class="att-meta">
+      <span class="att-name">${escapeHtml(m.attachment.name || (kind === 'voice' ? 'Voice message' : 'File'))}</span>
+      <span class="att-size">${escapeHtml(sizeLabel)}</span>
+    </span>
+    <button class="att-dl" type="button">Open</button>
+  `;
+  box.querySelector('.att-dl').addEventListener('click', async () => {
+    try {
+      const peer = m.mine ? peerUsername(state.activePeer) : peerUsername(chatKey(m.from));
+      const res = await api.openAttachment({ id: m.id, peer });
+      const a = document.createElement('a');
+      a.href = res.dataUrl;
+      a.download = res.name || 'file';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (err) {
+      toast(err.message || 'Could not open the file');
+    }
+  });
+  wrap.appendChild(box);
+}
+
+/* ============================== emoji ============================== */
+const EMOJI_GROUPS = [
+  { icon: '😀', label: 'Smileys', items: ['😀','😃','😄','😁','😆','😅','🤣','😂','🙂','🙃','😉','😊','😇','🥰','😍','🤩','😘','😗','😚','😙','😋','😛','😜','🤪','😝','🤗','🤔','🤨','😐','😑','😶','😏','😒','🙄','😬','😴','😌','😔','😪','🤤','😷','🤒','🤕','🤢','🥶','🥵','😵','🤯','🤠','🥳','😎','🤓','🧐','😕','😟','🙁','😮','😯','😲','😳','🥺','😦','😧','😨','😰','😥','😢','😭','😱','😖','😣','😞','😓','😩','😫','🥱','😤','😡','😠','🤬','😈','💀','💩','🤡','👻','👽','🤖'] },
+  { icon: '👍', label: 'Gestures', items: ['👍','👎','👌','🤌','✌️','🤞','🤟','🤘','🤙','👈','👉','👆','👇','☝️','✋','🤚','🖐️','🖖','👋','🤝','🙏','💪','🦾','✍️','💅','👏','🙌','👐','🤲','🤜','🤛','✊','👊'] },
+  { icon: '❤️', label: 'Hearts', items: ['❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❣️','💕','💞','💓','💗','💖','💘','💝','💟','♥️','💋','💌'] },
+  { icon: '🔥', label: 'Symbols', items: ['🔥','✨','⭐','🌟','💫','⚡','💥','💯','✅','❌','❗','❓','⚠️','🎉','🎊','🎁','🏆','🥇','🎯','📌','📎','🔔','🔕','🔒','🔓','🕐','⏰','☀️','🌙','☁️','🌈','💧','❄️'] },
+  { icon: '🍕', label: 'Food', items: ['🍕','🍔','🍟','🌭','🍿','🍩','🍪','🎂','🍰','🍫','🍬','🍭','🍎','🍌','🍇','🍓','🍉','🍊','🥑','🥕','🍞','🧀','🥚','🍗','🍖','🍜','🍚','🍣','🍤','☕','🍵','🧃','🥤','🍺','🍻','🥂'] },
+  { icon: '⚽', label: 'Activity', items: ['⚽','🏀','🏈','⚾','🎾','🏐','🏓','🏸','🥊','🎯','🎮','🎲','🎸','🎹','🎺','🎻','🥁','🎤','🎧','🎬','📷','🚗','✈️','🚀','🚲','⛰️','🏝️','🌍','🗺️','🧭'] }
+];
+
+function buildEmojiPanel() {
+  els.emojiTabs.innerHTML = '';
+  els.emojiGrid.innerHTML = '';
+  EMOJI_GROUPS.forEach((group, i) => {
+    const tab = document.createElement('button');
+    tab.type = 'button';
+    tab.className = 'emoji-tab' + (i === 0 ? ' active' : '');
+    tab.textContent = group.icon;
+    tab.title = group.label;
+    tab.addEventListener('click', () => {
+      els.emojiTabs.querySelectorAll('.emoji-tab').forEach((t) => t.classList.remove('active'));
+      tab.classList.add('active');
+      renderEmojiGrid(group);
+    });
+    els.emojiTabs.appendChild(tab);
+  });
+  renderEmojiGrid(EMOJI_GROUPS[0]);
+}
+
+function renderEmojiGrid(group) {
+  els.emojiGrid.innerHTML = '';
+  for (const emoji of group.items) {
+    const cell = document.createElement('button');
+    cell.type = 'button';
+    cell.className = 'emoji-cell';
+    cell.textContent = emoji;
+    cell.addEventListener('click', () => {
+      const input = els.composerInput;
+      const start = input.selectionStart ?? input.value.length;
+      input.value = input.value.slice(0, start) + emoji + input.value.slice(input.selectionEnd ?? start);
+      input.selectionStart = input.selectionEnd = start + emoji.length;
+      input.focus();
+    });
+    els.emojiGrid.appendChild(cell);
+  }
+}
+
+els.btnEmoji.addEventListener('click', () => {
+  els.emojiPanel.hidden = !els.emojiPanel.hidden;
+  els.attachBackdrop.hidden = true;
+});
+els.btnAttach.addEventListener('click', () => {
+  els.attachBackdrop.hidden = !els.attachBackdrop.hidden;
+  els.emojiPanel.hidden = true;
+});
+els.attachBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.attachBackdrop) els.attachBackdrop.hidden = true;
+});
+els.attachMenu.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-attach]');
+  if (!btn) return;
+  const kind = btn.dataset.attach;
+  els.attachBackdrop.hidden = true;
+  const file = await pickFile(kind === 'image' ? 'image/*' : undefined);
+  if (file) await attachFile(kind === 'image' ? 'image' : 'file', file);
+});
+
+/* ---------------------------- voice notes ---------------------------- */
+els.btnVoice.addEventListener('click', async () => {
+  if (state.recording) {
+    state.recording.recorder.stop();
+    return;
+  }
+  if (!state.activePeer) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    toast('Voice recording is not available on this device');
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    toast('Microphone permission was denied');
+    return;
+  }
+  const chunks = [];
+  const recorder = new MediaRecorder(stream);
+  const startedAt = Date.now();
+  state.recording = { recorder, stream, startedAt };
+  els.btnVoice.classList.add('recording');
+  els.btnVoice.title = 'Stop recording';
+  recorder.addEventListener('dataavailable', (e) => { if (e.data.size) chunks.push(e.data); });
+  recorder.addEventListener('stop', async () => {
+    stream.getTracks().forEach((t) => t.stop());
+    els.btnVoice.classList.remove('recording');
+    els.btnVoice.title = 'Voice message';
+    state.recording = null;
+    const seconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    const blob = new Blob(chunks, { type: 'audio/webm' });
+    if (!blob.size) return;
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    await sendWithAttachment({
+      kind: 'voice', bytes, name: `voice-${seconds}s.webm`,
+      mime: 'audio/webm', duration: seconds, preview: null
+    });
+  });
+  recorder.start();
+  toast('Recording… tap the microphone again to send');
+});
+
+/* =========================== in-chat search =========================== */
+function openChatSearch() {
+  els.chatSearchBar.hidden = false;
+  els.chatSearchInput.focus();
+  els.chatSearchInput.select();
+}
+
+function closeChatSearch() {
+  els.chatSearchBar.hidden = true;
+  els.chatSearchInput.value = '';
+  els.chatSearchCount.textContent = '';
+  state.searchQuery = '';
+  state.searchHits = [];
+  state.searchIndex = -1;
+  if (state.activePeer) renderMessages();
+}
+
+async function runChatSearch(query) {
+  state.searchQuery = query;
+  state.searchHits = [];
+  state.searchIndex = -1;
+  if (!query) { els.chatSearchCount.textContent = ''; renderMessages(); return; }
+  if (!state.activePeer) return;
+  const chat = activeChat();
+  const needle = query.toLowerCase();
+  // Search what is already loaded; pull more history so older matches appear.
+  if (chat && !chat.loaded) {
+    try {
+      const items = await api.history({ with: peerUsername(state.activePeer), limit: 300 });
+      chat.messages = resolveQuotes(items);
+      chat.loaded = true;
+    } catch { /* keep what we have */ }
+  }
+  const hits = [];
+  for (const m of (chat ? chat.messages : [])) {
+    if (m.deleted) continue;
+    const text = (m.text || '').toLowerCase();
+    const name = m.attachment && m.attachment.name ? m.attachment.name.toLowerCase() : '';
+    if (text.includes(needle) || name.includes(needle)) hits.push(m.id);
+  }
+  state.searchHits = hits;
+  state.searchIndex = hits.length ? hits.length - 1 : -1;
+  els.chatSearchCount.textContent = hits.length ? `${hits.length} found` : 'none';
+  renderMessages();
+  if (hits.length) scrollToMessage(hits[state.searchIndex], { smooth: false });
+}
+
+let chatSearchTimer = null;
+els.btnChatSearch.addEventListener('click', () => {
+  if (els.chatSearchBar.hidden) openChatSearch(); else closeChatSearch();
+});
+els.btnChatSearchClose.addEventListener('click', closeChatSearch);
+els.chatSearchInput.addEventListener('input', () => {
+  clearTimeout(chatSearchTimer);
+  const q = els.chatSearchInput.value.trim();
+  chatSearchTimer = setTimeout(() => runChatSearch(q), 200);
+});
+els.chatSearchInput.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || !state.searchHits.length) return;
+  e.preventDefault();
+  state.searchIndex = (state.searchIndex - 1 + state.searchHits.length) % state.searchHits.length;
+  scrollToMessage(state.searchHits[state.searchIndex]);
+  renderMessages();
+});
+
+/* ============================ pinned banner ============================ */
+function updatePinnedBar() {
+  const chat = activeChat();
+  const pinned = chat ? chat.messages.filter((m) => m.pinned && !m.deleted) : [];
+  if (!pinned.length) { els.pinnedBar.hidden = true; return; }
+  const top = pinned[pinned.length - 1];
+  els.pinnedTitle.textContent = top.mine ? 'Pinned message · you' : `Pinned message · ${displayNameFor(peerUsername(chatKey(top.from || state.username)))}`;
+  els.pinnedText.textContent = top.attachment && !top.text
+    ? (top.attachment.name ? `📎 ${top.attachment.name}` : '📎 Attachment')
+    : (top.text || 'Message');
+  els.pinnedBar.hidden = false;
+  els.pinnedBar.onclick = () => scrollToMessage(top.id);
+}
+
+els.btnPinnedUnpin.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  const chat = activeChat();
+  const pinned = chat ? chat.messages.filter((m) => m.pinned) : [];
+  if (!pinned.length) return;
+  const top = pinned[pinned.length - 1];
+  try {
+    await api.pinMessage({ id: top.id, pinned: false });
+    top.pinned = false;
+    updatePinnedBar();
+    renderMessages();
+    toast('Unpinned');
+  } catch (err) {
+    toast(err.message || 'Could not unpin');
+  }
+});
+
+/* ============================ appearance ============================ */
+const WALLPAPERS = ['none', 'dots', 'grid', 'sunset', 'mint'];
+
+function applyTheme(theme) {
+  state.settings.theme = theme;
+  document.body.classList.toggle('theme-light', theme === 'light');
+  els.setThemeSub.textContent = theme === 'light' ? 'Light' : 'Dark';
+  els.btnThemeToggle.textContent = theme === 'light' ? 'Dark' : 'Light';
+}
+
+function applyWallpaper(wallpaper) {
+  state.settings.wallpaper = wallpaper;
+  for (const name of WALLPAPERS) {
+    els.chatView.classList.toggle('wallpaper-' + name, name === wallpaper);
+  }
+  els.wallpaperPicker.querySelectorAll('.wallpaper-swatch').forEach((el) => {
+    el.classList.toggle('active', el.dataset.wallpaper === wallpaper);
+  });
+}
+
+function buildWallpaperPicker() {
+  els.wallpaperPicker.innerHTML = '';
+  for (const name of WALLPAPERS) {
+    const sw = document.createElement('button');
+    sw.type = 'button';
+    sw.className = 'wallpaper-swatch' + (name === state.settings.wallpaper ? ' active' : '');
+    sw.dataset.wallpaper = name;
+    sw.title = name;
+    sw.innerHTML = `<span>${name}</span>`;
+    sw.addEventListener('click', async () => {
+      applyWallpaper(name);
+      await persistSettings({ wallpaper: name });
+    });
+    els.wallpaperPicker.appendChild(sw);
+  }
+}
+
+async function persistSettings(patch) {
+  try {
+    const saved = await api.saveSettings(patch);
+    state.settings = { ...state.settings, ...saved };
+  } catch { /* settings are cosmetic; keep the local value */ }
+}
+
+els.btnThemeToggle.addEventListener('click', async () => {
+  const next = state.settings.theme === 'light' ? 'dark' : 'light';
+  applyTheme(next);
+  await persistSettings({ theme: next });
+});
+
+async function loadAppearance() {
+  try {
+    const s = await api.getSettings();
+    if (s && typeof s === 'object') state.settings = { ...state.settings, ...s };
+  } catch { /* defaults are fine */ }
+  applyTheme(state.settings.theme === 'light' ? 'light' : 'dark');
+  applyWallpaper(WALLPAPERS.includes(state.settings.wallpaper) ? state.settings.wallpaper : 'none');
+  buildWallpaperPicker();
+}
+
+/* ============================ forward / select ============================ */
+function otherChatKeys() {
+  return Array.from(state.chats.keys()).filter((k) => k !== state.activePeer);
+}
+
+function openForward(messages) {
+  const list = Array.isArray(messages) ? messages : [messages];
+  const keys = otherChatKeys();
+  els.forwardList.innerHTML = '';
+  els.forwardEmpty.hidden = keys.length > 0;
+  for (const key of sortedKeys(keys.slice())) {
+    const peer = peerUsername(key);
+    const li = document.createElement('li');
+    li.className = 'chat-item';
+    li.innerHTML = `
+      <div class="avatar small" data-color="${escapeHtml(avatarColorFor(peer))}">${escapeHtml(initial(displayNameFor(peer)))}</div>
+      <div class="chat-item-body">
+        <div class="chat-item-top"><span class="chat-item-name">${escapeHtml(key === SAVED ? 'Saved Messages' : displayNameFor(peer))}</span></div>
+      </div>
+    `;
+    li.addEventListener('click', async () => {
+      els.forwardBackdrop.hidden = true;
+      await forwardTo(key, list);
+    });
+    els.forwardList.appendChild(li);
+  }
+  els.forwardBackdrop.hidden = false;
+}
+
+async function forwardTo(key, messages) {
+  const target = peerUsername(key);
+  let sent = 0;
+  for (const m of messages) {
+    try {
+      if (m.kind && m.attachment) {
+        // Re-encrypt the bytes for the new recipient rather than reusing the box.
+        const res = await api.openAttachment({
+          id: m.id, peer: m.mine ? peerUsername(state.activePeer) : peerUsername(chatKey(m.from))
+        });
+        const bytes = await dataUrlToBytes(res.dataUrl);
+        await api.send({
+          to: target, text: m.text || '',
+          attachment: { kind: m.kind, bytes, name: m.attachment.name, mime: m.attachment.mime, duration: m.attachment.duration }
+        });
+      } else if (m.text) {
+        await api.send({ to: target, text: m.text });
+      }
+      sent += 1;
+    } catch (err) {
+      toast(err.message || 'Could not forward');
+      break;
+    }
+  }
+  if (sent) toast(`Forwarded ${sent} message${sent > 1 ? 's' : ''}`);
+  exitSelectMode();
+}
+
+function dataUrlToBytes(dataUrl) {
+  const base64 = String(dataUrl).split(',')[1] || '';
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+function enterSelectMode(firstMessage) {
+  state.selecting = new Set(firstMessage ? [firstMessage.id] : []);
+  els.selectBar.hidden = false;
+  renderMessages();
+}
+
+function exitSelectMode() {
+  state.selecting = null;
+  els.selectBar.hidden = true;
+  if (state.activePeer) renderMessages();
+}
+
+function toggleSelected(id) {
+  if (!state.selecting) return;
+  if (state.selecting.has(id)) state.selecting.delete(id); else state.selecting.add(id);
+  els.selectCount.textContent = `${state.selecting.size} selected`;
+  renderMessages();
+}
+
+function selectedMessages() {
+  const chat = activeChat();
+  if (!chat || !state.selecting) return [];
+  return chat.messages.filter((m) => state.selecting.has(m.id));
+}
+
+els.btnSelectCancel.addEventListener('click', exitSelectMode);
+els.btnSelectForward.addEventListener('click', () => {
+  const chosen = selectedMessages();
+  if (!chosen.length) return;
+  openForward(chosen);
+});
+els.btnSelectDelete.addEventListener('click', async () => {
+  const chosen = selectedMessages().filter((m) => m.mine);
+  if (!chosen.length) { toast('You can only delete your own messages'); return; }
+  const ok = await confirmDialog({
+    title: `Delete ${chosen.length} message${chosen.length > 1 ? 's' : ''}?`,
+    text: 'They will be removed for both you and the recipient.',
+    confirmLabel: 'Delete'
+  });
+  if (!ok) return;
+  for (const m of chosen) {
+    try { await api.remove(m.id); applyDeleted(m.id); } catch { /* keep going */ }
+  }
+  exitSelectMode();
+  toast('Deleted');
+});
+
 /* ------------------------------ shortcuts ------------------------------ */
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    if (!els.attachBackdrop.hidden) return void (els.attachBackdrop.hidden = true);
+    if (!els.emojiPanel.hidden) return void (els.emojiPanel.hidden = true);
     if (!els.ctxBackdrop.hidden) return closeContextMenu();
     if (!els.confirmBackdrop.hidden) return settleConfirm(false);
+    if (!els.forwardBackdrop.hidden) return void (els.forwardBackdrop.hidden = true);
     if (!els.profileBackdrop.hidden) return void (els.profileBackdrop.hidden = true);
     if (!els.chatmenuBackdrop.hidden) return void (els.chatmenuBackdrop.hidden = true);
     if (!els.settingsBackdrop.hidden) return void (els.settingsBackdrop.hidden = true);
+    if (state.selecting) return exitSelectMode();
+    if (!els.chatSearchBar.hidden) return closeChatSearch();
     if (state.editing) return clearEditing();
     if (state.replyTo) return clearReply();
   }
@@ -1356,6 +2035,8 @@ document.addEventListener('keydown', (e) => {
 /* --------------------------------- boot --------------------------------- */
 (async function boot() {
   setMode('login');
+  buildEmojiPanel();
+  loadAppearance();
   const s = await api.status();
   if (s.serverUrl) {
     els.serverUrl.value = s.serverUrl;

@@ -189,6 +189,10 @@ class SleePhyClient {
       this.emit({ type: 'reactions', id: msg.id, reactions: msg.reactions || [] });
       return;
     }
+    if (msg.t === 'pinned') {
+      this.emit({ type: 'pinned', id: msg.id, pinned: !!msg.pinned, peer: msg.peer });
+      return;
+    }
     if (msg.t === 'typing') {
       this.emit({ type: 'typing', from: msg.from, state: msg.state });
       return;
@@ -314,12 +318,39 @@ class SleePhyClient {
     return res.publicKey;
   }
 
-  async sendMessage({ to, text, replyTo }) {
+  async sendMessage({ to, text, replyTo, attachment }) {
     if (!this.secretKey) throw new Error('Vault is locked');
     const peerKey = await this.ensurePeerKey(to);
-    const { box, nonce } = await cryptoLib.encryptMessage(text, peerKey, this.secretKey);
-    const res = await this.request({ t: 'send', to, box, nonce, replyTo: replyTo || undefined });
-    return { id: res.id, ts: res.ts, to, text, replyTo: res.replyTo || null, mine: true };
+
+    let box, nonce, kind = null, encAttachment = null;
+    if (attachment) {
+      const enc = await cryptoLib.encryptBytes(attachment.bytes, peerKey, this.secretKey);
+      kind = attachment.kind;
+      encAttachment = {
+        kind, box: enc.box, nonce: enc.nonce,
+        name: attachment.name || null, mime: attachment.mime || null,
+        size: attachment.bytes ? attachment.bytes.length : 0,
+        duration: attachment.duration || null
+      };
+    }
+    // A caption may be empty for an attachment; an empty string still has to be
+    // encrypted because the relay rejects a blank box on text-only messages.
+    const caption = typeof text === 'string' ? text : '';
+    if (caption || !attachment) {
+      const enc = await cryptoLib.encryptMessage(caption, peerKey, this.secretKey);
+      box = enc.box; nonce = enc.nonce;
+    } else {
+      box = ''; nonce = '';
+    }
+
+    const res = await this.request({
+      t: 'send', to, box, nonce, replyTo: replyTo || undefined, attachment: encAttachment || undefined
+    });
+    return {
+      id: res.id, ts: res.ts, to, text: caption, replyTo: res.replyTo || null,
+      mine: true, kind: res.kind || null,
+      attachment: encAttachment ? { ...encAttachment, dataUrl: null } : null
+    };
   }
 
   async editMessage({ id, to, text }) {
@@ -350,14 +381,17 @@ class SleePhyClient {
       return;
     }
     const peerKey = await this.ensurePeerKey(msg.from);
-    let text;
-    try {
-      text = await cryptoLib.decryptMessage(msg.box, msg.nonce, peerKey, this.secretKey);
-    } catch {
-      text = '⚠ Message could not be decrypted';
+    let text = '';
+    if (msg.box) {
+      try {
+        text = await cryptoLib.decryptMessage(msg.box, msg.nonce, peerKey, this.secretKey);
+      } catch {
+        text = '⚠ Message could not be decrypted';
+      }
     }
     this.emit({
-      type: 'message', id: msg.id, from: msg.from, text, ts: msg.ts, replyTo: msg.replyTo || null
+      type: 'message', id: msg.id, from: msg.from, text, ts: msg.ts, replyTo: msg.replyTo || null,
+      kind: msg.kind || null, attachment: msg.attachment || null
     });
   }
 
@@ -368,7 +402,7 @@ class SleePhyClient {
     const items = [];
     for (const m of res.items) {
       let text = '';
-      if (!m.deleted) {
+      if (!m.deleted && m.box) {
         try {
           text = await cryptoLib.decryptMessage(m.box, m.nonce, peerKey, this.secretKey);
         } catch {
@@ -379,10 +413,85 @@ class SleePhyClient {
         id: m.id, from: m.from, to: m.to, text, ts: m.ts,
         mine: m.from === this.username, replyTo: m.replyTo || null,
         editedAt: m.editedAt || null, deleted: !!m.deleted,
+        kind: m.kind || null, attachment: m.attachment || null, pinned: !!m.pinned,
         reactions: m.reactions || []
       });
     }
     return items;
+  }
+
+  /**
+   * Decrypt an attachment for display. Returns a data URL the renderer can show
+   * without ever holding key material.
+   */
+  async openAttachment({ id, peer }) {
+    if (!this.secretKey) throw new Error('Vault is locked');
+    const res = await this.request({ t: 'message.get', id });
+    const row = res.message;
+    if (!row) throw new Error('No such message');
+    const attachment = row.attachment ? JSON.parse(row.attachment) : null;
+    if (!attachment) throw new Error('Message has no attachment');
+    const peerKey = await this.ensurePeerKey(peer);
+    const bytes = await cryptoLib.decryptBytes(
+      attachment.box, attachment.nonce, peerKey, this.secretKey
+    );
+    const mime = attachment.mime || 'application/octet-stream';
+    return {
+      name: attachment.name || null, mime, size: bytes.length,
+      dataUrl: `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`
+    };
+  }
+
+  async pinMessage({ id, pinned }) {
+    const res = await this.request({ t: 'message.pin', id, pinned });
+    return { id: res.id, pinned: !!res.pinned, peer: res.peer };
+  }
+
+  async pinnedMessages({ peer }) {
+    const res = await this.request({ t: 'messages.pinned', peer });
+    return res.items || [];
+  }
+
+  async searchMessages({ query, peer, limit }) {
+    const res = await this.request({ t: 'messages.search', query, peer, limit });
+    const items = res.items || [];
+    // The relay matched metadata only; decrypt each hit so the client can filter
+    // on the actual text and show a snippet.
+    const out = [];
+    for (const m of items) {
+      const other = m.from === this.username ? m.to : m.from;
+      let text = '';
+      if (m.attachment) {
+        try {
+          const att = JSON.parse(m.attachment);
+          text = att.name ? `📎 ${att.name}` : '📎 Attachment';
+        } catch { text = '📎 Attachment'; }
+      }
+      const peerKey = await this.ensurePeerKey(other);
+      if (m.box) {
+        try {
+          const dec = await cryptoLib.decryptMessage(m.box, m.nonce, peerKey, this.secretKey);
+          text = dec ? `${dec}${text ? ` ${text}` : ''}` : text;
+        } catch { /* keep the attachment label, if any */ }
+      }
+      out.push({
+        id: m.id, from: m.from, to: m.to, peer: other, ts: m.ts, text,
+        kind: m.kind || null, attachment: m.attachment || null
+      });
+    }
+    const needle = String(query || '').toLowerCase();
+    return out.filter((m) => !needle || m.text.toLowerCase().includes(needle) || m.peer.toLowerCase().includes(needle));
+  }
+
+  /* ------------------------------ settings ------------------------------ */
+  async getSettings() {
+    const res = await this.request({ t: 'settings.get' });
+    return res.settings || {};
+  }
+
+  async saveSettings(settings) {
+    const res = await this.request({ t: 'settings.set', settings });
+    return res.settings || {};
   }
 
   /* ------------------------------ profile ------------------------------ */
