@@ -38,6 +38,9 @@ Read [ARCHITECTURE.md](ARCHITECTURE.md) for the threat model — including what 
 
 ## Run it locally
 
+The desktop app needs a relay to connect to. Without one, the connection
+indicator stays red and you cannot create an account.
+
 ```bash
 npm install
 
@@ -48,6 +51,15 @@ npm run server
 npm start
 ```
 
+The app connects to `ws://127.0.0.1:8787` by default. To point it somewhere
+else, set the environment variable before starting:
+
+```bash
+SLEEPHY_SERVER=wss://your-server.example.com npm start
+```
+
+or change the address in the app under Settings → Server address.
+
 To try a conversation, run a second copy with a separate profile:
 
 ```bash
@@ -56,6 +68,18 @@ npm start -- --user-data-dir=/tmp/sleephy-second
 
 Register two accounts (for example `alice` and `bob`), then in one window type
 the other username into the search box and press Enter.
+
+## Ship a build pointed at your server
+
+Create `server-default.json` in the project root before building:
+
+```json
+{ "server": "wss://your-server.example.com" }
+```
+
+It is bundled into the app, so the installer works out of the box with no
+address to type. A per-machine environment variable (`SLEEPHY_SERVER`) still
+overrides it.
 
 ## Build a Windows installer
 
@@ -69,8 +93,9 @@ on a native Windows runner instead. See `.github/workflows/build.yml`.
 ## Tests
 
 ```bash
-node test/e2e.js                    # real server + real crypto (11 checks)
-xvfb-run -a node test/ui.js         # drives the real Electron UI (9 checks)
+node test/e2e.js                       # real server + real crypto (11 checks)
+xvfb-run -a node test/ui.js            # drives the real Electron UI (9 checks)
+xvfb-run -a node test/connection.js    # connection and error handling (4 checks)
 ```
 
 The end-to-end suite verifies, among other things, that the plaintext never

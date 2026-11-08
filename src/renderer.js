@@ -121,7 +121,7 @@ function escapeHtml(s) {
 }
 
 /* -------------------------------- auth UI -------------------------------- */
-function setMode(mode) {
+function setMode(mode, { clearError = true } = {}) {
   state.mode = mode;
   els.authTabs.dataset.active = mode;
   els.tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === mode));
@@ -130,7 +130,7 @@ function setMode(mode) {
   els.authHint.textContent = mode === 'register'
     ? 'We generate your encryption keys on this device. Your password protects them — it never leaves your device.'
     : 'Your password protects your encryption keys on this device. We can never read your messages.';
-  showError(els.authError, null);
+  if (clearError) showError(els.authError, null);
 }
 
 els.tabs.forEach((tab) => tab.addEventListener('click', () => setMode(tab.dataset.tab)));
@@ -164,7 +164,7 @@ els.formAuth.addEventListener('submit', async (e) => {
     showError(els.authError, err.message || 'Something went wrong');
   } finally {
     els.btnAuth.disabled = false;
-    setMode(state.mode);
+    setMode(state.mode, { clearError: false });
   }
 });
 
@@ -421,6 +421,11 @@ api.onEvent((evt) => {
 (async function boot() {
   setMode('login');
   const s = await api.status();
+  // Show the address the app will actually use, not a hardcoded one.
+  if (s.serverUrl) {
+    els.serverUrl.value = s.serverUrl;
+    els.setServer.value = s.serverUrl;
+  }
   updateConnIndicators(s.online);
   if (s.username && !s.unlocked) {
     els.unlockUser.textContent = `Unlock your vault, ${s.username}.`;

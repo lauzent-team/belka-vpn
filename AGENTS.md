@@ -43,6 +43,21 @@ WebSocket JSON messages are defined in `ARCHITECTURE.md` and implemented in
 request's `_id` so the client can match them — keep that behaviour when adding
 requests.
 
+## Gotchas learned the hard way
+
+- **The app is useless without a reachable relay.** A red connection indicator
+  means the address in the Server field has nothing listening on it. When a user
+  reports "cannot create an account", check the address first.
+- **`server-default.json` is bundled at build time** so an installer can ship with
+  a working address. `SLEEPHY_SERVER` overrides it at runtime.
+- **Changing the server address must tear down the old socket.** `connect()`
+  compares the new address with the current one and only reuses a live socket when
+  they match; otherwise requests silently go to the previous server.
+- **Do not clear the error message in a `finally` block.** The auth form restores
+  its label with `setMode(mode, { clearError: false })` — clearing it there wipes
+  the error before the user can read it.
+- **`[hidden]` needs `display: none !important`** (see Architecture rules).
+
 ## Testing expectations
 
 - Behaviour changes need a test that exercises real code paths. `test/e2e.js`

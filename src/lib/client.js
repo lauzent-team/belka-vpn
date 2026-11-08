@@ -18,12 +18,27 @@ const cryptoLib = require('./crypto');
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
+// Where the app looks for a relay by default, in priority order:
+//   1. SLEEPHY_SERVER environment variable
+//   2. a bundled server-default.json (written at build time)
+//   3. a local relay on this machine
+function resolveDefaultServer() {
+  if (process.env.SLEEPHY_SERVER) return process.env.SLEEPHY_SERVER;
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'server-default.json'), 'utf8'));
+    if (cfg && typeof cfg.server === 'string' && cfg.server) return cfg.server;
+  } catch { /* no bundled config */ }
+  return 'ws://127.0.0.1:8787';
+}
+
+const DEFAULT_SERVER = resolveDefaultServer();
+
 class SleePhyClient {
   constructor({ userDataDir, onEvent }) {
     this.file = path.join(userDataDir, 'sleephy-identity.json');
     this.onEvent = onEvent;
     this.ws = null;
-    this.serverUrl = 'ws://127.0.0.1:8787';
+    this.serverUrl = DEFAULT_SERVER;
     this.username = null;
     this.secretKey = null; // base64, in memory only
     this.publicKey = null;
@@ -52,18 +67,27 @@ class SleePhyClient {
 
   /* ----------------------------- connection ----------------------------- */
   connect(serverUrl) {
-    if (serverUrl) this.serverUrl = serverUrl;
+    const target = serverUrl || this.serverUrl;
+    const changed = target !== this.serverUrl;
+    this.serverUrl = target;
     this.intentionalClose = false;
+
     return new Promise((resolve) => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) return resolve();
+      // Reuse a live socket only when the address has not changed; otherwise a
+      // new address would silently keep talking to the old server.
+      if (!changed && this.ws && this.ws.readyState === WebSocket.OPEN) return resolve();
+      this.teardownSocket();
+
       let settled = false;
+      const settle = () => { if (!settled) { settled = true; resolve(); } };
+
       const ws = new WebSocket(this.serverUrl);
       this.ws = ws;
 
       ws.on('open', () => {
         this.reconnectDelay = RECONNECT_BASE_MS;
         this.emit({ type: 'connection', state: 'online' });
-        if (!settled) { settled = true; resolve(); }
+        settle();
         this.autoResume();
       });
 
@@ -71,14 +95,30 @@ class SleePhyClient {
 
       ws.on('close', () => {
         this.emit({ type: 'connection', state: 'offline' });
-        if (!settled) { settled = true; resolve(); }
+        settle();
         this.scheduleReconnect();
       });
 
-      ws.on('error', () => {
-        if (!settled) { settled = true; resolve(); }
-      });
+      ws.on('error', () => settle());
     });
+  }
+
+  /** Drop the current socket without triggering a reconnect. */
+  teardownSocket() {
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    this.failPending('Connection closed');
+    if (this.ws) {
+      const old = this.ws;
+      this.ws = null;
+      old.removeAllListeners();
+      try { old.close(); } catch { /* already closed */ }
+    }
+  }
+
+  /** Reject in-flight requests so callers fail fast instead of waiting. */
+  failPending(reason) {
+    for (const [, { reject }] of this.pending) reject(new Error(reason));
+    this.pending.clear();
   }
 
   scheduleReconnect() {
@@ -92,8 +132,7 @@ class SleePhyClient {
 
   disconnect() {
     this.intentionalClose = true;
-    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
-    if (this.ws) { try { this.ws.close(); } catch { /* ignore */ } this.ws = null; }
+    this.teardownSocket();
   }
 
   emit(evt) { try { this.onEvent(evt); } catch { /* renderer may be gone */ } }
@@ -102,7 +141,10 @@ class SleePhyClient {
   request(obj, { expectReply = true } = {}) {
     return new Promise((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-        return reject(new Error('Not connected to the server'));
+        return reject(new Error(
+          `No connection to the server (${this.serverUrl}). ` +
+          'Check the server address and that the relay is running.'
+        ));
       }
       if (!expectReply) { this.ws.send(JSON.stringify(obj)); return resolve(); }
       const id = ++this.reqSeq;
