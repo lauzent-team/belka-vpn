@@ -70,6 +70,31 @@ db.exec(`
     settings   TEXT NOT NULL,
     updated_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS groups (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    owner      TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS group_members (
+    group_id  INTEGER NOT NULL,
+    username  TEXT NOT NULL,
+    joined_at INTEGER NOT NULL,
+    PRIMARY KEY (group_id, username)
+  );
+  CREATE TABLE IF NOT EXISTS group_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id   INTEGER NOT NULL,
+    sender     TEXT NOT NULL,
+    envelope   TEXT NOT NULL,
+    ts         INTEGER NOT NULL,
+    reply_to   INTEGER,
+    edited_at  INTEGER,
+    deleted    INTEGER NOT NULL DEFAULT 0,
+    kind       TEXT,
+    attachment TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_gmsg_group ON group_messages(group_id, id);
 `);
 
 // Columns added after the first release. Existing databases are upgraded in
@@ -188,7 +213,40 @@ const q = {
       WHERE (sender = ? OR recipient = ?) AND deleted = 0
         AND (sender LIKE ? OR recipient LIKE ? OR attachment LIKE ?)
       ORDER BY id DESC LIMIT ?`
-  )
+  ),
+
+  /* ------------------------------- groups ------------------------------- */
+  insertGroup: db.prepare('INSERT INTO groups (name, owner, created_at) VALUES (?, ?, ?)'),
+  getGroup: db.prepare('SELECT * FROM groups WHERE id = ?'),
+  renameGroup: db.prepare('UPDATE groups SET name = ? WHERE id = ?'),
+  deleteGroup: db.prepare('DELETE FROM groups WHERE id = ?'),
+  addMember: db.prepare(
+    `INSERT INTO group_members (group_id, username, joined_at) VALUES (?, ?, ?)
+     ON CONFLICT(group_id, username) DO NOTHING`
+  ),
+  removeMember: db.prepare('DELETE FROM group_members WHERE group_id = ? AND username = ?'),
+  membersOf: db.prepare('SELECT username FROM group_members WHERE group_id = ? ORDER BY joined_at ASC'),
+  isMember: db.prepare('SELECT 1 AS ok FROM group_members WHERE group_id = ? AND username = ?'),
+  groupsFor: db.prepare(
+    'SELECT group_id FROM group_members WHERE username = ? ORDER BY joined_at ASC'
+  ),
+  insertGroupMessage: db.prepare(
+    `INSERT INTO group_messages (group_id, sender, envelope, ts, reply_to, kind, attachment)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ),
+  getGroupMessage: db.prepare('SELECT * FROM group_messages WHERE id = ?'),
+  groupHistory: db.prepare(
+    'SELECT * FROM group_messages WHERE group_id = ? AND deleted = 0 ORDER BY id DESC LIMIT ?'
+  ),
+  editGroupMessage: db.prepare('UPDATE group_messages SET envelope = ?, edited_at = ? WHERE id = ?'),
+  deleteGroupMessage: db.prepare(
+    "UPDATE group_messages SET deleted = 1, envelope = '', attachment = NULL WHERE id = ?"
+  ),
+  // Clear the relay copy of a group's messages (owner only).
+  clearGroupMessages: db.prepare('DELETE FROM group_messages WHERE group_id = ?'),
+  renameGroupMessages: db.prepare('UPDATE group_messages SET sender = ? WHERE sender = ?'),
+  renameGroupMembers: db.prepare('UPDATE group_members SET username = ? WHERE username = ?'),
+  renameGroupsOwner: db.prepare('UPDATE groups SET owner = ? WHERE owner = ?')
 };
 
 /* Statements used only by the username rename, which rewrites every reference. */
@@ -198,7 +256,10 @@ const renameStmts = {
   received: db.prepare('UPDATE messages SET recipient = ? WHERE recipient = ?'),
   chatsOwner: db.prepare('UPDATE chats SET owner = ? WHERE owner = ?'),
   chatsPeer: db.prepare('UPDATE chats SET peer = ? WHERE peer = ?'),
-  reactions: db.prepare('UPDATE reactions SET username = ? WHERE username = ?')
+  reactions: db.prepare('UPDATE reactions SET username = ? WHERE username = ?'),
+  groupMessages: db.prepare('UPDATE group_messages SET sender = ? WHERE sender = ?'),
+  groupMembers: db.prepare('UPDATE group_members SET username = ? WHERE username = ?'),
+  groupsOwner: db.prepare('UPDATE groups SET owner = ? WHERE owner = ?')
 };
 
 /* --------------------------- password KDF --------------------------- */
@@ -466,6 +527,9 @@ function handleUsernameSet(ws, msg, rid) {
     renameStmts.chatsOwner.run(next, prev);
     renameStmts.chatsPeer.run(next, prev);
     renameStmts.reactions.run(next, prev);
+    renameStmts.groupMessages.run(next, prev);
+    renameStmts.groupMembers.run(next, prev);
+    renameStmts.groupsOwner.run(next, prev);
     db.exec('COMMIT');
   } catch {
     try { db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
@@ -498,12 +562,24 @@ function handleUserSearch(ws, msg, rid) {
 const ATTACHMENT_KINDS = new Set(['image', 'file', 'voice']);
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 
+/** Shared metadata checks for both direct and group attachments. */
+function attachmentMeta(value) {
+  const kind = value.kind;
+  if (!ATTACHMENT_KINDS.has(kind)) return { error: 'Unsupported attachment type' };
+  const name = cleanText(value.name, 120) || null;
+  const mime = cleanText(value.mime, 80) || null;
+  const size = Number.isFinite(value.size) ? Math.max(0, Math.floor(value.size)) : 0;
+  const duration = Number.isFinite(value.duration) ? Math.max(0, Math.floor(value.duration)) : null;
+  if (size > MAX_ATTACHMENT_BYTES) return { error: 'Attachment is too large' };
+  return { kind, name, mime, size, duration };
+}
+
 /** Validate the attachment envelope. Ciphertext only; the relay never sees plaintext. */
 function parseAttachment(value) {
   if (value === undefined || value === null) return { kind: null, attachment: null };
   if (typeof value !== 'object') return { error: 'Malformed attachment' };
-  const kind = value.kind;
-  if (!ATTACHMENT_KINDS.has(kind)) return { error: 'Unsupported attachment type' };
+  const meta = attachmentMeta(value);
+  if (meta.error) return meta;
   // The length cap only guards the frame budget; the byte check below produces
   // the user-facing "too large" message.
   if (!validB64(value.box, 12 * 1024 * 1024) || !validB64(value.nonce, 100)) {
@@ -512,13 +588,45 @@ function parseAttachment(value) {
   // base64 length overestimates bytes by ~4/3; this keeps the stored blob bounded.
   const approxBytes = Math.floor(value.box.length * 3 / 4);
   if (approxBytes > MAX_ATTACHMENT_BYTES) return { error: 'Attachment is too large' };
-  const name = cleanText(value.name, 120) || null;
-  const mime = cleanText(value.mime, 80) || null;
-  const size = Number.isFinite(value.size) ? Math.max(0, Math.floor(value.size)) : approxBytes;
-  const duration = Number.isFinite(value.duration) ? Math.max(0, Math.floor(value.duration)) : null;
   return {
-    kind,
-    attachment: JSON.stringify({ kind, name, mime, size, duration, box: value.box, nonce: value.nonce })
+    kind: meta.kind,
+    attachment: JSON.stringify({
+      kind: meta.kind, name: meta.name, mime: meta.mime,
+      size: meta.size || approxBytes, duration: meta.duration,
+      box: value.box, nonce: value.nonce
+    })
+  };
+}
+
+/** A group attachment carries one encrypted blob per member under `perMember`. */
+function parseGroupAttachment(value) {
+  if (value === undefined || value === null) return { kind: null, attachment: null };
+  if (typeof value !== 'object') return { error: 'Malformed attachment' };
+  const meta = attachmentMeta(value);
+  if (meta.error) return meta;
+  if (!value.perMember || typeof value.perMember !== 'object') {
+    return { error: 'Malformed attachment payload' };
+  }
+  const perMember = {};
+  for (const [user, env] of Object.entries(value.perMember)) {
+    if (typeof user !== 'string') continue;
+    const box = env && typeof env.box === 'string' ? env.box : '';
+    const nonce = env && typeof env.nonce === 'string' ? env.nonce : '';
+    if (!validB64(box, 12 * 1024 * 1024) || !validB64(nonce, 100)) {
+      return { error: 'Malformed attachment payload' };
+    }
+    if (Math.floor(box.length * 3 / 4) > MAX_ATTACHMENT_BYTES) {
+      return { error: 'Attachment is too large' };
+    }
+    perMember[user] = { box, nonce };
+  }
+  if (Object.keys(perMember).length === 0) return { error: 'Malformed attachment payload' };
+  return {
+    kind: meta.kind,
+    attachment: JSON.stringify({
+      kind: meta.kind, name: meta.name, mime: meta.mime,
+      size: meta.size, duration: meta.duration, perMember
+    })
   };
 }
 
@@ -813,6 +921,192 @@ function handleSettingsSet(ws, msg, rid) {
   reply(ws, rid, { t: 'settings', settings: merged });
 }
 
+/* -------------------------------- groups -------------------------------- */
+const MAX_GROUP_MEMBERS = 200;
+
+function groupView(groupId) {
+  const group = q.getGroup.get(groupId);
+  if (!group) return null;
+  const members = q.membersOf.all(groupId).map((m) => ({
+    username: m.username,
+    profile: publicProfile(q.getUser.get(m.username)),
+    online: isOnline(m.username)
+  }));
+  return { id: group.id, name: group.name, owner: group.owner, members };
+}
+
+/** Send a payload to every member of a group except an optional sender. */
+function deliverToGroup(groupId, payload, exceptUser) {
+  for (const m of q.membersOf.all(groupId)) {
+    if (m.username !== exceptUser) deliverToUser(m.username, payload);
+  }
+}
+
+function handleGroupCreate(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const name = cleanText(msg.name, 64);
+  if (!name) return bad(ws, rid, 'Group needs a name');
+  const raw = Array.isArray(msg.members) ? msg.members : [];
+  const members = new Set([ws.username]);
+  for (const u of raw.slice(0, MAX_GROUP_MEMBERS)) {
+    if (typeof u === 'string' && q.getUser.get(u)) members.add(u);
+  }
+
+  const now = Date.now();
+  const info = q.insertGroup.run(name, ws.username, now);
+  const groupId = Number(info.lastInsertRowid);
+  for (const u of members) q.addMember.run(groupId, u, now);
+
+  reply(ws, rid, { t: 'group.created', group: groupView(groupId) });
+  // Everyone else learns about the new group.
+  deliverToGroup(groupId, { t: 'group.joined', group: groupView(groupId) }, ws.username);
+}
+
+function handleGroupList(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const items = q.groupsFor.all(ws.username).map((r) => groupView(r.group_id)).filter(Boolean);
+  reply(ws, rid, { t: 'groups', items });
+}
+
+function handleGroupAdd(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const groupId = Number(msg.groupId);
+  const group = q.getGroup.get(groupId);
+  if (!group) return bad(ws, rid, 'No such group');
+  if (!q.isMember.get(groupId, ws.username)) return bad(ws, rid, 'Not a member');
+  const target = msg.username;
+  if (typeof target !== 'string' || !q.getUser.get(target)) return bad(ws, rid, 'No such user');
+  if (q.isMember.get(groupId, target)) return bad(ws, rid, 'Already a member');
+
+  q.addMember.run(groupId, target, Date.now());
+  reply(ws, rid, { t: 'group.added', group: groupView(groupId) });
+  deliverToGroup(groupId, { t: 'group.joined', group: groupView(groupId) });
+}
+
+function handleGroupLeave(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const groupId = Number(msg.groupId);
+  const group = q.getGroup.get(groupId);
+  if (!group) return bad(ws, rid, 'No such group');
+  if (!q.isMember.get(groupId, ws.username)) return bad(ws, rid, 'Not a member');
+
+  q.removeMember.run(groupId, ws.username);
+  reply(ws, rid, { t: 'group.left', groupId });
+  const view = groupView(groupId);
+  if (view) deliverToGroup(groupId, { t: 'group.memberLeft', groupId, username: ws.username, group: view });
+}
+
+function handleGroupMembers(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const groupId = Number(msg.groupId);
+  if (!q.isMember.get(groupId, ws.username)) return bad(ws, rid, 'Not a member');
+  reply(ws, rid, { t: 'group.members', group: groupView(groupId) });
+}
+
+/**
+ * Send to a group. The client sends one encrypted copy per member in
+ * `envelopes: { username: {box, nonce} }`; the relay stores the map and hands
+ * each member only their own copy. It never sees plaintext.
+ */
+function handleGroupSend(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const groupId = Number(msg.groupId);
+  if (!q.isMember.get(groupId, ws.username)) return bad(ws, rid, 'Not a member');
+  if (!msg.envelopes || typeof msg.envelopes !== 'object') return bad(ws, rid, 'Malformed envelopes');
+
+  const parsed = parseGroupAttachment(msg.attachment);
+  if (parsed.error) return bad(ws, rid, parsed.error);
+
+  const envelopes = {};
+  for (const [user, env] of Object.entries(msg.envelopes)) {
+    if (typeof user !== 'string') continue;
+    const box = env && typeof env.box === 'string' ? env.box : '';
+    const nonce = env && typeof env.nonce === 'string' ? env.nonce : '';
+    if (box && (!validB64(box, 100000) || !validB64(nonce, 100))) continue;
+    envelopes[user] = { box, nonce };
+  }
+  if (Object.keys(envelopes).length === 0) return bad(ws, rid, 'No valid envelopes');
+
+  const replyTo = Number.isInteger(msg.replyTo) ? msg.replyTo : null;
+  const ts = Date.now();
+  const info = q.insertGroupMessage.run(
+    groupId, ws.username, JSON.stringify(envelopes), ts, replyTo, parsed.kind, parsed.attachment
+  );
+  const id = Number(info.lastInsertRowid);
+
+  reply(ws, rid, { t: 'group.sent', id, groupId, ts, replyTo, kind: parsed.kind, attachment: parsed.attachment });
+  for (const [user, env] of Object.entries(envelopes)) {
+    // The sender already rendered its own copy; a socket echo would duplicate it.
+    if (user === ws.username) continue;
+    deliverToUser(user, {
+      t: 'group.message', id, groupId, from: ws.username, box: env.box, nonce: env.nonce,
+      ts, replyTo, kind: parsed.kind, attachment: parsed.attachment
+    });
+  }
+}
+
+function handleGroupHistory(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const groupId = Number(msg.groupId);
+  if (!q.isMember.get(groupId, ws.username)) return bad(ws, rid, 'Not a member');
+  const limit = Math.min(Math.max(Number(msg.limit) || 100, 1), 500);
+  const rows = q.groupHistory.all(groupId, limit).reverse();
+  const items = rows.map((r) => {
+    let envelopes = {};
+    try { envelopes = JSON.parse(r.envelope) || {}; } catch { envelopes = {}; }
+    return {
+      id: r.id, groupId: r.group_id, from: r.sender, ts: r.ts,
+      envelope: envelopes[ws.username] || null,
+      replyTo: r.reply_to, editedAt: r.edited_at, deleted: !!r.deleted,
+      kind: r.kind || null, attachment: r.attachment || null
+    };
+  });
+  reply(ws, rid, { t: 'group.history', groupId, items });
+}
+
+function handleGroupEdit(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const row = q.getGroupMessage.get(Number(msg.id));
+  if (!row) return bad(ws, rid, 'No such message');
+  if (row.sender !== ws.username) return bad(ws, rid, 'Not your message');
+  if (!q.isMember.get(row.group_id, ws.username)) return bad(ws, rid, 'Not a member');
+  if (!msg.envelopes || typeof msg.envelopes !== 'object') return bad(ws, rid, 'Malformed envelopes');
+
+  const editedAt = Date.now();
+  q.editGroupMessage.run(JSON.stringify(msg.envelopes), editedAt, row.id);
+  reply(ws, rid, { t: 'group.edited', id: row.id, editedAt });
+  for (const [user, env] of Object.entries(msg.envelopes)) {
+    if (user === ws.username) continue;
+    deliverToUser(user, { t: 'group.edited', id: row.id, groupId: row.group_id, from: row.sender, box: env.box, nonce: env.nonce, editedAt });
+  }
+}
+
+function handleGroupDelete(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const row = q.getGroupMessage.get(Number(msg.id));
+  if (!row) return bad(ws, rid, 'No such message');
+  if (row.sender !== ws.username) return bad(ws, rid, 'Not your message');
+  q.deleteGroupMessage.run(row.id);
+  reply(ws, rid, { t: 'group.deleted', id: row.id });
+  deliverToGroup(row.group_id, { t: 'group.deleted', id: row.id, groupId: row.group_id, from: row.sender }, ws.username);
+}
+
+function handleGroupMessageGet(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const row = q.getGroupMessage.get(Number(msg.id));
+  if (!row) return bad(ws, rid, 'No such message');
+  if (!q.isMember.get(row.group_id, ws.username)) return bad(ws, rid, 'Not a member');
+  let envelopes = {};
+  try { envelopes = JSON.parse(row.envelope) || {}; } catch { envelopes = {}; }
+  reply(ws, rid, {
+    t: 'group.message', message: {
+      id: row.id, groupId: row.group_id, from: row.sender, ts: row.ts,
+      envelope: envelopes[ws.username] || null, attachment: row.attachment || null,
+      kind: row.kind || null, deleted: !!row.deleted
+    }
+  });
+}
+
 const handlers = {
   register: handleRegister,
   login: handleLogin,
@@ -838,7 +1132,17 @@ const handlers = {
   'chat.clear': handleChatClear,
   'chat.delete': handleChatDelete,
   'settings.get': handleSettingsGet,
-  'settings.set': handleSettingsSet
+  'settings.set': handleSettingsSet,
+  'group.create': handleGroupCreate,
+  'group.list': handleGroupList,
+  'group.add': handleGroupAdd,
+  'group.leave': handleGroupLeave,
+  'group.members': handleGroupMembers,
+  'group.send': handleGroupSend,
+  'group.history': handleGroupHistory,
+  'group.edit': handleGroupEdit,
+  'group.delete': handleGroupDelete,
+  'group.message.get': handleGroupMessageGet
 };
 
 /* -------------------------------- server -------------------------------- */

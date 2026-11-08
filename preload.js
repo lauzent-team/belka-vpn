@@ -36,6 +36,20 @@ contextBridge.exposeInMainWorld('sleephy', {
   searchMessages: (payload) => ipcRenderer.invoke('sleephy:searchMessages', payload),
   getSettings: () => ipcRenderer.invoke('sleephy:getSettings'),
   saveSettings: (settings) => ipcRenderer.invoke('sleephy:saveSettings', settings),
+  createGroup: (payload) => ipcRenderer.invoke('sleephy:createGroup', payload),
+  listGroups: () => ipcRenderer.invoke('sleephy:listGroups'),
+  addGroupMember: (payload) => ipcRenderer.invoke('sleephy:addGroupMember', payload),
+  leaveGroup: (payload) => ipcRenderer.invoke('sleephy:leaveGroup', payload),
+  groupMembers: (payload) => ipcRenderer.invoke('sleephy:groupMembers', payload),
+  sendGroup: (payload) => ipcRenderer.invoke('sleephy:sendGroup', payload),
+  groupHistory: (payload) => ipcRenderer.invoke('sleephy:groupHistory', payload),
+  editGroupMessage: (payload) => ipcRenderer.invoke('sleephy:editGroupMessage', payload),
+  deleteGroupMessage: (payload) => ipcRenderer.invoke('sleephy:deleteGroupMessage', payload),
+  openGroupAttachment: (payload) => ipcRenderer.invoke('sleephy:openGroupAttachment', payload),
+  listAccounts: () => ipcRenderer.invoke('sleephy:listAccounts'),
+  switchAccount: (username) => ipcRenderer.invoke('sleephy:switchAccount', username),
+  forgetAccount: (username) => ipcRenderer.invoke('sleephy:forgetAccount', username),
+  forgetAllAccounts: () => ipcRenderer.invoke('sleephy:forgetAllAccounts'),
   onEvent: (handler) => {
     const listener = (_e, evt) => handler(evt);
     ipcRenderer.on('sleephy:event', listener);

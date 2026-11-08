@@ -104,6 +104,12 @@
     <section id="screen-main" class="screen screen-main">
       <aside class="sidebar">
         <header class="sidebar-head">
+          <button class="icon-btn" id="btn-menu" title="Menu" aria-label="Open menu">
+            <svg viewBox="0 0 24 24" width="20" height="20">
+              <path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor"
+                    stroke-width="1.9" stroke-linecap="round"/>
+            </svg>
+          </button>
           <button class="me" id="btn-my-profile" title="Open your profile">
             <div class="avatar me-avatar" id="me-avatar">?</div>
             <div class="me-meta">
@@ -427,11 +433,132 @@
           </div>
 
           <div class="setting-sep"></div>
+          <span class="setting-title">Notifications</span>
+          <div class="setting-row">
+            <div>
+              <span class="setting-title">Notifications</span>
+              <span class="setting-sub">Show a popup for new messages</span>
+            </div>
+            <label class="switch"><input type="checkbox" id="set-notify" /><span class="slider"></span></label>
+          </div>
+          <div class="setting-row">
+            <div>
+              <span class="setting-title">Message preview</span>
+              <span class="setting-sub">Include the text in the notification</span>
+            </div>
+            <label class="switch"><input type="checkbox" id="set-preview" /><span class="slider"></span></label>
+          </div>
+          <div class="setting-row">
+            <div>
+              <span class="setting-title">Sound</span>
+              <span class="setting-sub">Play a sound for new messages</span>
+            </div>
+            <label class="switch"><input type="checkbox" id="set-sound" /><span class="slider"></span></label>
+          </div>
+
+          <div class="setting-sep"></div>
+          <span class="setting-title">Privacy and Security</span>
+          <div class="setting-row">
+            <div>
+              <span class="setting-title">Show last seen</span>
+              <span class="setting-sub">Let contacts see when you were online</span>
+            </div>
+            <label class="switch"><input type="checkbox" id="set-lastseen" /><span class="slider"></span></label>
+          </div>
+          <div class="setting-row">
+            <div>
+              <span class="setting-title">Read receipts</span>
+              <span class="setting-sub">Send read marks for your messages</span>
+            </div>
+            <label class="switch"><input type="checkbox" id="set-receipts" /><span class="slider"></span></label>
+          </div>
+          <div class="setting-row">
+            <div>
+              <span class="setting-title">Auto-lock</span>
+              <span class="setting-sub">Lock the vault after a period of inactivity</span>
+            </div>
+            <select class="setting-select" id="set-autolock">
+              <option value="0">Never</option>
+              <option value="5">5 minutes</option>
+              <option value="15">15 minutes</option>
+              <option value="60">1 hour</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <div>
+              <span class="setting-title">Blocked users</span>
+              <span class="setting-sub" id="set-blocked-sub">Nobody is blocked</span>
+            </div>
+            <button class="btn-link" id="btn-blocked">Manage</button>
+          </div>
+
+          <div class="setting-sep"></div>
+          <span class="setting-title">Data and Storage</span>
+          <div class="setting-row">
+            <div>
+              <span class="setting-title">Auto-download photos</span>
+              <span class="setting-sub">Open images automatically</span>
+            </div>
+            <label class="switch"><input type="checkbox" id="set-autophoto" /><span class="slider"></span></label>
+          </div>
+          <div class="setting-row">
+            <div>
+              <span class="setting-title">Keep media</span>
+              <span class="setting-sub">Cache attachments on this device</span>
+            </div>
+            <select class="setting-select" id="set-keepmedia">
+              <option value="week">1 week</option>
+              <option value="month">1 month</option>
+              <option value="forever">Forever</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <div>
+              <span class="setting-title">Storage used</span>
+              <span class="setting-sub" id="set-storage">—</span>
+            </div>
+            <button class="btn-secondary btn-compact" id="btn-clear-cache">Clear cache</button>
+          </div>
+
+          <div class="setting-sep"></div>
+          <span class="setting-title">Chat settings</span>
+          <div class="setting-row">
+            <div>
+              <span class="setting-title">Send with Enter</span>
+              <span class="setting-sub">Enter sends, Shift+Enter adds a line</span>
+            </div>
+            <label class="switch"><input type="checkbox" id="set-enter" /><span class="slider"></span></label>
+          </div>
+          <div class="setting-row">
+            <div>
+              <span class="setting-title">Language</span>
+              <span class="setting-sub">Interface language</span>
+            </div>
+            <select class="setting-select" id="set-language">
+              <option value="ru">Русский</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+
+          <div class="setting-sep"></div>
           <span class="setting-title">Your public key</span>
           <code class="key-box" id="set-pubkey">—</code>
           <p class="setting-note">
             Share this with a contact so they can verify your identity.
             Your private key never leaves this device.
+          </p>
+          <div class="setting-sep"></div>
+          <span class="setting-title">About</span>
+          <div class="setting-row">
+            <div>
+              <span class="setting-title">SleePhy</span>
+              <span class="setting-sub">Version 0.4.0 · end-to-end encrypted</span>
+            </div>
+            <span class="drawer-badge">Beta</span>
+          </div>
+          <p class="setting-note">
+            Messages are encrypted on this device and stored on the relay only as ciphertext.
+            The server never sees your message contents.
           </p>
           <div class="setting-sep"></div>
           <button class="btn-danger" id="btn-logout">Sign out and erase local keys</button>
@@ -487,6 +614,25 @@
       </div>
     </div>
 
+    <!-- ====================== PROMPT DIALOG ====================== -->
+    <div class="modal-backdrop" id="prompt-backdrop" hidden>
+      <div class="modal modal-confirm">
+        <header class="modal-head">
+          <h3 id="prompt-title">Enter a value</h3>
+        </header>
+        <div class="modal-body">
+          <label class="field">
+            <span class="field-label" id="prompt-label">Value</span>
+            <input type="text" id="prompt-input" spellcheck="false" />
+          </label>
+          <div class="profile-actions">
+            <button class="btn-primary" id="btn-prompt-ok">Save</button>
+            <button class="btn-ghost" id="btn-prompt-cancel">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ========================= FORWARD ========================= -->
     <div class="modal-backdrop" id="forward-backdrop" hidden>
       <div class="modal modal-sheet">
@@ -506,6 +652,116 @@
       <span class="select-count" id="select-count">0 selected</span>
       <button class="btn-secondary btn-compact" id="btn-select-forward">Forward</button>
       <button class="btn-danger btn-compact" id="btn-select-delete">Delete</button>
+    </div>
+
+    <!-- ============================ DRAWER ============================ -->
+    <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+    <aside class="drawer" id="drawer" hidden aria-label="Main menu">
+      <header class="drawer-head">
+        <div class="avatar drawer-avatar" id="drawer-avatar">?</div>
+        <div class="drawer-meta">
+          <span class="drawer-name" id="drawer-name">—</span>
+          <span class="drawer-handle" id="drawer-handle">@—</span>
+        </div>
+      </header>
+      <nav class="drawer-nav">
+        <button class="drawer-item" data-drawer="accounts">
+          <span class="drawer-ico">👥</span><span class="drawer-label">Аккаунты</span>
+          <span class="drawer-badge" id="drawer-accounts-count" hidden>0</span>
+        </button>
+        <button class="drawer-item" data-drawer="my-profile">
+          <span class="drawer-ico">🙂</span><span class="drawer-label">Мой профиль</span>
+        </button>
+        <button class="drawer-item" data-drawer="create">
+          <span class="drawer-ico">➕</span><span class="drawer-label">Создать аккаунт или группу</span>
+        </button>
+        <button class="drawer-item" data-drawer="contacts">
+          <span class="drawer-ico">📇</span><span class="drawer-label">Контакты</span>
+        </button>
+        <button class="drawer-item" data-drawer="saved">
+          <span class="drawer-ico">🔖</span><span class="drawer-label">Сохранённые сообщения</span>
+        </button>
+        <button class="drawer-item" data-drawer="settings">
+          <span class="drawer-ico">⚙️</span><span class="drawer-label">Настройки</span>
+        </button>
+        <div class="drawer-sep"></div>
+        <button class="drawer-item" data-drawer="new-chat">
+          <span class="drawer-ico">✏️</span><span class="drawer-label">Новое сообщение</span>
+        </button>
+        <button class="drawer-item" data-drawer="archived">
+          <span class="drawer-ico">📦</span><span class="drawer-label">Архив</span>
+          <span class="drawer-badge" id="drawer-archived-count" hidden>0</span>
+        </button>
+        <button class="drawer-item" data-drawer="theme">
+          <span class="drawer-ico">🌗</span><span class="drawer-label">Сменить тему</span>
+        </button>
+      </nav>
+      <footer class="drawer-foot">
+        <span class="foot-note">SleePhy</span>
+        <span class="foot-ver" id="drawer-ver">v0.4.0</span>
+      </footer>
+    </aside>
+
+    <!-- =========================== ACCOUNTS =========================== -->
+    <div class="modal-backdrop" id="accounts-backdrop" hidden>
+      <div class="modal modal-sheet">
+        <header class="modal-head">
+          <h3>Аккаунты</h3>
+          <button class="icon-btn" id="btn-accounts-close" title="Close">✕</button>
+        </header>
+        <div class="modal-body modal-menu" id="accounts-list"></div>
+        <div class="modal-foot">
+          <button class="btn-secondary" id="btn-accounts-add">Добавить аккаунт</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- =========================== CONTACTS =========================== -->
+    <div class="modal-backdrop" id="contacts-backdrop" hidden>
+      <div class="modal modal-sheet">
+        <header class="modal-head">
+          <h3>Контакты</h3>
+          <button class="icon-btn" id="btn-contacts-close" title="Close">✕</button>
+        </header>
+        <div class="modal-body">
+          <div class="add-contact-row">
+            <input id="contact-input" class="contact-input" type="text" spellcheck="false"
+                   autocapitalize="none" placeholder="Имя пользователя" />
+            <button class="btn-secondary btn-compact" id="btn-contact-add">Добавить</button>
+          </div>
+          <p class="auth-error" id="contact-error" hidden></p>
+          <div class="modal-menu" id="contacts-list"></div>
+          <p class="panel-empty" id="contacts-empty">Пока нет контактов.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======================== CREATE GROUP ======================== -->
+    <div class="modal-backdrop" id="group-backdrop" hidden>
+      <div class="modal">
+        <header class="modal-head">
+          <h3>Новая группа</h3>
+          <button class="icon-btn" id="btn-group-close" title="Close">✕</button>
+        </header>
+        <div class="modal-body">
+          <label class="field">
+            <span class="field-label">Название группы</span>
+            <input id="group-name" type="text" spellcheck="false" maxlength="64"
+                   placeholder="Например, Друзья" />
+          </label>
+          <div class="field">
+            <span class="field-label">Участники</span>
+            <input id="group-members" type="text" spellcheck="false" autocapitalize="none"
+                   placeholder="ники через запятую" />
+          </div>
+          <p class="auth-error" id="group-error" hidden></p>
+          <button class="btn-primary" id="btn-group-create">Создать группу</button>
+          <p class="setting-note">
+            Участники получат зашифрованные копии каждого сообщения. Сервер видит
+            только список участников и шифртекст.
+          </p>
+        </div>
+      </div>
     </div>
 
     <div class="toast" id="toast" hidden></div>

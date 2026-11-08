@@ -66,7 +66,12 @@ app.whenReady().then(() => {
   ipcMain.handle('sleephy:history', async (_e, payload) => client.history(payload));
   ipcMain.handle('sleephy:directory', async (_e, username) => {
     const publicKey = await client.ensurePeerKey(username);
-    return { username, publicKey };
+    return {
+      username,
+      publicKey,
+      profile: client.peerProfiles.get(username) || null,
+      online: client.peerPresence.get(username) || false
+    };
   });
 
   ipcMain.handle('sleephy:edit', async (_e, payload) => client.editMessage(payload));
@@ -88,6 +93,24 @@ app.whenReady().then(() => {
   ipcMain.handle('sleephy:searchMessages', async (_e, payload) => client.searchMessages(payload));
   ipcMain.handle('sleephy:getSettings', async () => client.getSettings());
   ipcMain.handle('sleephy:saveSettings', async (_e, settings) => client.saveSettings(settings));
+
+  // Groups
+  ipcMain.handle('sleephy:createGroup', async (_e, payload) => client.createGroup(payload));
+  ipcMain.handle('sleephy:listGroups', async () => client.listGroups());
+  ipcMain.handle('sleephy:addGroupMember', async (_e, payload) => client.addGroupMember(payload));
+  ipcMain.handle('sleephy:leaveGroup', async (_e, payload) => client.leaveGroup(payload));
+  ipcMain.handle('sleephy:groupMembers', async (_e, payload) => client.groupMembers(payload));
+  ipcMain.handle('sleephy:sendGroup', async (_e, payload) => client.sendGroupMessage(payload));
+  ipcMain.handle('sleephy:groupHistory', async (_e, payload) => client.groupHistory(payload));
+  ipcMain.handle('sleephy:editGroupMessage', async (_e, payload) => client.editGroupMessage(payload));
+  ipcMain.handle('sleephy:deleteGroupMessage', async (_e, payload) => client.deleteGroupMessage(payload));
+  ipcMain.handle('sleephy:openGroupAttachment', async (_e, payload) => client.openGroupAttachment(payload));
+
+  // Accounts
+  ipcMain.handle('sleephy:listAccounts', async () => client.accounts());
+  ipcMain.handle('sleephy:switchAccount', async (_e, username) => client.switchAccount(username));
+  ipcMain.handle('sleephy:forgetAccount', async (_e, username) => client.forgetAccount(username));
+  ipcMain.handle('sleephy:forgetAllAccounts', async () => client.forgetAllAccounts());
 
   createWindow();
   client.connect().catch(() => {});

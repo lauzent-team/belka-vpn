@@ -36,6 +36,9 @@ const DEFAULT_SERVER = resolveDefaultServer();
 class SleePhyClient {
   constructor({ userDataDir, onEvent }) {
     this.file = path.join(userDataDir, 'sleephy-identity.json');
+    // Registry of every account on this device. The active account's keys are
+    // mirrored into `file` so older single-account paths keep working.
+    this.accountsFile = path.join(userDataDir, 'sleephy-accounts.json');
     this.onEvent = onEvent;
     this.ws = null;
     this.serverUrl = DEFAULT_SERVER;
@@ -65,6 +68,61 @@ class SleePhyClient {
 
   clearIdentity() {
     try { fs.unlinkSync(this.file); } catch { /* nothing to remove */ }
+  }
+
+  /* --------------------------- account registry --------------------------- */
+  readAccounts() {
+    try {
+      const data = JSON.parse(fs.readFileSync(this.accountsFile, 'utf8'));
+      if (data && Array.isArray(data.accounts)) return data;
+    } catch { /* no registry yet */ }
+    return { accounts: [], active: null };
+  }
+
+  writeAccounts(data) {
+    fs.mkdirSync(path.dirname(this.accountsFile), { recursive: true });
+    fs.writeFileSync(this.accountsFile, JSON.stringify(data), { mode: 0o600 });
+  }
+
+  /** Add or update one account in the registry and make it the active one. */
+  upsertAccount(record) {
+    const data = this.readAccounts();
+    const idx = data.accounts.findIndex((a) => a.username === record.username);
+    if (idx >= 0) data.accounts[idx] = { ...data.accounts[idx], ...record };
+    else data.accounts.push(record);
+    data.active = record.username;
+    this.writeAccounts(data);
+  }
+
+  listAccounts() {
+    const data = this.readAccounts();
+    return data.accounts.map((a) => ({
+      username: a.username,
+      publicKey: a.publicKey || null,
+      active: a.username === data.active
+    }));
+  }
+
+  setActiveAccount(username) {
+    const data = this.readAccounts();
+    const rec = data.accounts.find((a) => a.username === username);
+    if (!rec) throw new Error('Unknown account on this device');
+    data.active = username;
+    this.writeAccounts(data);
+    // Mirror into the single-account file so unlock() keeps working unchanged.
+    this.writeIdentity({ ...rec });
+    return rec;
+  }
+
+  removeAccount(username) {
+    const data = this.readAccounts();
+    data.accounts = data.accounts.filter((a) => a.username !== username);
+    if (data.active === username) data.active = data.accounts.length ? data.accounts[0].username : null;
+    this.writeAccounts(data);
+    const active = data.active ? data.accounts.find((a) => a.username === data.active) : null;
+    if (active) this.writeIdentity({ ...active });
+    else this.clearIdentity();
+    return { active: data.active };
   }
 
   /* ----------------------------- connection ----------------------------- */
@@ -215,6 +273,22 @@ class SleePhyClient {
       });
       return;
     }
+    if (msg.t === 'group.message') {
+      this.receiveGroupMessage(msg).catch(() => {});
+      return;
+    }
+    if (msg.t === 'group.edited') {
+      this.receiveGroupEdit(msg).catch(() => {});
+      return;
+    }
+    if (msg.t === 'group.deleted') {
+      this.emit({ type: 'group.deleted', id: msg.id, groupId: msg.groupId, from: msg.from });
+      return;
+    }
+    if (msg.t === 'group.joined' || msg.t === 'group.memberLeft') {
+      this.emit({ type: 'group.updated', group: msg.group, left: msg.t === 'group.memberLeft' ? msg.username : null });
+      return;
+    }
     if (msg.t === 'ok') {
       this.applySession(msg);
     }
@@ -269,9 +343,11 @@ class SleePhyClient {
 
     const key = cryptoLib.deriveKey(password, salt);
     const { sealed, nonce } = await cryptoLib.sealSecret(identity.secretKey, key);
-    this.writeIdentity({
+    const record = {
       username, salt, sealed, nonce, publicKey: identity.publicKey, token: this.token
-    });
+    };
+    this.writeIdentity(record);
+    this.upsertAccount(record);
 
     this.secretKey = identity.secretKey;
     this.publicKey = identity.publicKey;
@@ -292,7 +368,9 @@ class SleePhyClient {
     const key = cryptoLib.deriveKey(password, id.salt);
     const secretKey = await cryptoLib.openSecret(id.sealed, id.nonce, key);
     this.secretKey = secretKey;
-    this.writeIdentity({ ...id, token: this.token, publicKey: this.publicKey });
+    const updated = { ...id, token: this.token, publicKey: this.publicKey };
+    this.writeIdentity(updated);
+    this.upsertAccount(updated);
 
     this.emit({ type: 'session', state: 'unlocked', username });
     return { username };
@@ -442,6 +520,173 @@ class SleePhyClient {
     };
   }
 
+  /* -------------------------------- groups -------------------------------- */
+  async createGroup({ name, members }) {
+    const res = await this.request({ t: 'group.create', name, members });
+    return res.group;
+  }
+
+  async listGroups() {
+    const res = await this.request({ t: 'group.list' });
+    return res.items || [];
+  }
+
+  async addGroupMember({ groupId, username }) {
+    const res = await this.request({ t: 'group.add', groupId, username });
+    return res.group;
+  }
+
+  async leaveGroup({ groupId }) {
+    await this.request({ t: 'group.leave', groupId });
+  }
+
+  async groupMembers({ groupId }) {
+    const res = await this.request({ t: 'group.members', groupId });
+    return res.group;
+  }
+
+  /** Encrypt one copy per member so the relay only ever stores ciphertext. */
+  async groupEnvelopes(text, members) {
+    const envelopes = {};
+    const keys = {};
+    for (const u of members) {
+      const key = await this.ensurePeerKey(u);
+      keys[u] = key;
+      const enc = await cryptoLib.encryptMessage(text, key, this.secretKey);
+      envelopes[u] = { box: enc.box, nonce: enc.nonce };
+    }
+    return { envelopes, keys };
+  }
+
+  async sendGroupMessage({ groupId, text, members, replyTo, attachment }) {
+    if (!this.secretKey) throw new Error('Vault is locked');
+    const caption = typeof text === 'string' ? text : '';
+
+    let encAttachment = null;
+    let kind = null;
+    if (attachment) {
+      kind = attachment.kind;
+      // Attachments are encrypted once per member as well; the map keys stay the
+      // same, values hold the per-member blob.
+      const perMember = {};
+      for (const u of members) {
+        const key = await this.ensurePeerKey(u);
+        const enc = await cryptoLib.encryptBytes(attachment.bytes, key, this.secretKey);
+        perMember[u] = { box: enc.box, nonce: enc.nonce };
+      }
+      encAttachment = {
+        kind,
+        name: attachment.name || null, mime: attachment.mime || null,
+        size: attachment.bytes ? attachment.bytes.length : 0,
+        duration: attachment.duration || null,
+        perMember
+      };
+    }
+
+    const { envelopes } = await this.groupEnvelopes(caption, members);
+    const res = await this.request({
+      t: 'group.send', groupId, envelopes,
+      replyTo: replyTo || undefined, attachment: encAttachment || undefined
+    });
+    return {
+      id: res.id, groupId, ts: res.ts, text: caption, replyTo: res.replyTo || null,
+      mine: true, kind: res.kind || null,
+      attachment: encAttachment ? { ...encAttachment, dataUrl: null } : null
+    };
+  }
+
+  async groupHistory({ groupId, limit }) {
+    if (!this.secretKey) throw new Error('Vault is locked');
+    const res = await this.request({ t: 'group.history', groupId, limit });
+    const items = [];
+    for (const m of res.items || []) {
+      let text = '';
+      if (!m.deleted && m.envelope && m.envelope.box) {
+        try {
+          const peerKey = await this.ensurePeerKey(m.from);
+          text = await cryptoLib.decryptMessage(m.envelope.box, m.envelope.nonce, peerKey, this.secretKey);
+        } catch {
+          text = '⚠ Message could not be decrypted';
+        }
+      }
+      let attachment = m.attachment ? JSON.parse(m.attachment) : null;
+      if (attachment && attachment.perMember) {
+        attachment = { ...attachment, ...(attachment.perMember[this.username] || {}), perMember: undefined };
+      }
+      items.push({
+        id: m.id, groupId, from: m.from, text, ts: m.ts,
+        mine: m.from === this.username, replyTo: m.replyTo || null,
+        editedAt: m.editedAt || null, deleted: !!m.deleted,
+        kind: m.kind || null, attachment, pinned: false, reactions: []
+      });
+    }
+    return items;
+  }
+
+  async receiveGroupMessage(msg) {
+    if (!this.secretKey) {
+      this.emit({ type: 'group.queued', groupId: msg.groupId, from: msg.from });
+      return;
+    }
+    let text = '';
+    if (msg.box) {
+      try {
+        const peerKey = await this.ensurePeerKey(msg.from);
+        text = await cryptoLib.decryptMessage(msg.box, msg.nonce, peerKey, this.secretKey);
+      } catch {
+        text = '⚠ Message could not be decrypted';
+      }
+    }
+    let attachment = msg.attachment ? JSON.parse(msg.attachment) : null;
+    if (attachment && attachment.perMember) {
+      attachment = { ...attachment, ...(attachment.perMember[this.username] || {}), perMember: undefined };
+    }
+    this.emit({
+      type: 'group.message', id: msg.id, groupId: msg.groupId, from: msg.from, text,
+      ts: msg.ts, replyTo: msg.replyTo || null, kind: msg.kind || null, attachment
+    });
+  }
+
+  async receiveGroupEdit(msg) {
+    let text = '⚠ Message could not be decrypted';
+    try {
+      const peerKey = await this.ensurePeerKey(msg.from);
+      text = await cryptoLib.decryptMessage(msg.box, msg.nonce, peerKey, this.secretKey);
+    } catch { /* leave the warning */ }
+    this.emit({ type: 'group.edited', id: msg.id, groupId: msg.groupId, from: msg.from, text, editedAt: msg.editedAt });
+  }
+
+  async editGroupMessage({ id, groupId, text, members }) {
+    if (!this.secretKey) throw new Error('Vault is locked');
+    const { envelopes } = await this.groupEnvelopes(text, members);
+    const res = await this.request({ t: 'group.edit', id, envelopes });
+    return { id: res.id, editedAt: res.editedAt, text };
+  }
+
+  async deleteGroupMessage({ id }) {
+    const res = await this.request({ t: 'group.delete', id });
+    return { id: res.id };
+  }
+
+  /** Decrypt a group attachment for the current member. */
+  async openGroupAttachment({ id }) {
+    if (!this.secretKey) throw new Error('Vault is locked');
+    const res = await this.request({ t: 'group.message.get', id });
+    const row = res.message;
+    if (!row) throw new Error('No such message');
+    const attachment = row.attachment ? JSON.parse(row.attachment) : null;
+    if (!attachment) throw new Error('Message has no attachment');
+    const mine = attachment.perMember ? attachment.perMember[this.username] : null;
+    if (!mine) throw new Error('Attachment is not addressed to you');
+    const peerKey = await this.ensurePeerKey(row.from);
+    const bytes = await cryptoLib.decryptBytes(mine.box, mine.nonce, peerKey, this.secretKey);
+    const mime = attachment.mime || 'application/octet-stream';
+    return {
+      name: attachment.name || null, mime, size: bytes.length,
+      dataUrl: `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`
+    };
+  }
+
   async pinMessage({ id, pinned }) {
     const res = await this.request({ t: 'message.pin', id, pinned });
     return { id: res.id, pinned: !!res.pinned, peer: res.peer };
@@ -556,6 +801,55 @@ class SleePhyClient {
     await this.request({ t: 'chat.delete', peer });
   }
 
+  /* -------------------------------- accounts -------------------------------- */
+  accounts() {
+    return this.listAccounts();
+  }
+
+  /** Make another stored account active. Returns its username so the UI can react. */
+  async switchAccount(username) {
+    this.disconnect();
+    const rec = this.setActiveAccount(username);
+    this.secretKey = null;
+    this.publicKey = rec.publicKey || null;
+    this.username = null;
+    this.token = null;
+    await this.connect();
+    // Re-establish the socket session from the stored token so the account is
+    // authenticated as soon as it is unlocked.
+    if (rec.token) await this.autoResume();
+    return { username: rec.username, hasKeys: !!rec.sealed, locked: !!rec.sealed };
+  }
+
+  /** Drop an account from this device. If it was active, fall back to another. */
+  async forgetAccount(username) {
+    const wasActive = this.username === username || this.readAccounts().active === username;
+    const { active } = this.removeAccount(username);
+    if (!wasActive) return { active, switched: false };
+    this.disconnect();
+    this.secretKey = null;
+    this.username = null;
+    this.token = null;
+    if (active) {
+      const rec = this.readAccounts().accounts.find((a) => a.username === active);
+      this.publicKey = rec ? rec.publicKey : null;
+      await this.connect();
+      if (rec && rec.token) await this.autoResume();
+    }
+    return { active, switched: true };
+  }
+
+  /** Forget every account on this device. */
+  forgetAllAccounts() {
+    this.disconnect();
+    this.clearIdentity();
+    try { fs.unlinkSync(this.accountsFile); } catch { /* already gone */ }
+    this.secretKey = null;
+    this.username = null;
+    this.publicKey = null;
+    this.token = null;
+  }
+
   status() {
     return {
       online: !!(this.ws && this.ws.readyState === WebSocket.OPEN),
@@ -563,7 +857,9 @@ class SleePhyClient {
       publicKey: this.publicKey,
       profile: this.profile,
       unlocked: !!this.secretKey,
-      serverUrl: this.serverUrl
+      serverUrl: this.serverUrl,
+      accounts: this.listAccounts(),
+      hasStoredIdentity: !!this.readIdentity()
     };
   }
 }

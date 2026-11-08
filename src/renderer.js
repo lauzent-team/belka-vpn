@@ -51,6 +51,47 @@ const els = {
   archivedList: $('archived-list'),
   archivedCount: $('archived-count'),
   btnSettings: $('btn-settings'),
+  btnMenu: $('btn-menu'),
+  drawer: $('drawer'),
+  drawerBackdrop: $('drawer-backdrop'),
+  drawerAvatar: $('drawer-avatar'),
+  drawerName: $('drawer-name'),
+  drawerHandle: $('drawer-handle'),
+  drawerAccountsCount: $('drawer-accounts-count'),
+  drawerArchivedCount: $('drawer-archived-count'),
+  drawerVer: $('drawer-ver'),
+  footVer: $('foot-ver'),
+  accountsBackdrop: $('accounts-backdrop'),
+  accountsList: $('accounts-list'),
+  btnAccountsClose: $('btn-accounts-close'),
+  btnAccountsAdd: $('btn-accounts-add'),
+  contactsBackdrop: $('contacts-backdrop'),
+  contactsList: $('contacts-list'),
+  contactsEmpty: $('contacts-empty'),
+  contactInput: $('contact-input'),
+  btnContactAdd: $('btn-contact-add'),
+  contactError: $('contact-error'),
+  btnContactsClose: $('btn-contacts-close'),
+  groupBackdrop: $('group-backdrop'),
+  groupName: $('group-name'),
+  groupMembers: $('group-members'),
+  groupError: $('group-error'),
+  btnGroupCreate: $('btn-group-create'),
+  btnGroupClose: $('btn-group-close'),
+  setNotify: $('set-notify'),
+  setPreview: $('set-preview'),
+  setSound: $('set-sound'),
+  setLastSeen: $('set-lastseen'),
+  setReceipts: $('set-receipts'),
+  setAutoLock: $('set-autolock'),
+  setBlockedSub: $('set-blocked-sub'),
+  btnBlocked: $('btn-blocked'),
+  setAutoPhoto: $('set-autophoto'),
+  setKeepMedia: $('set-keepmedia'),
+  setStorage: $('set-storage'),
+  btnClearCache: $('btn-clear-cache'),
+  setEnter: $('set-enter'),
+  setLanguage: $('set-language'),
 
   chatBlank: $('chat-blank'),
   chatView: $('chat-view'),
@@ -161,10 +202,16 @@ const els = {
   btnSelectDelete: $('btn-select-delete'),
 
   confirmBackdrop: $('confirm-backdrop'),
-  confirmTitle: $('confirm-title'),
   confirmText: $('confirm-text'),
   btnConfirmYes: $('btn-confirm-yes'),
   btnConfirmNo: $('btn-confirm-no'),
+  confirmTitle: $('confirm-title'),
+  promptBackdrop: $('prompt-backdrop'),
+  promptTitle: $('prompt-title'),
+  promptLabel: $('prompt-label'),
+  promptInput: $('prompt-input'),
+  btnPromptOk: $('btn-prompt-ok'),
+  btnPromptCancel: $('btn-prompt-cancel'),
 
   toast: $('toast')
 };
@@ -190,6 +237,9 @@ const state = {
   searchHits: [],
   searchIndex: -1,
   settings: { theme: 'dark', wallpaper: 'none' },
+  groups: new Map(), // groupId -> { id, name, owner, members: [] }
+  contacts: [], // usernames saved as contacts
+  accounts: [], // [{ username, publicKey, active }]
   recording: null, // MediaRecorder state for voice notes
   selecting: null // Set of message ids while in select mode
 };
@@ -220,6 +270,21 @@ function toast(message) {
   }, 2600);
 }
 
+/** Deliver a new message alert, honouring the notification settings. */
+function notifyNewMessage(from, text) {
+  if (state.settings.notify === false) return;
+  const body = state.settings.notifyPreview === false
+    ? 'New message'
+    : (text || 'Attachment').slice(0, 120);
+  const title = displayNameFor(from);
+  toast(`${title}: ${body}`);
+  try {
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      new Notification(title, { body, silent: state.settings.notifySound === false });
+    }
+  } catch { /* notifications are best effort */ }
+}
+
 function initial(name) {
   return (name || '?').trim().charAt(0).toUpperCase() || '?';
 }
@@ -247,17 +312,27 @@ function chatKey(peer) {
   return peer === state.username ? SAVED : peer;
 }
 
+/** Group chats use the key "group:<id>" so they can share the chat map. */
+function groupKey(groupId) { return `group:${groupId}`; }
+function isGroupKey(key) { return typeof key === 'string' && key.startsWith('group:'); }
+function groupIdOf(key) { return Number(String(key).slice('group:'.length)); }
+
 function peerUsername(key) {
   return key === SAVED ? state.username : key;
 }
 
 function displayNameFor(username) {
+  if (isGroupKey(username)) {
+    const g = state.groups.get(groupIdOf(username));
+    return g ? g.name : 'Группа';
+  }
   const p = state.profiles.get(username);
   if (!p) return username;
   return p.displayName || username;
 }
 
 function avatarColorFor(username) {
+  if (isGroupKey(username)) return 'violet';
   const p = state.profiles.get(username);
   return (p && p.avatarColor) || 'mint';
 }
@@ -354,9 +429,11 @@ async function enterMain(username) {
   state.chats.clear();
   state.profiles.clear();
   state.presence.clear();
+  state.groups.clear();
   await refreshStatus();
   showScreen('main');
-  await loadChats();
+  await Promise.all([loadChats(), loadGroups(), loadContacts()]);
+  renderChatList();
 }
 
 async function loadChats() {
@@ -384,17 +461,51 @@ async function loadChats() {
 async function refreshVisibleLastMessages() {
   for (const [key, chat] of state.chats) {
     if (!chat.lastTs || chat.messages.length) continue;
-    const peer = peerUsername(key);
     try {
-      const items = await api.history({ with: peer, limit: 1 });
+      const items = isGroupKey(key)
+        ? await api.groupHistory({ groupId: groupIdOf(key), limit: 1 })
+        : await api.history({ with: peerUsername(key), limit: 1 });
       const last = items.at(-1);
-      if (last) chat.last = last.kind === 'image' ? '🖼️ Photo'
-        : last.kind === 'voice' ? '🎤 Voice message'
-        : last.kind === 'file' ? `📄 ${(last.attachment && last.attachment.name) || 'File'}`
-        : (last.deleted ? 'Message deleted' : last.text);
+      if (last) chat.last = previewOf(last);
     } catch { /* leave the placeholder */ }
   }
   renderChatList();
+}
+
+/** One-line preview for the chat list, matching the message kind. */
+function previewOf(m) {
+  if (m.deleted) return 'Message deleted';
+  if (m.kind === 'image') return '🖼️ Photo';
+  if (m.kind === 'voice') return '🎤 Voice message';
+  if (m.kind === 'file') return `📄 ${(m.attachment && m.attachment.name) || 'File'}`;
+  return m.text || '';
+}
+
+/** Load every group the account belongs to and seed a chat row for each. */
+async function loadGroups() {
+  try {
+    const groups = await api.listGroups();
+    for (const g of groups) {
+      state.groups.set(g.id, g);
+      for (const m of g.members) {
+        if (m.profile) state.profiles.set(m.username, m.profile);
+        if (typeof m.online === 'boolean') state.presence.set(m.username, m.online);
+      }
+      ensureChat(groupKey(g.id));
+    }
+  } catch { /* offline: keep what we have */ }
+}
+
+async function loadContacts() {
+  try {
+    const s = await api.getSettings();
+    if (s && Array.isArray(s.contacts)) state.contacts = s.contacts.slice();
+  } catch { /* offline: keep what we have */ }
+}
+
+/** Persist the contact list into this account's server-side settings. */
+async function saveContacts() {
+  try { await api.saveSettings({ contacts: state.contacts }); } catch { /* best effort */ }
 }
 
 function ensureChat(key) {
@@ -419,6 +530,7 @@ function sortedKeys(list) {
 function chatItemEl(key) {
   const chat = state.chats.get(key);
   const peer = peerUsername(key);
+  const group = isGroupKey(key);
   const li = document.createElement('li');
   li.className = 'chat-item' + (key === state.activePeer ? ' active' : '');
   li.dataset.peer = key;
@@ -430,11 +542,14 @@ function chatItemEl(key) {
     chat.muted ? '🔕' : ''
   ].filter(Boolean).join(' ');
 
+  const name = key === SAVED ? 'Saved Messages' : displayNameFor(key);
+  const avatarText = group ? '👥' : initial(displayNameFor(key));
+
   li.innerHTML = `
-    <div class="avatar small" data-color="${escapeHtml(avatarColorFor(peer))}">${escapeHtml(initial(displayNameFor(peer)))}</div>
+    <div class="avatar small" data-color="${escapeHtml(avatarColorFor(key))}">${escapeHtml(avatarText)}</div>
     <div class="chat-item-body">
       <div class="chat-item-top">
-        <span class="chat-item-name">${escapeHtml(key === SAVED ? 'Saved Messages' : displayNameFor(peer))}</span>
+        <span class="chat-item-name">${escapeHtml(name)}</span>
         <span class="chat-item-time">${chat.lastTs ? escapeHtml(timeLabel(chat.lastTs)) : ''}</span>
       </div>
       <div class="chat-item-last">${escapeHtml(chat.last || 'No messages yet')}</div>
@@ -457,6 +572,11 @@ function renderChatList() {
   archived.forEach((k) => els.archivedList.appendChild(chatItemEl(k)));
   els.sectionArchived.hidden = archived.length === 0;
   els.archivedCount.textContent = String(archived.length);
+
+  if (els.drawerArchivedCount) {
+    els.drawerArchivedCount.hidden = archived.length === 0;
+    els.drawerArchivedCount.textContent = String(archived.length);
+  }
 
   const total = active.length + archived.length;
   els.chatEmpty.hidden = total > 0;
@@ -594,7 +714,7 @@ async function openChat(key) {
   state.activePeer = key;
   const chat = ensureChat(key);
   chat.unread = 0;
-  const peer = peerUsername(key);
+  const group = isGroupKey(key);
 
   els.chatBlank.hidden = true;
   els.chatView.hidden = false;
@@ -604,27 +724,28 @@ async function openChat(key) {
   closeChatSearch();
   if (state.selecting) exitSelectMode();
 
-  const known = state.profiles.get(peer);
-  els.peerName.textContent = key === SAVED ? 'Saved Messages' : displayNameFor(peer);
-  paintAvatar(els.peerAvatar, peer);
+  els.peerName.textContent = key === SAVED ? 'Saved Messages' : displayNameFor(key);
+  paintAvatar(els.peerAvatar, key);
   updatePeerSub();
   renderChatList();
 
   if (!chat.loaded) {
     try {
-      const items = await api.history({ with: peer, limit: 200 });
+      const items = group
+        ? await api.groupHistory({ groupId: groupIdOf(key), limit: 200 })
+        : await api.history({ with: peerUsername(key), limit: 200 });
       chat.messages = resolveQuotes(items);
       chat.loaded = true;
       renderMessages();
       const last = items.at(-1);
-      if (last) { chat.last = last.deleted ? 'Message deleted' : last.text; chat.lastTs = last.ts; }
+      if (last) { chat.last = previewOf(last); chat.lastTs = last.ts; }
     } catch (err) {
       appendMessage({ text: '⚠ ' + (err.message || 'Could not load history'), ts: Date.now(), mine: false });
     }
   } else {
     renderMessages();
   }
-  try { await api.markRead(peer); } catch { /* best effort */ }
+  if (!group) { try { await api.markRead(peerUsername(key)); } catch { /* best effort */ } }
   updatePinnedBar();
   renderChatList();
   els.composerInput.focus();
@@ -655,6 +776,13 @@ function updatePeerSub() {
   if (key === SAVED) {
     els.peerSub.textContent = 'Notes and files only you can read';
     els.peerSub.classList.remove('typing');
+    return;
+  }
+  if (isGroupKey(key)) {
+    const g = state.groups.get(groupIdOf(key));
+    const n = g ? g.members.length : 0;
+    els.peerSub.classList.remove('typing');
+    els.peerSub.textContent = `${n} ${n === 1 ? 'участник' : 'участников'} · end-to-end encrypted`;
     return;
   }
   const peer = peerUsername(key);
@@ -746,9 +874,14 @@ function startChatWith(username) {
 }
 
 /* ------------------------------ sending ------------------------------ */
+/** Members of a group, used to encrypt one copy per recipient. */
+function groupMemberNames(groupId) {
+  const g = state.groups.get(groupId);
+  return g ? g.members.map((m) => m.username) : [];
+}
+
 async function sendCurrentMessage(text) {
   const key = state.activePeer;
-  const peer = peerUsername(key);
   const chat = ensureChat(key);
   const replyTo = state.replyTo;
 
@@ -766,8 +899,17 @@ async function sendCurrentMessage(text) {
   renderChatList();
 
   try {
-    const res = await api.send({ to: peer, text, replyTo: replyTo ? replyTo.id : undefined });
-    optimistic.id = res.id;
+    if (isGroupKey(key)) {
+      const groupId = groupIdOf(key);
+      const res = await api.sendGroup({
+        groupId, text, members: groupMemberNames(groupId),
+        replyTo: replyTo ? replyTo.id : undefined
+      });
+      optimistic.id = res.id;
+    } else {
+      const res = await api.send({ to: peerUsername(key), text, replyTo: replyTo ? replyTo.id : undefined });
+      optimistic.id = res.id;
+    }
     optimistic.pending = false;
     const el = els.messages.querySelector(`.msg[data-id="${optimistic.id}"]`);
     if (el) el.classList.remove('pending');
@@ -792,7 +934,12 @@ els.composer.addEventListener('submit', async (e) => {
     const m = chat.messages.find((x) => x.id === target.id);
     if (m) {
       try {
-        const res = await api.edit({ id: target.id, to: peerUsername(state.activePeer), text });
+        const res = isGroupKey(state.activePeer)
+          ? await api.editGroupMessage({
+              id: target.id, groupId: groupIdOf(state.activePeer), text,
+              members: groupMemberNames(groupIdOf(state.activePeer))
+            })
+          : await api.edit({ id: target.id, to: peerUsername(state.activePeer), text });
         m.text = text;
         m.editedAt = res.editedAt;
       } catch (err) {
@@ -812,7 +959,7 @@ els.composer.addEventListener('submit', async (e) => {
 /* typing indicator (throttled) */
 let typingSentAt = 0;
 els.composerInput.addEventListener('input', () => {
-  if (!state.activePeer || state.activePeer === SAVED) return;
+  if (!state.activePeer || state.activePeer === SAVED || isGroupKey(state.activePeer)) return;
   const now = Date.now();
   if (now - typingSentAt < 2500) return;
   typingSentAt = now;
@@ -855,22 +1002,27 @@ els.btnEditCancel.addEventListener('click', () => { clearEditing(); els.composer
 
 /* ---------------------------- context menu ---------------------------- */
 function openContextMenu(m, x, y) {
-  state.ctxTarget = { id: m.id, mine: m.mine, text: m.text, pinned: !!m.pinned };
+  const inGroup = isGroupKey(state.activePeer);
+  state.ctxTarget = { id: m.id, mine: m.mine, text: m.text, pinned: !!m.pinned, group: inGroup };
   els.ctxEdit.hidden = !m.mine || !!m.kind;
   els.ctxDelete.hidden = !m.mine;
+  // Pins and reactions are per-conversation on the relay; groups do not carry
+  // them yet, so the menu hides those entries there.
+  els.ctxPin.hidden = inGroup;
   els.ctxPinLabel.textContent = m.pinned ? 'Unpin' : 'Pin';
-  // Quick reactions in the menu header.
   els.ctxReactions.innerHTML = '';
-  for (const emoji of QUICK_REACTIONS) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'ctx-reaction';
-    b.textContent = emoji;
-    b.addEventListener('click', async () => {
-      closeContextMenu();
-      await toggleReaction(m.id, emoji);
-    });
-    els.ctxReactions.appendChild(b);
+  if (!inGroup) {
+    for (const emoji of QUICK_REACTIONS) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ctx-reaction';
+      b.textContent = emoji;
+      b.addEventListener('click', async () => {
+        closeContextMenu();
+        await toggleReaction(m.id, emoji);
+      });
+      els.ctxReactions.appendChild(b);
+    }
   }
   els.ctxBackdrop.hidden = false;
   const menu = els.ctxMenu;
@@ -914,7 +1066,7 @@ els.ctxMenu.addEventListener('click', async (e) => {
   }
   if (action === 'pin') {
     const m = findMessage(id);
-    if (!m) return;
+    if (!m || isGroupKey(state.activePeer)) return;
     try {
       const res = await api.pinMessage({ id, pinned: !m.pinned });
       m.pinned = res.pinned;
@@ -944,7 +1096,8 @@ els.ctxMenu.addEventListener('click', async (e) => {
     });
     if (!ok) return;
     try {
-      await api.remove(id);
+      if (isGroupKey(state.activePeer)) await api.deleteGroupMessage({ id });
+      else await api.remove(id);
       applyDeleted(id);
       toast('Message deleted');
     } catch (err) {
@@ -1261,10 +1414,88 @@ function applySelfProfile(p) {
 els.btnSettings.addEventListener('click', () => {
   els.settingsBackdrop.hidden = false;
   els.setServer.value = els.serverUrl.value;
+  syncSettingsUI();
   api.status().then((s) => {
     els.setPubkey.textContent = s.publicKey || '—';
     updateConnIndicators(s.online);
   });
+});
+
+/** Mirror the stored settings into the settings controls. */
+function syncSettingsUI() {
+  const s = state.settings;
+  els.setNotify.checked = s.notify !== false;
+  els.setPreview.checked = s.notifyPreview !== false;
+  els.setSound.checked = s.notifySound !== false;
+  els.setLastSeen.checked = s.lastSeen !== false;
+  els.setReceipts.checked = s.readReceipts !== false;
+  els.setAutoLock.value = String(s.autoLock || 0);
+  els.setAutoPhoto.checked = s.autoDownloadPhotos !== false;
+  els.setKeepMedia.value = s.keepMedia || 'month';
+  els.setEnter.checked = s.sendWithEnter !== false;
+  els.setLanguage.value = s.language || 'ru';
+  const blocked = Array.isArray(s.blocked) ? s.blocked : [];
+  els.setBlockedSub.textContent = blocked.length ? `${blocked.length} blocked` : 'Nobody is blocked';
+  updateStorageLabel();
+}
+
+/** Approximate the local cache footprint from attachment sizes we know about. */
+function updateStorageLabel() {
+  let bytes = 0;
+  for (const chat of state.chats.values()) {
+    for (const m of chat.messages) {
+      if (m.attachment && m.attachment.size) bytes += m.attachment.size;
+    }
+  }
+  els.setStorage.textContent = bytes ? humanSize(bytes) : 'Nothing cached';
+}
+
+/** Wire one settings toggle to a boolean key on the account settings. */
+function bindToggle(el, key, invert = false) {
+  el.addEventListener('change', async () => {
+    await persistSettings({ [key]: invert ? !el.checked : el.checked });
+  });
+}
+bindToggle(els.setNotify, 'notify');
+bindToggle(els.setPreview, 'notifyPreview');
+bindToggle(els.setSound, 'notifySound');
+bindToggle(els.setLastSeen, 'lastSeen');
+bindToggle(els.setReceipts, 'readReceipts');
+bindToggle(els.setAutoPhoto, 'autoDownloadPhotos');
+bindToggle(els.setEnter, 'sendWithEnter');
+
+els.setAutoLock.addEventListener('change', async () => {
+  await persistSettings({ autoLock: Number(els.setAutoLock.value) || 0 });
+});
+els.setKeepMedia.addEventListener('change', async () => {
+  await persistSettings({ keepMedia: els.setKeepMedia.value });
+});
+els.setLanguage.addEventListener('change', async () => {
+  await persistSettings({ language: els.setLanguage.value });
+});
+
+els.btnClearCache.addEventListener('click', async () => {
+  for (const chat of state.chats.values()) {
+    for (const m of chat.messages) { delete m.dataUrl; }
+  }
+  renderMessages();
+  updateStorageLabel();
+  toast('Кэш очищен');
+});
+
+els.btnBlocked.addEventListener('click', async () => {
+  const blocked = Array.isArray(state.settings.blocked) ? state.settings.blocked.slice() : [];
+  const who = (await promptDialog({
+    title: 'Заблокировать пользователя',
+    label: 'Ник (@username), пусто — разблокировать всех',
+    value: blocked.join(', '),
+    confirmLabel: 'Сохранить'
+  }));
+  if (who === null) return;
+  const list = who.split(',').map((s) => s.trim().replace(/^@/, '').toLowerCase()).filter(Boolean);
+  await persistSettings({ blocked: list });
+  syncSettingsUI();
+  toast(list.length ? 'Список блокировок обновлён' : 'Никто не заблокирован');
 });
 els.btnSettingsClose.addEventListener('click', () => { els.settingsBackdrop.hidden = true; });
 els.settingsBackdrop.addEventListener('click', (e) => {
@@ -1296,10 +1527,11 @@ els.btnLogout.addEventListener('click', async () => {
 
 /* ------------------------------- confirm ------------------------------- */
 let confirmResolve = null;
-function confirmDialog({ title, text, confirmLabel }) {
+function confirmDialog({ title, text, confirmLabel, cancelLabel }) {
   els.confirmTitle.textContent = title;
   els.confirmText.textContent = text;
   els.btnConfirmYes.textContent = confirmLabel || 'Confirm';
+  els.btnConfirmNo.textContent = cancelLabel || 'Cancel';
   els.confirmBackdrop.hidden = false;
   return new Promise((resolve) => { confirmResolve = resolve; });
 }
@@ -1311,6 +1543,32 @@ els.btnConfirmYes.addEventListener('click', () => settleConfirm(true));
 els.btnConfirmNo.addEventListener('click', () => settleConfirm(false));
 els.confirmBackdrop.addEventListener('click', (e) => {
   if (e.target === els.confirmBackdrop) settleConfirm(false);
+});
+
+/* ------------------------------- prompt -------------------------------- */
+let promptResolve = null;
+function promptDialog({ title, label, value, confirmLabel }) {
+  els.promptTitle.textContent = title || 'Enter a value';
+  els.promptLabel.textContent = label || 'Value';
+  els.promptInput.value = value || '';
+  els.btnPromptOk.textContent = confirmLabel || 'Save';
+  els.promptBackdrop.hidden = false;
+  els.promptInput.focus();
+  els.promptInput.select();
+  return new Promise((resolve) => { promptResolve = resolve; });
+}
+function settlePrompt(value) {
+  els.promptBackdrop.hidden = true;
+  if (promptResolve) { promptResolve(value); promptResolve = null; }
+}
+els.btnPromptOk.addEventListener('click', () => settlePrompt(els.promptInput.value));
+els.btnPromptCancel.addEventListener('click', () => settlePrompt(null));
+els.promptBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.promptBackdrop) settlePrompt(null);
+});
+els.promptInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); settlePrompt(els.promptInput.value); }
+  if (e.key === 'Escape') settlePrompt(null);
 });
 
 /* ------------------------------- status ------------------------------- */
@@ -1424,7 +1682,7 @@ api.onEvent((evt) => {
         api.markRead(peerUsername(key)).catch(() => {});
       } else {
         chat.unread += 1;
-        if (!chat.muted) toast(`${displayNameFor(evt.from)}: ${(evt.text || 'Attachment').slice(0, 40)}`);
+        if (!chat.muted) notifyNewMessage(evt.from, evt.text);
       }
       renderChatList();
       break;
@@ -1469,6 +1727,83 @@ api.onEvent((evt) => {
 
     case 'queued':
       toast(`New encrypted message from ${evt.from}`);
+      break;
+
+    case 'group.message': {
+      const key = groupKey(evt.groupId);
+      const chat = ensureChat(key);
+      const m = {
+        id: evt.id, text: evt.text, ts: evt.ts, mine: evt.from === state.username,
+        replyTo: evt.replyTo || null, reactions: [],
+        kind: evt.kind || null, attachment: evt.attachment || null
+      };
+      if (m.replyTo) {
+        const orig = findMessage(m.replyTo);
+        if (orig) m.quote = { from: orig.mine ? state.username : orig.from, text: orig.text, mine: orig.mine };
+      }
+      chat.messages.push(m);
+      chat.last = previewOf(m);
+      chat.lastTs = evt.ts;
+      if (state.activePeer === key) {
+        renderMessages();
+        api.markRead(peerUsername(key)).catch(() => {});
+      } else {
+        chat.unread += 1;
+        if (!chat.muted) notifyNewMessage(evt.from, evt.text);
+      }
+      renderChatList();
+      break;
+    }
+
+    case 'group.edited': {
+      const key = groupKey(evt.groupId);
+      const chat = state.chats.get(key);
+      if (chat) {
+        const m = chat.messages.find((x) => x.id === evt.id);
+        if (m) { m.text = evt.text; m.editedAt = evt.editedAt; }
+      }
+      if (state.activePeer === key) renderMessages();
+      renderChatList();
+      break;
+    }
+
+    case 'group.deleted': {
+      const key = groupKey(evt.groupId);
+      const chat = state.chats.get(key);
+      if (chat) {
+        const m = chat.messages.find((x) => x.id === evt.id);
+        if (m) { m.deleted = true; m.text = ''; m.reactions = []; }
+      }
+      if (state.activePeer === key) renderMessages();
+      renderChatList();
+      break;
+    }
+
+    case 'group.updated': {
+      const g = evt.group;
+      if (g) {
+        state.groups.set(g.id, g);
+        for (const mem of g.members) {
+          if (mem.profile) state.profiles.set(mem.username, mem.profile);
+        }
+        ensureChat(groupKey(g.id));
+      }
+      if (evt.left === state.username) {
+        // We were removed or left; drop the chat row.
+        state.chats.delete(groupKey(g ? g.id : evt.groupId));
+        if (state.activePeer && groupIdOf(state.activePeer) === (g ? g.id : evt.groupId)) {
+          state.activePeer = null;
+          els.chatView.hidden = true;
+          els.chatBlank.hidden = false;
+        }
+      }
+      updatePeerSub();
+      renderChatList();
+      break;
+    }
+
+    case 'group.queued':
+      toast('New encrypted group message');
       break;
 
     default:
@@ -1535,7 +1870,6 @@ async function attachFile(kind, file) {
 
 async function sendWithAttachment(att) {
   const key = state.activePeer;
-  const peer = peerUsername(key);
   const chat = ensureChat(key);
   const replyTo = state.replyTo;
   const caption = els.composerInput.value.trim();
@@ -1558,10 +1892,16 @@ async function sendWithAttachment(att) {
   renderChatList();
 
   try {
-    const res = await api.send({
-      to: peer, text: caption, replyTo: replyTo ? replyTo.id : undefined,
-      attachment: { kind: att.kind, bytes: att.bytes, name: att.name, mime: att.mime, duration: att.duration }
-    });
+    const res = isGroupKey(key)
+      ? await api.sendGroup({
+          groupId: groupIdOf(key), text: caption, members: groupMemberNames(groupIdOf(key)),
+          replyTo: replyTo ? replyTo.id : undefined,
+          attachment: { kind: att.kind, bytes: att.bytes, name: att.name, mime: att.mime, duration: att.duration }
+        })
+      : await api.send({
+          to: peerUsername(key), text: caption, replyTo: replyTo ? replyTo.id : undefined,
+          attachment: { kind: att.kind, bytes: att.bytes, name: att.name, mime: att.mime, duration: att.duration }
+        });
     optimistic.id = res.id;
     optimistic.pending = false;
     optimistic.attachment = res.attachment || optimistic.attachment;
@@ -1573,6 +1913,13 @@ async function sendWithAttachment(att) {
     renderMessages();
     toast(err.message || 'Could not send the attachment');
   }
+}
+
+/** Fetch an attachment's bytes for display, whether it is a DM or a group message. */
+async function fetchAttachment(m) {
+  if (isGroupKey(state.activePeer)) return api.openGroupAttachment({ id: m.id });
+  const peer = m.mine ? peerUsername(state.activePeer) : peerUsername(chatKey(m.from));
+  return api.openAttachment({ id: m.id, peer });
 }
 
 /** Render an image attachment, decrypting it lazily the first time it is shown. */
@@ -1590,8 +1937,7 @@ function renderImageAttachment(m, wrap) {
     img.addEventListener('click', async () => {
       if (img.dataset.loaded) return;
       try {
-        const peer = m.mine ? peerUsername(state.activePeer) : peerUsername(chatKey(m.from));
-        const res = await api.openAttachment({ id: m.id, peer });
+        const res = await fetchAttachment(m);
         m.dataUrl = res.dataUrl;
         img.src = res.dataUrl;
         img.classList.remove('loading');
@@ -1621,8 +1967,7 @@ function renderFileAttachment(m, wrap, kind) {
   `;
   box.querySelector('.att-dl').addEventListener('click', async () => {
     try {
-      const peer = m.mine ? peerUsername(state.activePeer) : peerUsername(chatKey(m.from));
-      const res = await api.openAttachment({ id: m.id, peer });
+      const res = await fetchAttachment(m);
       const a = document.createElement('a');
       a.href = res.dataUrl;
       a.download = res.name || 'file';
@@ -1892,6 +2237,14 @@ els.btnThemeToggle.addEventListener('click', async () => {
   await persistSettings({ theme: next });
 });
 
+/** Flip the theme from the drawer without opening Settings. */
+async function toggleTheme() {
+  const next = state.settings.theme === 'light' ? 'dark' : 'light';
+  applyTheme(next);
+  await persistSettings({ theme: next });
+  toast(next === 'light' ? 'Светлая тема' : 'Тёмная тема');
+}
+
 async function loadAppearance() {
   try {
     const s = await api.getSettings();
@@ -2029,6 +2382,283 @@ document.addEventListener('keydown', (e) => {
     if (!els.chatSearchBar.hidden) return closeChatSearch();
     if (state.editing) return clearEditing();
     if (state.replyTo) return clearReply();
+  }
+});
+
+/* ============================== drawer ============================== */
+function openDrawer() {
+  els.drawer.hidden = false;
+  els.drawerBackdrop.hidden = false;
+  paintAvatar(els.drawerAvatar, state.username);
+  els.drawerName.textContent = displayNameFor(state.username);
+  els.drawerHandle.textContent = '@' + (state.username || '—');
+  els.drawerAccountsCount.hidden = state.accounts.length <= 1;
+  els.drawerAccountsCount.textContent = String(state.accounts.length);
+  els.drawerVer.textContent = els.footVer ? els.footVer.textContent : 'v0.4.0';
+}
+
+function closeDrawer() {
+  els.drawer.hidden = true;
+  els.drawerBackdrop.hidden = true;
+}
+
+els.btnMenu.addEventListener('click', async () => {
+  try { state.accounts = await api.listAccounts(); } catch { /* keep cached */ }
+  openDrawer();
+});
+els.drawerBackdrop.addEventListener('click', closeDrawer);
+
+els.drawer.addEventListener('click', (e) => {
+  const item = e.target.closest('.drawer-item');
+  if (!item) return;
+  const action = item.dataset.drawer;
+  closeDrawer();
+
+  if (action === 'accounts') openAccounts();
+  else if (action === 'my-profile') openMyProfile();
+  else if (action === 'create') openCreateMenu();
+  else if (action === 'contacts') openContacts();
+  else if (action === 'saved') startChatWith(state.username);
+  else if (action === 'settings') els.btnSettings.click();
+  else if (action === 'new-chat') { els.search.value = ''; els.btnSearchClear.hidden = true; els.search.focus(); }
+  else if (action === 'archived') {
+    els.sectionArchived.hidden = false;
+    els.archivedList.hidden = false;
+    els.sectionArchived.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  } else if (action === 'theme') {
+    toggleTheme();
+  }
+});
+
+/* --------------------------- create menu --------------------------- */
+async function openCreateMenu() {
+  const choice = await confirmDialog({
+    title: 'Создать',
+    text: 'Новый аккаунт на этом устройстве или новая группа?',
+    confirmLabel: 'Новый аккаунт',
+    cancelLabel: 'Новая группа'
+  });
+  if (choice === true) { await api.logout().catch(() => {}); resetToAuth(); }
+  else if (choice === false) openGroupModal();
+}
+
+/* ---------------------------- accounts ---------------------------- */
+async function openAccounts() {
+  try { state.accounts = await api.listAccounts(); } catch { /* keep cached */ }
+  renderAccounts();
+  els.accountsBackdrop.hidden = false;
+}
+
+function renderAccounts() {
+  els.accountsList.innerHTML = '';
+  for (const acc of state.accounts) {
+    const row = document.createElement('div');
+    row.className = 'menu-item';
+    row.dataset.username = acc.username;
+    row.innerHTML = `
+      <span class="avatar tiny" data-color="${escapeHtml(avatarColorFor(acc.username))}">${escapeHtml(initial(acc.username))}</span>
+      <span class="drawer-label">${escapeHtml(displayNameFor(acc.username))}</span>
+      ${acc.active ? '<span class="drawer-badge">активный</span>' : ''}
+      <button class="icon-btn" data-forget="${escapeHtml(acc.username)}" title="Убрать с устройства">✕</button>
+    `;
+    row.addEventListener('click', async (e) => {
+      if (e.target.closest('[data-forget]')) return;
+      if (acc.active) { els.accountsBackdrop.hidden = true; return; }
+      await switchToAccount(acc.username);
+    });
+    els.accountsList.appendChild(row);
+  }
+}
+
+els.accountsList.addEventListener('click', async (e) => {
+  const forget = e.target.closest('[data-forget]');
+  if (!forget) return;
+  const username = forget.dataset.forget;
+  const ok = await confirmDialog({
+    title: 'Убрать аккаунт?',
+    text: `@${username} будет удалён с этого устройства. Ключи пропадут — сообщения нельзя будет прочитать без пароля на другом устройстве.`,
+    confirmLabel: 'Убрать'
+  });
+  if (!ok) return;
+  try {
+    const res = await api.forgetAccount(username);
+    state.accounts = await api.listAccounts();
+    if (res.switched) {
+      els.accountsBackdrop.hidden = true;
+      await restartSession();
+    } else {
+      renderAccounts();
+    }
+    toast('Аккаунт удалён с устройства');
+  } catch (err) {
+    toast(err.message || 'Не удалось удалить аккаунт');
+  }
+});
+
+els.btnAccountsAdd.addEventListener('click', async () => {
+  els.accountsBackdrop.hidden = true;
+  await api.logout().catch(() => {});
+  resetToAuth();
+  toast('Войдите или создайте аккаунт');
+});
+
+els.btnAccountsClose.addEventListener('click', () => { els.accountsBackdrop.hidden = true; });
+els.accountsBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.accountsBackdrop) els.accountsBackdrop.hidden = true;
+});
+
+async function switchToAccount(username) {
+  try {
+    const res = await api.switchAccount(username);
+    state.accounts = await api.listAccounts();
+    els.accountsBackdrop.hidden = true;
+    await restartSession();
+    toast(`Аккаунт @${res.username}`);
+  } catch (err) {
+    toast(err.message || 'Не удалось переключить аккаунт');
+  }
+}
+
+/** Re-read the active identity and route to the right screen after a switch. */
+async function restartSession() {
+  state.chats.clear();
+  state.profiles.clear();
+  state.presence.clear();
+  state.groups.clear();
+  state.activePeer = null;
+  els.chatList.innerHTML = '';
+  els.archivedList.innerHTML = '';
+  els.messages.innerHTML = '';
+  els.chatView.hidden = true;
+  els.chatBlank.hidden = false;
+  const s = await api.status();
+  if (s.username && !s.unlocked) {
+    els.unlockUser.textContent = `Unlock your vault, ${s.username}.`;
+    showScreen('unlock');
+  } else if (s.username && s.unlocked) {
+    await enterMain(s.username);
+  } else {
+    resetToAuth();
+  }
+}
+
+/* ---------------------------- contacts ---------------------------- */
+async function openContacts() {
+  await loadContacts();
+  renderContacts();
+  els.contactError.hidden = true;
+  els.contactsBackdrop.hidden = false;
+}
+
+function renderContacts() {
+  els.contactsList.innerHTML = '';
+  els.contactsEmpty.hidden = state.contacts.length > 0;
+  for (const username of state.contacts) {
+    const row = document.createElement('div');
+    row.className = 'menu-item contact-row';
+    row.innerHTML = `
+      <span class="avatar tiny" data-color="${escapeHtml(avatarColorFor(username))}">${escapeHtml(initial(displayNameFor(username)))}</span>
+      <span class="contact-name">${escapeHtml(displayNameFor(username))}</span>
+      <span class="contact-handle">@${escapeHtml(username)}</span>
+      <button class="icon-btn" data-remove="${escapeHtml(username)}" title="Удалить">✕</button>
+    `;
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('[data-remove]')) return;
+      els.contactsBackdrop.hidden = true;
+      startChatWith(username);
+    });
+    els.contactsList.appendChild(row);
+  }
+}
+
+els.contactsList.addEventListener('click', async (e) => {
+  const remove = e.target.closest('[data-remove]');
+  if (!remove) return;
+  state.contacts = state.contacts.filter((u) => u !== remove.dataset.remove);
+  renderContacts();
+  await saveContacts();
+});
+
+els.btnContactAdd.addEventListener('click', async () => {
+  const username = els.contactInput.value.trim().toLowerCase();
+  els.contactError.hidden = true;
+  if (!/^[a-z0-9_]{3,32}$/.test(username)) {
+    els.contactError.textContent = 'Ник: 3–32 символа a–z, 0–9, _';
+    els.contactError.hidden = false;
+    return;
+  }
+  if (username === state.username) {
+    els.contactError.textContent = 'Это вы.';
+    els.contactError.hidden = false;
+    return;
+  }
+  if (state.contacts.includes(username)) {
+    els.contactError.textContent = 'Уже в контактах.';
+    els.contactError.hidden = false;
+    return;
+  }
+  try {
+    const key = await api.directory(username);
+    if (key && key.profile) state.profiles.set(key.username, key.profile);
+    state.contacts.push(username);
+    state.contacts.sort();
+    els.contactInput.value = '';
+    renderContacts();
+    await saveContacts();
+    toast('Контакт добавлен');
+  } catch (err) {
+    els.contactError.textContent = err.message || 'Пользователь не найден';
+    els.contactError.hidden = false;
+  }
+});
+
+els.contactInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); els.btnContactAdd.click(); }
+});
+
+els.btnContactsClose.addEventListener('click', () => { els.contactsBackdrop.hidden = true; });
+els.contactsBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.contactsBackdrop) els.contactsBackdrop.hidden = true;
+});
+
+/* --------------------------- create group --------------------------- */
+function openGroupModal() {
+  els.groupName.value = '';
+  els.groupMembers.value = state.contacts.join(', ');
+  els.groupError.hidden = true;
+  els.groupBackdrop.hidden = false;
+  els.groupName.focus();
+}
+
+els.btnGroupClose.addEventListener('click', () => { els.groupBackdrop.hidden = true; });
+els.groupBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.groupBackdrop) els.groupBackdrop.hidden = true;
+});
+
+els.btnGroupCreate.addEventListener('click', async () => {
+  const name = els.groupName.value.trim();
+  const members = els.groupMembers.value
+    .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  els.groupError.hidden = true;
+  if (!name) {
+    els.groupError.textContent = 'Введите название группы';
+    els.groupError.hidden = false;
+    return;
+  }
+  try {
+    const group = await api.createGroup({ name, members });
+    state.groups.set(group.id, group);
+    for (const m of group.members) {
+      if (m.profile) state.profiles.set(m.username, m.profile);
+    }
+    els.groupBackdrop.hidden = true;
+    ensureChat(groupKey(group.id));
+    renderChatList();
+    openChat(groupKey(group.id));
+    toast('Группа создана');
+  } catch (err) {
+    els.groupError.textContent = err.message || 'Не удалось создать группу';
+    els.groupError.hidden = false;
   }
 });
 

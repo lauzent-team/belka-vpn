@@ -17,8 +17,10 @@ npm start             # start the desktop app
 npm run dist:win      # build the Windows installer
 node test/e2e.js      # end-to-end tests (real server, real crypto)
 node test/features.js # profiles, usernames, chats, replies, reactions
+node test/groups.js   # group protocol: create, fan-out, edit, delete, membership
 xvfb-run -a node test/ui.js            # UI tests driving the real Electron app
 xvfb-run -a node test/ui-features.js   # the newer UI features, clicked for real
+xvfb-run -a node test/ui-drawer.js     # drawer, settings, contacts, groups, accounts
 xvfb-run -a node test/connection.js    # connection and error handling
 xvfb-run -a node test/shots.js         # regenerate shots/*.png
 ```
@@ -126,3 +128,21 @@ requests.
   data: blob:` and `media-src 'self' data: blob:`.
 - **Select mode is `state.selecting` (a Set of ids).** `messageEl` branches on it;
   right-click and left-click both toggle while it is active.
+
+## Accounts, contacts and the drawer (v0.4.0)
+
+- **Multiple accounts live in `sleephy-accounts.json`; one of them is active.**
+  `setActiveAccount` mirrors the chosen record into the single-account identity file
+  so `unlock()` keeps working unchanged. `switchAccount` reconnects and re-authenticates
+  from the stored token, so the app lands on the unlock screen (not the auth screen).
+  Never copy the plaintext key between records — only the sealed blob moves.
+- **Adding an account signs the current one out but keeps its keys on disk.**
+  "Use another account" (`api.logout()` then `resetToAuth()`) is a different path
+  from `switchAccount` and must stay that way: the first forgets nothing, the second
+  only rotates the active record.
+- **Contacts are per account** in `user_settings.settings.contacts` (a JSON array),
+  the same shallow-merged store the settings modal uses. Do not keep them in memory
+  only, or they vanish on switch.
+- **`humanSize` formats attachment byte counts** for the storage row; keep the
+  settings "Storage used" figure derived from in-memory attachments only, so it
+  never implies the relay knows what is cached.
