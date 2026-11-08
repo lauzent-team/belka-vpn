@@ -3,146 +3,228 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
-  <title>Belka VPN</title>
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws: wss:;" />
+  <title>SleePhy</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="app" id="app" data-state="disconnected">
+  <div id="app" class="app">
 
-    <!-- Top bar -->
-    <header class="topbar">
-      <div class="brand">
-        <span class="logo" aria-hidden="true">
-          <svg viewBox="0 0 32 32" width="26" height="26">
-            <path d="M16 3c-4 0-7 2-9 3 1 6 3 11 9 15 6-4 8-9 9-15-2-1-5-3-9-3z" fill="url(#fur)"/>
-            <path d="M22 4c3 1 5 3 5 7 0 1-1 2-2 2l-4-9z" fill="#c98a5b"/>
-            <circle cx="12" cy="12" r="1.6" fill="#12161A"/>
-            <circle cx="20" cy="12" r="1.6" fill="#12161A"/>
-            <path d="M16 16l-1.5 2h3z" fill="#12161A"/>
-            <defs>
-              <linearGradient id="fur" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stop-color="#f0a868"/>
-                <stop offset="1" stop-color="#c9752f"/>
-              </linearGradient>
-            </defs>
-          </svg>
-        </span>
-        <span class="brand-name">belka <b>VPN</b></span>
-      </div>
-      <div class="topbar-actions">
-        <button class="icon-btn" id="settingsBtn" title="Settings" aria-label="Settings">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H1a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 2.6 7a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H7a1.7 1.7 0 0 0 1-1.5V1a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V7a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>
-          </svg>
-        </button>
-        <button class="icon-btn" id="minBtn" title="Minimize" aria-label="Minimize">
-          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="1.8"><path d="M5 12h14"/></svg>
-        </button>
-        <button class="icon-btn danger" id="closeBtn" title="Close" aria-label="Close">
-          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="1.8"><path d="M6 6l12 12M18 6L6 18"/></svg>
-        </button>
-      </div>
-    </header>
-
-    <main class="content">
-      <!-- Status header -->
-      <section class="status">
-        <h1 class="status-title" id="statusTitle">VPN is off</h1>
-        <p class="status-sub" id="statusSub">Your traffic is not protected</p>
-      </section>
-
-      <!-- Power button -->
-      <section class="power-wrap">
-        <button class="power" id="powerBtn" aria-label="Connect">
-          <span class="ring"></span>
-          <span class="ring pulse"></span>
-          <span class="power-core">
-            <svg class="ic-power" viewBox="0 0 24 24" width="40" height="40" stroke="currentColor" stroke-width="2.2" fill="none">
-              <path d="M12 3v9"/>
-              <path d="M6.6 6.6a8 8 0 1 0 10.8 0"/>
+    <!-- ============================ AUTH ============================ -->
+    <section id="screen-auth" class="screen screen-auth active">
+      <div class="auth-card">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 48 48" width="44" height="44">
+              <defs>
+                <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stop-color="#57E3B4"/>
+                  <stop offset="100%" stop-color="#3BA8FF"/>
+                </linearGradient>
+              </defs>
+              <path d="M24 4C13 8 8 14 8 24c0 10 6 16 16 20 10-4 16-10 16-20 0-10-5-16-16-20z"
+                    fill="none" stroke="url(#g1)" stroke-width="2.6" stroke-linejoin="round"/>
+              <path d="M24 16v10m0 0l-4-4m4 4l4-4" fill="none" stroke="url(#g1)"
+                    stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
-            <svg class="ic-check" viewBox="0 0 24 24" width="34" height="34" stroke="currentColor" stroke-width="3" fill="none">
-              <path d="M4 12.5l5 5L20 6.5"/>
-            </svg>
-          </span>
-          <span class="badge">
-            <svg viewBox="0 0 24 24" width="14" height="14" stroke="#12161A" stroke-width="3.4" fill="none"><path d="M4 12.5l5 5L20 6.5"/></svg>
-          </span>
-        </button>
-        <p class="cta" id="cta">Click to connect</p>
-      </section>
-
-      <!-- Session timer -->
-      <section class="timer">
-        <span class="timer-label" id="timerLabel">LAST SESSION</span>
-        <span class="timer-value" id="timerValue">00:00:00</span>
-      </section>
-
-      <!-- Current server -->
-      <section class="card server-card" id="currentServer">
-        <div class="flag" id="curFlag">🇳🇱</div>
-        <div class="server-info">
-          <div class="server-name" id="curName">Netherlands, Amsterdam</div>
-          <div class="server-meta"><span id="curIp">185.24.9.11</span> · <span class="ping" id="curPing">24 ms</span></div>
+          </div>
+          <h1 class="brand-name">SleePhy</h1>
+          <p class="brand-tag">Private messaging. Your keys, your messages.</p>
         </div>
-        <button class="chev" id="serverDropBtn" aria-label="Change server">
-          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none"><path d="M6 9l6 6 6-6"/></svg>
-        </button>
-        <div class="dropdown" id="serverList"></div>
-      </section>
 
-      <!-- Quick connect -->
-      <section class="quick">
-        <div class="quick-head">
-          <span>Quick connect</span>
-          <a href="#" class="link" id="allLocations">All locations ↗</a>
+        <div class="auth-tabs" role="tablist">
+          <button class="auth-tab active" data-tab="login" role="tab">Sign in</button>
+          <button class="auth-tab" data-tab="register" role="tab">Create account</button>
+          <span class="auth-tab-ink" id="auth-ink"></span>
         </div>
-        <div class="quick-grid" id="quickGrid"></div>
-      </section>
-    </main>
 
-    <!-- Bottom bar -->
-    <footer class="bottombar">
-      <div class="proto">
-        <span class="proto-label">Protocol</span>
-        <button class="proto-btn" id="protoBtn">WireGuard ⌵</button>
-        <div class="dropdown up" id="protoList"></div>
-      </div>
-      <div class="encrypted" id="encrypted">
-        <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="1.8" fill="none">
-          <rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>
-        </svg>
-        <span id="encText">Traffic encrypted</span>
-      </div>
-    </footer>
+        <form id="form-auth" class="auth-form" autocomplete="off">
+          <label class="field">
+            <span class="field-label">Username</span>
+            <input id="auth-username" type="text" spellcheck="false" autocapitalize="none"
+                   placeholder="lowercase, 3–32, a–z 0–9 _" />
+          </label>
+          <label class="field">
+            <span class="field-label">Password</span>
+            <input id="auth-password" type="password" placeholder="at least 8 characters" />
+          </label>
+          <label class="field" id="field-confirm" hidden>
+            <span class="field-label">Repeat password</span>
+            <input id="auth-confirm" type="password" placeholder="repeat your password" />
+          </label>
 
-    <!-- Kill switch -->
-    <section class="killswitch">
-      <div class="ks-text">
-        <div class="ks-title">Kill Switch</div>
-        <div class="ks-sub">Always protecting you</div>
+          <p class="auth-hint" id="auth-hint">
+            Your password protects your encryption keys on this device.
+            We can never read your messages.
+          </p>
+          <p class="auth-error" id="auth-error" hidden></p>
+
+          <button class="btn-primary" id="btn-auth" type="submit">Sign in</button>
+        </form>
+
+        <div class="server-row">
+          <label class="field field-inline">
+            <span class="field-label">Server</span>
+            <input id="server-url" type="text" spellcheck="false" value="ws://127.0.0.1:8787" />
+          </label>
+          <span class="conn-dot" id="auth-conn" title="connection"></span>
+        </div>
       </div>
-      <button class="toggle" id="killToggle" role="switch" aria-checked="true">
-        <span class="knob"></span>
-      </button>
     </section>
 
-    <!-- Add-config modal -->
-    <div class="modal" id="configModal" hidden>
-      <div class="modal-card">
-        <h2>Add your VPN key</h2>
-        <p class="modal-sub">Paste your personal WireGuard config or subscription link. It stays on your device.</p>
-        <textarea id="configInput" placeholder="[Interface]&#10;PrivateKey = ...&#10;[Peer]&#10;Endpoint = ..."></textarea>
-        <div class="modal-actions">
-          <button class="btn ghost" id="configCancel">Cancel</button>
-          <button class="btn primary" id="configSave">Save</button>
+    <!-- ============================ UNLOCK ============================ -->
+    <section id="screen-unlock" class="screen screen-unlock">
+      <div class="auth-card">
+        <div class="brand">
+          <div class="brand-mark lock" aria-hidden="true">
+            <svg viewBox="0 0 48 48" width="44" height="44">
+              <rect x="12" y="21" width="24" height="18" rx="4"
+                    fill="none" stroke="#57E3B4" stroke-width="2.6"/>
+              <path d="M18 21v-5a6 6 0 0 1 12 0v5" fill="none"
+                    stroke="#57E3B4" stroke-width="2.6" stroke-linecap="round"/>
+              <circle cx="24" cy="30" r="2.4" fill="#57E3B4"/>
+            </svg>
+          </div>
+          <h1 class="brand-name">Welcome back</h1>
+          <p class="brand-tag" id="unlock-user">Unlock your vault to read messages.</p>
+        </div>
+        <form id="form-unlock" class="auth-form" autocomplete="off">
+          <label class="field">
+            <span class="field-label">Password</span>
+            <input id="unlock-password" type="password" placeholder="your password" />
+          </label>
+          <p class="auth-error" id="unlock-error" hidden></p>
+          <button class="btn-primary" type="submit">Unlock</button>
+        </form>
+        <button class="btn-ghost" id="btn-switch-account">Use another account</button>
+      </div>
+    </section>
+
+    <!-- ============================= MAIN ============================= -->
+    <section id="screen-main" class="screen screen-main">
+      <aside class="sidebar">
+        <header class="sidebar-head">
+          <div class="me">
+            <div class="avatar me-avatar" id="me-avatar">?</div>
+            <div class="me-meta">
+              <span class="me-name" id="me-name">—</span>
+              <span class="me-status"><i class="dot"></i><span id="me-state">offline</span></span>
+            </div>
+          </div>
+          <button class="icon-btn" id="btn-settings" title="Settings">
+            <svg viewBox="0 0 24 24" width="18" height="18">
+              <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z" fill="none" stroke="currentColor" stroke-width="1.7"/>
+              <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.2A1.6 1.6 0 0 0 7.5 19.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3 14.9H3a2 2 0 1 1 0-4h.2A1.6 1.6 0 0 0 4.6 8.5l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9.3a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.2a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v.1a1.6 1.6 0 0 0 1.5 1h.2a2 2 0 1 1 0 4h-.2a1.6 1.6 0 0 0-1.5 1z"
+                    fill="none" stroke="currentColor" stroke-width="1.3"/>
+            </svg>
+          </button>
+        </header>
+
+        <div class="search-wrap">
+          <input id="search" class="search" type="text" spellcheck="false"
+                 placeholder="Find or start a chat by username" />
+        </div>
+
+        <ul class="chat-list" id="chat-list"></ul>
+        <p class="chat-empty" id="chat-empty">
+          No chats yet. Type a username above and press Enter.
+        </p>
+
+        <footer class="sidebar-foot">
+          <span class="foot-note">End-to-end encrypted</span>
+          <span class="foot-ver" id="foot-ver">v0.2.0</span>
+        </footer>
+      </aside>
+
+      <main class="chat-pane" id="chat-pane">
+        <div class="chat-blank" id="chat-blank">
+          <div class="blank-illustration" aria-hidden="true">
+            <div class="pulse-ring"></div>
+            <div class="blank-core">
+              <svg viewBox="0 0 24 24" width="30" height="30">
+                <path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9l-5 4V6a1 1 0 0 1 1-1z"
+                      fill="none" stroke="#57E3B4" stroke-width="1.7" stroke-linejoin="round"/>
+              </svg>
+            </div>
+          </div>
+          <h2>Select a chat</h2>
+          <p>Pick a conversation on the left, or start a new one by username.</p>
+        </div>
+
+        <div class="chat-view" id="chat-view" hidden>
+          <header class="chat-head">
+            <div class="avatar" id="peer-avatar">?</div>
+            <div class="chat-head-meta">
+              <span class="chat-head-name" id="peer-name">—</span>
+              <span class="chat-head-sub" id="peer-sub">end-to-end encrypted</span>
+            </div>
+            <div class="enc-badge" title="Messages are end-to-end encrypted">
+              <svg viewBox="0 0 24 24" width="14" height="14">
+                <rect x="5" y="10" width="14" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/>
+                <path d="M8 10V7a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="1.7"/>
+              </svg>
+              <span>E2E</span>
+            </div>
+          </header>
+
+          <div class="messages" id="messages"></div>
+
+          <form class="composer" id="composer">
+            <input id="composer-input" class="composer-input" type="text"
+                   placeholder="Write a message…" spellcheck="false" autocomplete="off" />
+            <button class="send-btn" type="submit" title="Send">
+              <svg viewBox="0 0 24 24" width="20" height="20">
+                <path d="M4 12l16-8-6 8 6 8-16-8z" fill="currentColor"/>
+              </svg>
+            </button>
+          </form>
+        </div>
+      </main>
+    </section>
+
+    <!-- =========================== SETTINGS =========================== -->
+    <div class="modal-backdrop" id="settings-backdrop" hidden>
+      <div class="modal">
+        <header class="modal-head">
+          <h3>Settings</h3>
+          <button class="icon-btn" id="btn-settings-close" title="Close">✕</button>
+        </header>
+        <div class="modal-body">
+          <div class="setting-row">
+            <div>
+              <span class="setting-title">Account</span>
+              <span class="setting-sub" id="set-username">—</span>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div>
+              <span class="setting-title">Connection</span>
+              <span class="setting-sub" id="set-conn">—</span>
+            </div>
+            <span class="conn-dot" id="set-conn-dot"></span>
+          </div>
+          <label class="field">
+            <span class="field-label">Server address</span>
+            <input id="set-server" type="text" spellcheck="false" />
+          </label>
+          <button class="btn-secondary" id="btn-apply-server">Apply server</button>
+
+          <div class="setting-sep"></div>
+          <span class="setting-title">Your public key</span>
+          <code class="key-box" id="set-pubkey">—</code>
+          <p class="setting-note">
+            Share this with a contact so they can verify your identity.
+            Your private key never leaves this device.
+          </p>
+          <div class="setting-sep"></div>
+          <button class="btn-danger" id="btn-logout">Sign out and erase local keys</button>
         </div>
       </div>
     </div>
 
+    <div class="toast" id="toast" hidden></div>
   </div>
+
   <script src="renderer.js"></script>
 </body>
 </html>

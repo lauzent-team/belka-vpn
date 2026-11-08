@@ -1,49 +1,72 @@
 {
-  "name": "belka-vpn",
-  "productName": "Belka VPN",
-  "version": "0.1.0",
-  "description": "Belka VPN - a modern desktop VPN client",
+  "name": "sleephy",
+  "productName": "SleePhy",
+  "version": "0.2.0",
+  "description": "SleePhy — end-to-end encrypted messenger with a blind relay server",
   "main": "main.js",
-  "author": "Belka VPN",
+  "author": "SleePhy",
   "license": "MIT",
+  "private": true,
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win --x64",
-    "dist:linux": "electron-builder --linux --x64"
+    "server": "node server/index.js",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux"
+  },
+  "dependencies": {
+    "libsodium-wrappers": "^0.7.15",
+    "ws": "^8.22.1"
   },
   "devDependencies": {
-    "electron": "^31.0.0",
-    "electron-builder": "^24.13.3"
+    "electron": "31.7.7",
+    "electron-builder": "24.13.3",
+    "playwright-core": "^1.65.0"
   },
   "build": {
-    "appId": "com.belka.vpn",
-    "productName": "Belka VPN",
+    "appId": "ru.sleephy.desktop",
+    "productName": "SleePhy",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
     "files": [
       "main.js",
       "preload.js",
-      "src/**/*"
+      "src/**/*",
+      "package.json",
+      "!server/**/*",
+      "!dist/**/*"
     ],
+    "extraMetadata": {
+      "main": "main.js"
+    },
     "win": {
       "target": [
-        "nsis"
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
       "allowToChangeInstallationDirectory": true,
+      "artifactName": "SleePhy-Setup-${version}.exe",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Belka VPN"
+      "shortcutName": "SleePhy"
     },
     "linux": {
       "target": [
         "AppImage"
       ],
-      "category": "Network"
+      "category": "Network",
+      "icon": "build/icon.png"
     }
-  },
-  "allowScripts": {
-    "electron@31.7.7": true
   }
 }
