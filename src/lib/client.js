@@ -70,6 +70,19 @@ class SleePhyClient {
     try { fs.unlinkSync(this.file); } catch { /* nothing to remove */ }
   }
 
+  /**
+   * The stored key record for an account: the live identity file, or the
+   * registry entry when only that survived a sign-out. Records without `sealed`
+   * hold no key material and can never be unlocked, so they are ignored.
+   */
+  keyRecordFor(username) {
+    if (!username) return null;
+    const id = this.readIdentity();
+    if (id && id.username === username && id.sealed) return id;
+    const rec = this.readAccounts().accounts.find((a) => a.username === username);
+    return rec && rec.sealed ? rec : null;
+  }
+
   /* --------------------------- account registry --------------------------- */
   readAccounts() {
     try {
@@ -96,7 +109,9 @@ class SleePhyClient {
 
   listAccounts() {
     const data = this.readAccounts();
-    return data.accounts.map((a) => ({
+    // Records without `sealed` hold no key material: they can never be
+    // unlocked, so they must not appear as a usable account.
+    return data.accounts.filter((a) => a.sealed).map((a) => ({
       username: a.username,
       publicKey: a.publicKey || null,
       active: a.username === data.active
@@ -107,6 +122,7 @@ class SleePhyClient {
     const data = this.readAccounts();
     const rec = data.accounts.find((a) => a.username === username);
     if (!rec) throw new Error('Unknown account on this device');
+    if (!rec.sealed) throw new Error('No key material for this account on this device');
     data.active = username;
     this.writeAccounts(data);
     // Mirror into the single-account file so unlock() keeps working unchanged.
@@ -368,15 +384,13 @@ class SleePhyClient {
     this.applySession(res);
     this.publicKey = res.publicKey;
 
-    const id = this.readIdentity();
-    if (!id || id.username !== username || !id.sealed) {
-      throw new Error('No key material for this account on this device');
-    }
+    const id = this.keyRecordFor(username);
+    if (!id) throw new Error('No key material for this account on this device');
 
     const key = cryptoLib.deriveKey(password, id.salt);
     const secretKey = await cryptoLib.openSecret(id.sealed, id.nonce, key);
     this.secretKey = secretKey;
-    const updated = { ...id, token: this.token, publicKey: this.publicKey };
+    const updated = { ...id, username, token: this.token, publicKey: this.publicKey };
     this.writeIdentity(updated);
     this.upsertAccount(updated);
 
@@ -386,7 +400,7 @@ class SleePhyClient {
 
   /** Unlock an already-authenticated session with the password (after resume). */
   async unlock(password) {
-    const id = this.readIdentity();
+    const id = this.keyRecordFor(this.username) || this.readIdentity();
     if (!id || !id.sealed) throw new Error('No key material on this device');
     const key = cryptoLib.deriveKey(password, id.salt);
     this.secretKey = await cryptoLib.openSecret(id.sealed, id.nonce, key);
@@ -862,6 +876,22 @@ class SleePhyClient {
       if (rec && rec.token) await this.autoResume();
     }
     return { active, switched: true };
+  }
+
+  /**
+   * Sign out of the active account and return to the sign-in screen. The
+   * sealed key record stays in the registry, so the same account can log back
+   * in with its password — erasing it here would strand the username, which
+   * the relay still reserves. Real erasure is `forgetAccount` in the switcher.
+   */
+  signOut() {
+    this.disconnect();
+    this.clearIdentity();
+    this.secretKey = null;
+    this.username = null;
+    this.publicKey = null;
+    this.token = null;
+    this.profile = null;
   }
 
   /** Forget every account on this device. */

@@ -235,6 +235,9 @@ const els = {
   adminStats: $('admin-stats'),
   adminUsers: $('admin-users'),
   adminUsersEmpty: $('admin-users-empty'),
+  adminUsersCount: $('admin-users-count'),
+  adminUsersSearch: $('admin-users-search'),
+  btnAdminRefresh: $('btn-admin-refresh'),
   adminAnnounceInput: $('admin-announce-input'),
   btnAdminAnnounce: $('btn-admin-announce'),
 
@@ -273,6 +276,8 @@ const state = {
   recording: null, // MediaRecorder state for voice notes
   selecting: null, // Set of message ids while in select mode
   isAdmin: false, // whether the signed-in account may open the admin panel
+  adminUsers: [], // last admin user list, filtered client-side by the search box
+  adminAnnounceCount: 0,
   settingsPane: 'account' // active settings section
 };
 
@@ -291,7 +296,8 @@ function showError(el, message) {
 }
 
 let toastTimer = null;
-function toast(message, duration = 2600) {
+function toast(message, duration = 2600, kind) {
+  els.toast.className = 'toast' + (kind ? ` toast-${kind}` : '');
   els.toast.textContent = message;
   els.toast.hidden = false;
   requestAnimationFrame(() => els.toast.classList.add('show'));
@@ -340,6 +346,11 @@ function escapeHtml(s) {
   }[c]));
 }
 
+/** Reference an icon from the sprite declared at the top of index.html. */
+function icon(id, cls) {
+  return `<svg class="ico${cls ? ` ${cls}` : ''}" viewBox="0 0 24 24" aria-hidden="true"><use href="#${id}"></use></svg>`;
+}
+
 function chatKey(peer) {
   return peer === state.username ? SAVED : peer;
 }
@@ -385,6 +396,10 @@ function paintBadge(el, username) {
 function paintAvatar(el, username, size) {
   el.className = 'avatar' + (size ? ' ' + size : '');
   el.dataset.color = avatarColorFor(username);
+  if (isGroupKey(username)) {
+    el.innerHTML = icon('i-people');
+    return;
+  }
   el.textContent = initial(displayNameFor(username));
 }
 
@@ -520,9 +535,9 @@ async function refreshVisibleLastMessages() {
 /** One-line preview for the chat list, matching the message kind. */
 function previewOf(m) {
   if (m.deleted) return 'Message deleted';
-  if (m.kind === 'image') return '🖼️ Photo';
-  if (m.kind === 'voice') return '🎤 Voice message';
-  if (m.kind === 'file') return `📄 ${(m.attachment && m.attachment.name) || 'File'}`;
+  if (m.kind === 'image') return 'Photo';
+  if (m.kind === 'voice') return 'Voice message';
+  if (m.kind === 'file') return (m.attachment && m.attachment.name) || 'File';
   return m.text || '';
 }
 
@@ -583,16 +598,16 @@ function chatItemEl(key) {
     ? `<span class="chat-item-badge${chat.muted ? ' muted' : ''}">${chat.unread > 99 ? '99+' : chat.unread}</span>`
     : '';
   const flags = [
-    chat.pinned ? '📌' : '',
-    chat.muted ? '🔕' : ''
+    chat.pinned ? icon('i-pin', 'chat-flag') : '',
+    chat.muted ? icon('i-bell-off', 'chat-flag') : ''
   ].filter(Boolean).join(' ');
 
   const name = key === SAVED ? 'Saved Messages' : displayNameFor(key);
-  const avatarText = group ? '👥' : initial(displayNameFor(key));
-  const tick = !group && isVerified(peer) ? '<span class="verified-badge verified-badge-sm" title="Проверенный аккаунт">✓</span>' : '';
+  const avatarInner = group ? icon('i-people') : escapeHtml(initial(displayNameFor(key)));
+  const tick = !group && isVerified(peer) ? `<span class="verified-badge verified-badge-sm" title="Проверенный аккаунт">${icon('i-check')}</span>` : '';
 
   li.innerHTML = `
-    <div class="avatar small" data-color="${escapeHtml(avatarColorFor(key))}">${escapeHtml(avatarText)}</div>
+    <div class="avatar small" data-color="${escapeHtml(avatarColorFor(key))}">${avatarInner}</div>
     <div class="chat-item-body">
       <div class="chat-item-top">
         <span class="chat-item-name">${escapeHtml(name)}${tick}</span>
@@ -673,7 +688,7 @@ function messageEl(m) {
   el.dataset.id = m.id;
   const meta = [escapeHtml(timeLabel(m.ts))];
   if (m.editedAt) meta.push('<span class="edited">edited</span>');
-  if (m.pinned) meta.push('<span class="pinned-mark" title="Pinned">📌</span>');
+  if (m.pinned) meta.push(`<span class="pinned-mark" title="Pinned">${icon('i-pin')}</span>`);
   const hasMedia = !!(m.kind && m.attachment);
   el.innerHTML = `
     <div class="bubble${hasMedia ? ' has-media' : ''}">${quoteHtml(m)}${renderMessageBody(m)}</div>
@@ -698,7 +713,7 @@ function messageEl(m) {
     if (state.selecting.has(m.id)) el.classList.add('selected');
     const tick = document.createElement('span');
     tick.className = 'select-tick';
-    tick.textContent = state.selecting.has(m.id) ? '✓' : '';
+    tick.innerHTML = state.selecting.has(m.id) ? icon('i-check') : '';
     el.appendChild(tick);
     el.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -787,7 +802,7 @@ async function openChat(key) {
       const last = items.at(-1);
       if (last) { chat.last = previewOf(last); chat.lastTs = last.ts; }
     } catch (err) {
-      appendMessage({ text: '⚠ ' + (err.message || 'Could not load history'), ts: Date.now(), mine: false });
+      appendMessage({ text: (err.message || 'Could not load history'), ts: Date.now(), mine: false });
     }
   } else {
     renderMessages();
@@ -1462,7 +1477,7 @@ function applySelfProfile(p) {
       els.setHeroAvatar.textContent = initial(p.displayName || p.username);
     }
     if (els.setHeroName) els.setHeroName.textContent = p.displayName || p.username;
-    setAdminMode(!!p.admin);
+    setAdminMode(!!p.admin || !!p.adminByConfig);
   }
 }
 
@@ -1471,6 +1486,9 @@ function setAdminMode(on) {
   if (state.isAdmin === on) { if (on && state.settingsPane === 'admin') loadAdminPanel(); return; }
   state.isAdmin = on;
   els.settingsNavAdmin.hidden = !on;
+  // The pane itself may be hidden by a live toggle, not only the nav entry.
+  const pane = document.querySelector('.settings-pane[data-pane="admin"]');
+  if (pane) pane.hidden = !on;
   if (!on && state.settingsPane === 'admin') selectSettingsPane('account');
 }
 
@@ -1540,6 +1558,7 @@ els.settingsNav.addEventListener('click', (e) => {
 async function loadAdminPanel() {
   if (!state.isAdmin) return;
   els.adminUsers.innerHTML = '<p class="panel-empty">Загрузка…</p>';
+  els.adminUsersEmpty.hidden = true;
   try {
     const [{ stats, announcements }, users] = await Promise.all([
       api.adminOverview(),
@@ -1551,10 +1570,9 @@ async function loadAdminPanel() {
       <div class="admin-stat"><span class="admin-stat-num">${stats.messages}</span><span class="admin-stat-label">Сообщений</span></div>
       <div class="admin-stat"><span class="admin-stat-num">${stats.groups}</span><span class="admin-stat-label">Групп</span></div>
     `;
-    renderAdminUsers(users);
-    if (announcements.length) {
-      toast(`Объявлений в истории: ${announcements.length}`, 2500);
-    }
+    state.adminUsers = users;
+    state.adminAnnounceCount = announcements.length;
+    renderAdminUsers();
   } catch (err) {
     els.adminUsers.innerHTML = '';
     els.adminUsersEmpty.hidden = false;
@@ -1562,15 +1580,27 @@ async function loadAdminPanel() {
   }
 }
 
-function renderAdminUsers(users) {
+/** Draw the user list, honouring the search box. */
+function renderAdminUsers() {
+  const query = (els.adminUsersSearch.value || '').trim().toLowerCase();
+  const users = (state.adminUsers || []).filter((u) =>
+    !query || u.username.toLowerCase().includes(query) ||
+    (u.displayName || '').toLowerCase().includes(query)
+  );
   els.adminUsers.innerHTML = '';
+  els.adminUsersCount.textContent = String((state.adminUsers || []).length);
   els.adminUsersEmpty.hidden = users.length > 0;
+  if (!users.length) {
+    els.adminUsersEmpty.textContent = query ? 'Никого не найдено.' : 'Пользователей пока нет.';
+    return;
+  }
   for (const u of users) {
     const row = document.createElement('div');
     row.className = 'admin-user';
+    if (u.banned) row.classList.add('is-banned');
     const flags = [
-      u.admin ? '<span class="admin-tag">админ</span>' : '',
-      u.verified ? '<span class="admin-tag verified">✓</span>' : '',
+      u.admin ? '<span class="admin-tag admin">админ</span>' : '',
+      u.verified ? '<span class="admin-tag verified">проверен</span>' : '',
       u.banned ? '<span class="admin-tag banned">заблокирован</span>' : '',
       u.online ? '<span class="admin-tag online">онлайн</span>' : ''
     ].filter(Boolean).join(' ');
@@ -1581,10 +1611,10 @@ function renderAdminUsers(users) {
         <div class="admin-user-sub">@${escapeHtml(u.username)} · ${u.sent} сообщ.</div>
       </div>
       <div class="admin-user-actions">
-        <button class="admin-act" data-act="verify" data-user="${escapeHtml(u.username)}" title="Галочка">✓</button>
-        <button class="admin-act" data-act="grantAdmin" data-user="${escapeHtml(u.username)}" title="Админ">🛡️</button>
-        <button class="admin-act" data-act="ban" data-user="${escapeHtml(u.username)}" title="Блокировка">🚫</button>
-        <button class="admin-act danger" data-act="delete" data-user="${escapeHtml(u.username)}" title="Удалить">🗑️</button>
+        <button class="admin-act${u.verified ? ' on' : ''}" data-act="verify" data-user="${escapeHtml(u.username)}" title="${u.verified ? 'Снять галочку' : 'Дать галочку'}">${icon('i-check')}</button>
+        <button class="admin-act${u.admin ? ' on' : ''}" data-act="grantAdmin" data-user="${escapeHtml(u.username)}" title="${u.admin ? 'Снять админа' : 'Сделать админом'}">${icon('i-shield')}</button>
+        <button class="admin-act danger${u.banned ? ' on' : ''}" data-act="ban" data-user="${escapeHtml(u.username)}" title="${u.banned ? 'Разблокировать' : 'Заблокировать'}">${icon('i-ban')}</button>
+        <button class="admin-act danger" data-act="delete" data-user="${escapeHtml(u.username)}" title="Удалить">${icon('i-trash')}</button>
       </div>
     `;
     els.adminUsers.appendChild(row);
@@ -1605,12 +1635,20 @@ els.adminUsers.addEventListener('click', async (e) => {
   }
   try {
     await api.adminAction({ action: act, username: user });
-    toast('Готово');
+    if (act === 'grantAdmin' && user === state.username) {
+      // Toggling your own admin flag must not hide the panel you are using.
+      toast('Готово. Пункт «Админ-панель» остаётся у аккаунтов из SLEEPHY_ADMINS.');
+    } else {
+      toast('Готово');
+    }
     loadAdminPanel();
   } catch (err) {
     toast(err.message || 'Не удалось выполнить действие');
   }
 });
+
+els.adminUsersSearch.addEventListener('input', renderAdminUsers);
+els.btnAdminRefresh.addEventListener('click', () => loadAdminPanel());
 
 els.btnAdminAnnounce.addEventListener('click', async () => {
   const text = els.adminAnnounceInput.value.trim();
@@ -1764,7 +1802,7 @@ els.btnLogout.addEventListener('click', async () => {
   els.settingsBackdrop.hidden = true;
   await api.logout();
   resetToAuth();
-  toast('Signed out, local keys erased');
+  toast('Вы вышли. Ключи остались на устройстве — можно войти снова.');
 });
 
 /* ------------------------------- confirm ------------------------------- */
@@ -1877,7 +1915,7 @@ api.onEvent((evt) => {
       break;
 
     case 'announcement':
-      toast(`📣 ${evt.from}: ${evt.text}`, 6000);
+      toast(`${evt.from}: ${evt.text}`, 6000, 'announce');
       break;
 
     case 'kicked':
@@ -1922,9 +1960,9 @@ api.onEvent((evt) => {
         if (orig) m.quote = { from: orig.mine ? state.username : evt.from, text: orig.text, mine: orig.mine };
       }
       chat.messages.push(m);
-      chat.last = m.kind === 'image' ? '🖼️ Photo'
-        : m.kind === 'voice' ? '🎤 Voice message'
-        : m.kind === 'file' ? `📄 ${(m.attachment && m.attachment.name) || 'File'}`
+      chat.last = m.kind === 'image' ? 'Photo'
+        : m.kind === 'voice' ? 'Voice message'
+        : m.kind === 'file' ? ((m.attachment && m.attachment.name) || 'File')
         : evt.text;
       chat.lastTs = evt.ts;
       if (state.activePeer === key) {
@@ -2136,7 +2174,7 @@ async function sendWithAttachment(att) {
     previewUrl: att.preview || null
   };
   chat.messages.push(optimistic);
-  chat.last = att.kind === 'image' ? '🖼️ Photo' : (att.kind === 'voice' ? '🎤 Voice message' : `📄 ${att.name}`);
+  chat.last = att.kind === 'image' ? 'Photo' : (att.kind === 'voice' ? 'Voice message' : att.name);
   chat.lastTs = optimistic.ts;
   clearReply();
   renderMessages();
@@ -2204,7 +2242,7 @@ function renderImageAttachment(m, wrap) {
 function renderFileAttachment(m, wrap, kind) {
   const box = document.createElement('div');
   box.className = kind === 'voice' ? 'att-voice' : 'att-file';
-  const ico = kind === 'voice' ? '🎤' : '📄';
+  const ico = icon(kind === 'voice' ? 'i-mic' : 'i-file');
   const sizeLabel = kind === 'voice' && m.attachment.duration
     ? `${m.attachment.duration}s`
     : humanSize(m.attachment.size);
@@ -2503,7 +2541,7 @@ function updatePinnedBar() {
   const top = pinned[pinned.length - 1];
   els.pinnedTitle.textContent = top.mine ? 'Pinned message · you' : `Pinned message · ${displayNameFor(peerUsername(chatKey(top.from || state.username)))}`;
   els.pinnedText.textContent = top.attachment && !top.text
-    ? (top.attachment.name ? `📎 ${top.attachment.name}` : '📎 Attachment')
+    ? (top.attachment.name || 'Attachment')
     : (top.text || 'Message');
   els.pinnedBar.hidden = false;
   els.pinnedBar.onclick = () => scrollToMessage(top.id);
@@ -2799,7 +2837,7 @@ function renderAccounts() {
       <span class="avatar tiny" data-color="${escapeHtml(avatarColorFor(acc.username))}">${escapeHtml(initial(acc.username))}</span>
       <span class="drawer-label">${escapeHtml(displayNameFor(acc.username))}</span>
       ${acc.active ? '<span class="drawer-badge">активный</span>' : ''}
-      <button class="icon-btn" data-forget="${escapeHtml(acc.username)}" title="Убрать с устройства">✕</button>
+      <button class="icon-btn" data-forget="${escapeHtml(acc.username)}" title="Убрать с устройства">${icon('i-close')}</button>
     `;
     row.addEventListener('click', async (e) => {
       if (e.target.closest('[data-forget]')) return;
@@ -2900,7 +2938,7 @@ function renderContacts() {
       <span class="avatar tiny" data-color="${escapeHtml(avatarColorFor(username))}">${escapeHtml(initial(displayNameFor(username)))}</span>
       <span class="contact-name">${escapeHtml(displayNameFor(username))}</span>
       <span class="contact-handle">@${escapeHtml(username)}</span>
-      <button class="icon-btn" data-remove="${escapeHtml(username)}" title="Удалить">✕</button>
+      <button class="icon-btn" data-remove="${escapeHtml(username)}" title="Удалить">${icon('i-close')}</button>
     `;
     row.addEventListener('click', (e) => {
       if (e.target.closest('[data-remove]')) return;

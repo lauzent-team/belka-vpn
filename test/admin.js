@@ -193,17 +193,18 @@ async function main() {
     assert.strictEqual(left.c, 0, 'its messages should be gone too');
   });
 
+  let protectedAdmin = null;
   await step('the configured admin account cannot be deleted', async () => {
     // A second name from SLEEPHY_ADMINS, so the actor is not the target.
     const other = makeClient('protected');
     await other.client.connect(URL);
     await other.client.register({ username: 'protected_admin', password: 'protected-pass-1' });
+    protectedAdmin = other;
 
     let message = '';
     try { await admin.client.adminAction({ action: 'delete', username: 'protected_admin' }); }
     catch (err) { message = err.message; }
     assert.ok(/protected/i.test(message), `expected a protected-account refusal, got "${message}"`);
-    other.client.disconnect();
   });
 
   await step('a second admin can be granted and then acts', async () => {
@@ -215,6 +216,40 @@ async function main() {
     const overview = await promoted.client.adminOverview();
     assert.ok(overview.stats.users >= 3, 'the new admin can read the overview');
     promoted.client.disconnect();
+  });
+
+  // The configured admin keeps the panel even after the stored flag is toggled
+  // off: ADMINS grants admin by name, so isAdmin() stays true. Regression test
+  // for the shield button making the panel vanish.
+  await step('the configured admin stays an admin after the flag is toggled off', async () => {
+    await admin.client.adminAction({ action: 'grantAdmin', username: ADMIN });
+    const db = new DatabaseSync(DB, { readOnly: true });
+    const row = db.prepare('SELECT is_admin FROM users WHERE username = ?').get(ADMIN);
+    db.close();
+    assert.strictEqual(row.is_admin, 0, 'the stored flag should now be 0');
+    const overview = await admin.client.adminOverview();
+    assert.ok(overview.stats.users >= 3, 'and the account must still reach the panel');
+  });
+
+  await step('the profile tells the client it is an admin by configuration', async () => {
+    const profile = protectedAdmin.client.status().profile;
+    assert.strictEqual(profile.adminByConfig, true, 'the client must be told the account is configured as admin');
+  });
+
+  await step('signing in restores the admin flag for a configured admin', async () => {
+    // Toggle the stored flag off, then sign in again: login re-applies it for
+    // any account named in SLEEPHY_ADMINS.
+    await admin.client.adminAction({ action: 'grantAdmin', username: 'protected_admin' });
+    let db = new DatabaseSync(DB, { readOnly: true });
+    assert.strictEqual(db.prepare('SELECT is_admin FROM users WHERE username = ?').get('protected_admin').is_admin, 0);
+    db.close();
+    protectedAdmin.client.disconnect();
+    await protectedAdmin.client.connect(URL);
+    await protectedAdmin.client.login({ username: 'protected_admin', password: 'protected-pass-1' });
+    db = new DatabaseSync(DB, { readOnly: true });
+    assert.strictEqual(db.prepare('SELECT is_admin FROM users WHERE username = ?').get('protected_admin').is_admin, 1);
+    db.close();
+    protectedAdmin.client.disconnect();
   });
 
   admin.client.disconnect();

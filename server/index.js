@@ -369,7 +369,10 @@ function publicProfile(user) {
     bio: user.bio || '',
     avatarColor: user.avatar_color || 'mint',
     verified: !!user.verified,
-    admin: !!user.is_admin
+    admin: !!user.is_admin,
+    // Named in ADMINS but not yet flagged: the relay still treats them as an
+    // admin, so the client must show the panel. The flag is set on next login.
+    adminByConfig: ADMINS.has(user.username)
   };
 }
 

@@ -131,6 +131,53 @@ async function main() {
     assert.ok(rows.some((t) => t.includes('@bob')), 'bob should be listed');
   });
 
+  await step('the admin panel shows a header, a count and a legend', async () => {
+    // The settings modal is already open and on the admin pane.
+    await a.win.click('.settings-nav-item[data-pane="admin"]');
+    await a.win.waitForSelector('.settings-pane[data-pane="admin"].active');
+    await a.win.waitForSelector('#admin-users .admin-user', { timeout: 8000 });
+    assert.ok(await a.win.isVisible('.admin-head'), 'the panel should have a header');
+    const count = Number(await a.win.textContent('#admin-users-count'));
+    assert.ok(count >= 2, `expected at least two users in the count, got ${count}`);
+    assert.ok(await a.win.isVisible('.admin-legend'), 'the action legend should be visible');
+  });
+
+  await step('the admin search filters the user list', async () => {
+    const before = await a.win.$$eval('#admin-users .admin-user', (els) => els.length);
+    await a.win.fill('#admin-users-search', 'bob');
+    await a.win.waitForFunction(
+      () => document.querySelectorAll('#admin-users .admin-user').length === 1,
+      { timeout: 4000 }
+    );
+    const shown = await a.win.textContent('#admin-users .admin-user-sub');
+    assert.ok(shown.includes('@bob'), 'only bob should remain');
+    await a.win.fill('#admin-users-search', '');
+    await a.win.waitForFunction(
+      (n) => document.querySelectorAll('#admin-users .admin-user').length === n,
+      before,
+      { timeout: 4000 }
+    );
+  });
+
+  // Regression: clicking your own shield used to drop the admin flag, which
+  // hid the very panel you were standing in. A configured admin keeps it.
+  await step('clicking your own shield does not hide the panel', async () => {
+    await a.win.click('#admin-users .admin-act[data-act="grantAdmin"][data-user="alice"]');
+    await a.win.waitForTimeout(900);
+    assert.ok(
+      await a.win.isVisible('.settings-pane[data-pane="admin"].active'),
+      'the admin pane must stay open'
+    );
+    assert.ok(
+      await a.win.isVisible('#settings-nav-admin'),
+      'the admin entry must stay in the navigation'
+    );
+    // Put the stored flag back so later steps behave as before.
+    await a.win.click('#admin-users .admin-act[data-act="grantAdmin"][data-user="alice"]');
+    await a.win.waitForTimeout(900);
+    assert.ok(await a.win.isVisible('.settings-pane[data-pane="admin"].active'));
+  });
+
   await step('an admin can verify an account and the checkmark shows', async () => {
     await a.win.click('#admin-users .admin-act[data-act="verify"][data-user="bob"]');
     await a.win.waitForFunction(
@@ -159,7 +206,7 @@ async function main() {
     await a.win.fill('#admin-announce-input', 'Всем привет, это объявление');
     await a.win.click('#btn-admin-announce');
     await b.win.waitForFunction(
-      () => (document.getElementById('toast') || {}).textContent === '📣 alice: Всем привет, это объявление',
+      () => (document.getElementById('toast') || {}).textContent === 'alice: Всем привет, это объявление',
       { timeout: 8000 }
     );
     await a.win.click('#btn-settings-close');

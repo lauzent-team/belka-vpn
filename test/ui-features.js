@@ -259,7 +259,7 @@ async function main() {
     await a.win.waitForFunction(
       () => {
         const item = document.querySelector('.chat-item.active');
-        return item && item.textContent.includes('📌');
+        return item && !!item.querySelector('.chat-flag use[href="#i-pin"]');
       },
       { timeout: 8000 }
     );
@@ -272,7 +272,7 @@ async function main() {
     await a.win.waitForFunction(
       () => {
         const item = document.querySelector('.chat-item.active');
-        return item && item.textContent.includes('🔕');
+        return item && !!item.querySelector('.chat-flag use[href="#i-bell-off"]');
       },
       { timeout: 8000 }
     );

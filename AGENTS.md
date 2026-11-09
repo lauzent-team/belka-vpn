@@ -46,6 +46,22 @@ xvfb-run -a node test/shots.js         # regenerate shots/*.png
   `_id`; a handler that returns nothing hangs the caller for the full 15 s timeout.
   `bad(ws, rid, message)` is the shared error path — check its argument order.
 
+## Interface rules
+
+- **Icons come from the sprite.** `#icon-sprite` at the top of `src/index.html`
+  defines every `<symbol>`. Reference one with
+  `<svg class="ico" viewBox="0 0 24 24"><use href="#i-name"></use></svg>`, or from
+  JavaScript with the `icon(id)` helper in `renderer.js`. Do not paste inline SVG
+  paths or emoji into chrome (buttons, menus, badges, rows) — emoji stay only
+  where they are content: the emoji picker, quick reactions and stickers.
+- **Style through tokens.** Colours, radii and shadows live as custom properties in
+  `:root` in `styles.css`; the light theme re-declares them under
+  `body.theme-light`. Do not hardcode a hex outside those two blocks — that is how
+  the old two-tone gradient look crept in.
+- **Separate with hairlines, not boxes.** Prefer `--line` / `--line-soft` rules and
+  background steps (`--bg` → `--bg-2` → `--bg-3` → `--bg-4`) over borders and
+  glows.
+
 ## Data model rules
 
 - **A username is a primary key.** Renaming (`profile.username`) rewrites every

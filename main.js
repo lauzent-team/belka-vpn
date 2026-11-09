@@ -93,8 +93,7 @@ app.whenReady().then(() => {
   ipcMain.handle('sleephy:login', async (_e, payload) => client.login(payload));
   ipcMain.handle('sleephy:unlock', async (_e, password) => client.unlock(password));
   ipcMain.handle('sleephy:logout', async () => {
-    client.disconnect();
-    client.clearIdentity();
+    client.signOut();
     client = newClient();
     await client.connect();
     return { ok: true };
