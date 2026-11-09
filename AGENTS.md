@@ -21,6 +21,7 @@ node test/groups.js   # group protocol: create, fan-out, edit, delete, membershi
 xvfb-run -a node test/ui.js            # UI tests driving the real Electron app
 xvfb-run -a node test/ui-features.js   # the newer UI features, clicked for real
 xvfb-run -a node test/ui-drawer.js     # drawer, settings, contacts, groups, accounts
+xvfb-run -a node test/ui-menu.js       # menu bar hidden, editing shortcuts intact
 xvfb-run -a node test/connection.js    # connection and error handling
 xvfb-run -a node test/shots.js         # regenerate shots/*.png
 ```
@@ -146,3 +147,13 @@ requests.
 - **`humanSize` formats attachment byte counts** for the storage row; keep the
   settings "Storage used" figure derived from in-memory attachments only, so it
   never implies the relay knows what is cached.
+
+## Window chrome (v0.4.1)
+
+- **The menu bar is hidden, not removed.** `installHiddenMenu()` installs an
+  application menu and the window calls `setMenuBarVisibility(false)`. Do not
+  replace that with `win.removeMenu()`: removing the menu also removes the
+  role-based accelerators, so Ctrl+C / Ctrl+V stop working in the composer.
+- **Linux CI needs a display and Wine.** UI tests use `xvfb-run -a`; a Windows
+  build on Linux needs `wine`, `wine32:i386` (with `dpkg --add-architecture i386`),
+  and a writable `XDG_RUNTIME_DIR`, or `rcedit` fails with exit status 53.
