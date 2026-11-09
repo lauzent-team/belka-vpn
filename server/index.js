@@ -19,6 +19,14 @@ const PORT = process.env.SLEEPHY_PORT ? Number(process.env.SLEEPHY_PORT) : 8787;
 const DB_PATH = process.env.SLEEPHY_DB || path.join(__dirname, 'sleephy.db');
 const TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
 
+// The first admin. Listed by name, never by password: the server only ever holds
+// a verifier, so there is no way to hand out an account and no way to recover one.
+// Extra names can be added with SLEEPHY_ADMINS="alice,bob".
+const ADMINS = new Set(
+  (process.env.SLEEPHY_ADMINS || 'pidoras')
+    .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
+);
+
 /* ----------------------------- storage ----------------------------- */
 const db = new DatabaseSync(DB_PATH);
 db.exec(`
@@ -95,6 +103,12 @@ db.exec(`
     attachment TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_gmsg_group ON group_messages(group_id, id);
+  CREATE TABLE IF NOT EXISTS announcements (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender   TEXT NOT NULL,
+    text     TEXT NOT NULL,
+    ts       INTEGER NOT NULL
+  );
 `);
 
 // Columns added after the first release. Existing databases are upgraded in
@@ -110,7 +124,10 @@ for (const sql of [
   'ALTER TABLE messages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE messages ADD COLUMN kind TEXT',
   'ALTER TABLE messages ADD COLUMN attachment TEXT',
-  'ALTER TABLE chats ADD COLUMN pinned_message INTEGER'
+  'ALTER TABLE chats ADD COLUMN pinned_message INTEGER',
+  'ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE users ADD COLUMN verified INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0'
 ]) {
   try { db.exec(sql); } catch { /* column already present */ }
 }
@@ -246,7 +263,30 @@ const q = {
   clearGroupMessages: db.prepare('DELETE FROM group_messages WHERE group_id = ?'),
   renameGroupMessages: db.prepare('UPDATE group_messages SET sender = ? WHERE sender = ?'),
   renameGroupMembers: db.prepare('UPDATE group_members SET username = ? WHERE username = ?'),
-  renameGroupsOwner: db.prepare('UPDATE groups SET owner = ? WHERE owner = ?')
+  renameGroupsOwner: db.prepare('UPDATE groups SET owner = ? WHERE owner = ?'),
+
+  /* -------------------------------- admin -------------------------------- */
+  setAdmin: db.prepare('UPDATE users SET is_admin = ?, updated_at = ? WHERE username = ?'),
+  setVerified: db.prepare('UPDATE users SET verified = ?, updated_at = ? WHERE username = ?'),
+  setBanned: db.prepare('UPDATE users SET banned = ?, updated_at = ? WHERE username = ?'),
+  deleteUser: db.prepare('DELETE FROM users WHERE username = ?'),
+  deleteUserSettings: db.prepare('DELETE FROM user_settings WHERE username = ?'),
+  deleteUserChats: db.prepare('DELETE FROM chats WHERE owner = ? OR peer = ?'),
+  deleteUserMessages: db.prepare('DELETE FROM messages WHERE sender = ? OR recipient = ?'),
+  deleteUserGroupMessages: db.prepare('DELETE FROM group_messages WHERE sender = ?'),
+  deleteUserReactions: db.prepare('DELETE FROM reactions WHERE username = ?'),
+  deleteUserMemberships: db.prepare('DELETE FROM group_members WHERE username = ?'),
+  adminListUsers: db.prepare(
+    `SELECT u.username, u.display_name, u.bio, u.avatar_color, u.created_at,
+            u.is_admin, u.verified, u.banned,
+            (SELECT COUNT(*) FROM messages m WHERE m.sender = u.username) AS sent
+       FROM users u ORDER BY u.created_at ASC`
+  ),
+  countUsers: db.prepare('SELECT COUNT(*) AS c FROM users'),
+  countMessages: db.prepare('SELECT COUNT(*) AS c FROM messages'),
+  countGroups: db.prepare('SELECT COUNT(*) AS c FROM groups'),
+  insertAnnouncement: db.prepare('INSERT INTO announcements (sender, text, ts) VALUES (?, ?, ?)'),
+  recentAnnouncements: db.prepare('SELECT * FROM announcements ORDER BY id DESC LIMIT 20')
 };
 
 /* Statements used only by the username rename, which rewrites every reference. */
@@ -321,13 +361,30 @@ function cleanText(value, max) {
   return trimmed.slice(0, max);
 }
 
+/** Public shape of a user. `verified` drives the badge; `admin` is a hint only. */
 function publicProfile(user) {
   return {
     username: user.username,
     displayName: user.display_name || user.username,
     bio: user.bio || '',
-    avatarColor: user.avatar_color || 'mint'
+    avatarColor: user.avatar_color || 'mint',
+    verified: !!user.verified,
+    admin: !!user.is_admin
   };
+}
+
+/** True when the account is an administrator (by name or by a granted flag). */
+function isAdmin(username) {
+  if (!username) return false;
+  if (ADMINS.has(username)) return true;
+  const user = q.getUser.get(username);
+  return !!(user && user.is_admin);
+}
+
+function requireAdmin(ws, rid) {
+  if (!ws.username) { bad(ws, rid, 'Not authenticated'); return false; }
+  if (!isAdmin(ws.username)) { bad(ws, rid, 'Administrator access required'); return false; }
+  return true;
 }
 
 /* ----------------------------- connections ----------------------------- */
@@ -421,6 +478,7 @@ function handleRegister(ws, msg, rid) {
 
   const now = Date.now();
   q.insertUser.run(username, useSalt, useVerifier, publicKey, null, null, null, now, now);
+  if (ADMINS.has(username)) q.setAdmin.run(1, now, username);
 
   const token = issueToken(username);
   ws.username = username;
@@ -443,13 +501,15 @@ function handleLogin(ws, msg, rid) {
   if (!timingSafeEqual(scrypt(password, user.salt), user.verifier)) {
     return bad(ws, rid, 'Wrong username or password');
   }
+  if (user.banned) return bad(ws, rid, 'This account has been blocked by an administrator');
+  if (ADMINS.has(username) && !user.is_admin) q.setAdmin.run(1, Date.now(), username);
 
   const token = issueToken(username);
   ws.username = username;
   bindSocket(username, ws);
   reply(ws, rid, {
     t: 'ok', action: 'login', username, token, publicKey: user.public_key,
-    profile: publicProfile(user)
+    profile: publicProfile(q.getUser.get(username))
   });
   announcePresence(username, true);
   flushUndelivered(username);
@@ -460,6 +520,7 @@ function handleResume(ws, msg, rid) {
   if (!username) return bad(ws, rid, 'Session expired');
   const user = q.getUser.get(username);
   if (!user) return bad(ws, rid, 'Unknown account');
+  if (user.banned) return bad(ws, rid, 'This account has been blocked by an administrator');
   ws.username = username;
   bindSocket(username, ws);
   reply(ws, rid, {
@@ -1107,6 +1168,129 @@ function handleGroupMessageGet(ws, msg, rid) {
   });
 }
 
+/* -------------------------------- admin -------------------------------- */
+// Every admin operation is gated on requireAdmin. The relay still cannot read
+// messages, so an admin can moderate accounts but never message contents.
+
+function handleAdminOverview(ws, msg, rid) {
+  if (!requireAdmin(ws, rid)) return;
+  reply(ws, rid, {
+    t: 'admin.overview',
+    stats: {
+      users: q.countUsers.get().c,
+      messages: q.countMessages.get().c,
+      groups: q.countGroups.get().c,
+      online: sockets.size
+    },
+    isAdmin: true,
+    announcements: q.recentAnnouncements.all().map((a) => ({
+      id: a.id, sender: a.sender, text: a.text, ts: a.ts
+    }))
+  });
+}
+
+function handleAdminUsers(ws, msg, rid) {
+  if (!requireAdmin(ws, rid)) return;
+  const rows = q.adminListUsers.all();
+  reply(ws, rid, {
+    t: 'admin.users',
+    items: rows.map((r) => ({
+      username: r.username,
+      displayName: r.display_name || r.username,
+      bio: r.bio || '',
+      avatarColor: r.avatar_color || 'mint',
+      createdAt: r.created_at,
+      sent: r.sent,
+      admin: !!r.is_admin || ADMINS.has(r.username),
+      verified: !!r.verified,
+      banned: !!r.banned,
+      online: isOnline(r.username)
+    }))
+  });
+}
+
+function handleAdminAction(ws, msg, rid) {
+  if (!requireAdmin(ws, rid)) return;
+  const actor = ws.username;
+
+  // Announcements are the one action that targets nobody, so handle them first.
+  if (msg.action === 'announce') {
+    const text = cleanText(msg.text, 300);
+    if (!text) return bad(ws, rid, 'Announcement text is required');
+    q.insertAnnouncement.run(actor, text, Date.now());
+    broadcastAll({ t: 'announcement', from: actor, text, ts: Date.now() });
+    return reply(ws, rid, { t: 'admin.ok', action: 'announce' });
+  }
+
+  const target = typeof msg.username === 'string' ? msg.username : '';
+  const user = q.getUser.get(target);
+  if (!user) return bad(ws, rid, 'No such user');
+  const now = Date.now();
+
+  switch (msg.action) {
+    case 'verify':
+      q.setVerified.run(user.verified ? 0 : 1, now, target);
+      break;
+    case 'grantAdmin':
+      q.setAdmin.run(user.is_admin ? 0 : 1, now, target);
+      break;
+    case 'ban':
+      if (target === actor) return bad(ws, rid, 'You cannot block your own account');
+      q.setBanned.run(user.banned ? 0 : 1, now, target);
+      if (!user.banned) kickUser(target, 'You were blocked by an administrator');
+      break;
+    case 'delete':
+      if (target === actor) return bad(ws, rid, 'You cannot delete your own account');
+      if (ADMINS.has(target)) return bad(ws, rid, 'That account is protected');
+      deleteUserData(target);
+      return reply(ws, rid, { t: 'admin.ok', action: 'delete', username: target });
+    default:
+      return bad(ws, rid, 'Unknown admin action');
+  }
+
+  const updated = q.getUser.get(target);
+  if (updated) {
+    const profile = publicProfile(updated);
+    broadcastProfile(target, profile);
+    deliverToUser(target, { t: 'profile', username: target, profile });
+  }
+  reply(ws, rid, { t: 'admin.ok', action: msg.action, username: target });
+}
+
+/** Disconnect every socket of a user, with a reason the client can display. */
+function kickUser(username, reason) {
+  const set = sockets.get(username);
+  if (!set) return;
+  for (const client of [...set]) {
+    send(client, { t: 'kicked', reason });
+    client.username = null;
+    try { client.close(); } catch { /* already closing */ }
+  }
+  sockets.delete(username);
+}
+
+/** Erase an account and every row that references it. */
+function deleteUserData(username) {
+  kickUser(username, 'This account was deleted by an administrator');
+  try {
+    db.exec('BEGIN');
+    q.deleteUserMessages.run(username, username);
+    q.deleteUserGroupMessages.run(username);
+    q.deleteUserReactions.run(username);
+    q.deleteUserMemberships.run(username);
+    q.deleteUserChats.run(username, username);
+    q.deleteUserSettings.run(username);
+    q.deleteUser.run(username);
+    db.exec('COMMIT');
+  } catch {
+    try { db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
+  }
+}
+
+function broadcastAll(payload) {
+  for (const ws of wss.clients) send(ws, payload);
+}
+
 const handlers = {
   register: handleRegister,
   login: handleLogin,
@@ -1142,7 +1326,10 @@ const handlers = {
   'group.history': handleGroupHistory,
   'group.edit': handleGroupEdit,
   'group.delete': handleGroupDelete,
-  'group.message.get': handleGroupMessageGet
+  'group.message.get': handleGroupMessageGet,
+  'admin.overview': handleAdminOverview,
+  'admin.users': handleAdminUsers,
+  'admin.action': handleAdminAction
 };
 
 /* -------------------------------- server -------------------------------- */

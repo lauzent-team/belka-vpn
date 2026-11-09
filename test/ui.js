@@ -55,7 +55,7 @@ async function register(win, username, password) {
 
 async function main() {
   const server = spawn(process.execPath, [path.join(__dirname, '..', 'server', 'index.js')], {
-    env: { ...process.env, SLEEPHY_PORT: String(PORT), SLEEPHY_DB: DB },
+    env: { ...process.env, SLEEPHY_PORT: String(PORT), SLEEPHY_DB: DB, SLEEPHY_ADMINS: 'alice' },
     stdio: ['ignore', 'ignore', 'pipe']
   });
   server.stderr.on('data', (d) => process.stderr.write('[server] ' + d));
@@ -118,6 +118,66 @@ async function main() {
     await a.win.waitForSelector('#settings-backdrop:not([hidden])');
     const key = await a.win.textContent('#set-pubkey');
     assert.ok(key && key.length > 20 && key !== '—', 'expected a public key');
+  });
+
+  // Everything from here on needs an administrator. SLEEPHY_ADMINS makes alice
+  // the admin, so the relay grants her the flag at login.
+  await step('the admin panel lists every account', async () => {
+    await a.win.click('.settings-nav-item[data-pane="admin"]');
+    await a.win.waitForSelector('.settings-pane[data-pane="admin"].active');
+    await a.win.waitForSelector('#admin-users .admin-user', { timeout: 8000 });
+    const rows = await a.win.$$eval('#admin-users .admin-user-sub', (els) => els.map((e) => e.textContent));
+    assert.ok(rows.some((t) => t.includes('@alice')), 'alice should be listed');
+    assert.ok(rows.some((t) => t.includes('@bob')), 'bob should be listed');
+  });
+
+  await step('an admin can verify an account and the checkmark shows', async () => {
+    await a.win.click('#admin-users .admin-act[data-act="verify"][data-user="bob"]');
+    await a.win.waitForFunction(
+      () => !!document.querySelector('#admin-users .admin-user-name .admin-tag.verified'),
+      { timeout: 8000 }
+    );
+    // Alice opens Bob's profile: the badge next to the name must be visible.
+    await a.win.click('#btn-settings-close');
+    await a.win.fill('#search', 'bob');
+    await a.win.press('#search', 'Enter');
+    await a.win.waitForSelector('#chat-view:not([hidden])', { timeout: 8000 });
+    await a.win.click('#btn-peer-profile');
+    await a.win.waitForSelector('#profile-backdrop:not([hidden])', { timeout: 8000 });
+    await a.win.waitForFunction(
+      () => !document.getElementById('profile-badge').hidden,
+      { timeout: 8000 }
+    );
+    await a.win.click('#btn-profile-close');
+  });
+
+  await step('an admin announcement reaches the other client', async () => {
+    await a.win.click('#btn-settings');
+    await a.win.waitForSelector('#settings-backdrop:not([hidden])');
+    await a.win.click('.settings-nav-item[data-pane="admin"]');
+    await a.win.waitForSelector('.settings-pane[data-pane="admin"].active');
+    await a.win.fill('#admin-announce-input', 'Всем привет, это объявление');
+    await a.win.click('#btn-admin-announce');
+    await b.win.waitForFunction(
+      () => (document.getElementById('toast') || {}).textContent === '📣 alice: Всем привет, это объявление',
+      { timeout: 8000 }
+    );
+    await a.win.click('#btn-settings-close');
+  });
+
+  await step('a sticker is sent as an encrypted image', async () => {
+    await a.win.click('#btn-emoji');
+    await a.win.waitForSelector('#emoji-panel:not([hidden])');
+    await a.win.click('.panel-switch-tab[data-mode="stickers"]');
+    await a.win.waitForSelector('#sticker-mode:not([hidden])');
+    const before = await a.win.$$eval('#messages .msg.has-attachment', (els) => els.length);
+    await a.win.click('#sticker-grid .sticker-cell');
+    await a.win.waitForFunction(
+      (n) => document.querySelectorAll('#messages .msg.has-attachment').length > n,
+      before,
+      { timeout: 10000 }
+    );
+    await a.win.waitForSelector('#messages .msg.has-attachment .att-image', { timeout: 10000 });
   });
 
   await step('no uncaught errors in the renderer console', async () => {

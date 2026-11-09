@@ -157,3 +157,31 @@ requests.
 - **Linux CI needs a display and Wine.** UI tests use `xvfb-run -a`; a Windows
   build on Linux needs `wine`, `wine32:i386` (with `dpkg --add-architecture i386`),
   and a writable `XDG_RUNTIME_DIR`, or `rcedit` fails with exit status 53.
+  The `wine32` package is required because `rcedit-ia32.exe` is a 32-bit binary;
+  a prefix created before i386 was enabled must be deleted (`rm -rf ~/.wine`) and
+  recreated with `wineboot --init`.
+
+## Admin, verification and the settings shell (v0.5.0)
+
+- **Admin status is a relay flag, not a client claim.** `SLEEPHY_ADMINS` (comma
+  separated) names accounts that get `users.is_admin = 1` at register/login, and
+  `ADMINS` members are protected from `admin.action` delete. The client only
+  learns `admin: true` from its own `publicProfile`, and `setAdminMode()` shows
+  the settings section from that. Never let the renderer decide it is an admin.
+- **`verified` is public, `admin` is a hint.** `publicProfile()` returns both, but
+  only `verified` is rendered as the checkmark (`isVerified()` / `paintBadge()`).
+  A badge must never be drawn from local state alone — it comes from the profile
+  cache that the relay filled in.
+- **`kicked` is the ban/delete notice.** `kickUser()` sends `{t:'kicked', reason}`
+  then closes; `handleKicked()` toasts it and returns to sign-in. Do not remove a
+  user's local keys on kick — the account may simply be blocked, and the keys are
+  the only way back if it is later unbanned.
+- **The settings modal is a two-column shell.** `#settings-nav` items carry
+  `data-pane`, `#settings-panes` sections carry the same `data-pane`, and
+  `selectSettingsPane()` toggles `.active` on both. Controls moved between panes
+  over time, so a UI test that clicks `#btn-theme-toggle` or a `.wallpaper-swatch`
+  must first click `.settings-nav-item[data-pane="chats"]`.
+- **Stickers reuse the encrypted attachment path.** `renderStickerDataUrl()` draws
+  a 128px PNG from an emoji and `sendWithAttachment()` sends it as `kind: 'image'`,
+  so the relay still only sees ciphertext. Do not invent a sticker wire format.
+

@@ -142,6 +142,9 @@ app.whenReady().then(() => {
   ipcMain.handle('sleephy:editGroupMessage', async (_e, payload) => client.editGroupMessage(payload));
   ipcMain.handle('sleephy:deleteGroupMessage', async (_e, payload) => client.deleteGroupMessage(payload));
   ipcMain.handle('sleephy:openGroupAttachment', async (_e, payload) => client.openGroupAttachment(payload));
+  ipcMain.handle('sleephy:adminOverview', async () => client.adminOverview());
+  ipcMain.handle('sleephy:adminUsers', async () => client.adminUsers());
+  ipcMain.handle('sleephy:adminAction', async (_e, payload) => client.adminAction(payload));
 
   // Accounts
   ipcMain.handle('sleephy:listAccounts', async () => client.accounts());

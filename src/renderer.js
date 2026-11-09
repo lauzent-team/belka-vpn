@@ -213,6 +213,36 @@ const els = {
   btnPromptOk: $('btn-prompt-ok'),
   btnPromptCancel: $('btn-prompt-cancel'),
 
+  meBadge: $('me-badge'),
+  peerBadge: $('peer-badge'),
+  profileBadge: $('profile-badge'),
+
+  settingsNav: $('settings-nav'),
+  settingsPanes: $('settings-panes'),
+  setHeroAvatar: $('set-hero-avatar'),
+  setHeroName: $('set-hero-name'),
+  setAccountHandle: $('set-account-handle'),
+  setVersionSub: $('set-version-sub'),
+  setChatPreview: $('set-chatpreview'),
+  setReduceMotion: $('set-reducemotion'),
+  setEscClose: $('set-escclose'),
+  setPlainPaste: $('set-plainpaste'),
+  btnTestSound: $('btn-test-sound'),
+  btnReconnect: $('btn-reconnect'),
+  btnCheckUpdates: $('btn-check-updates'),
+  btnResetSettings: $('btn-reset-settings'),
+  settingsNavAdmin: $('settings-nav-admin'),
+  adminStats: $('admin-stats'),
+  adminUsers: $('admin-users'),
+  adminUsersEmpty: $('admin-users-empty'),
+  adminAnnounceInput: $('admin-announce-input'),
+  btnAdminAnnounce: $('btn-admin-announce'),
+
+  panelSwitch: $('panel-switch'),
+  emojiMode: $('emoji-mode'),
+  stickerMode: $('sticker-mode'),
+  stickerGrid: $('sticker-grid'),
+
   toast: $('toast')
 };
 
@@ -241,7 +271,9 @@ const state = {
   contacts: [], // usernames saved as contacts
   accounts: [], // [{ username, publicKey, active }]
   recording: null, // MediaRecorder state for voice notes
-  selecting: null // Set of message ids while in select mode
+  selecting: null, // Set of message ids while in select mode
+  isAdmin: false, // whether the signed-in account may open the admin panel
+  settingsPane: 'account' // active settings section
 };
 
 /* ------------------------------ utilities ------------------------------ */
@@ -259,7 +291,7 @@ function showError(el, message) {
 }
 
 let toastTimer = null;
-function toast(message) {
+function toast(message, duration = 2600) {
   els.toast.textContent = message;
   els.toast.hidden = false;
   requestAnimationFrame(() => els.toast.classList.add('show'));
@@ -267,7 +299,7 @@ function toast(message) {
   toastTimer = setTimeout(() => {
     els.toast.classList.remove('show');
     setTimeout(() => { els.toast.hidden = true; }, 300);
-  }, 2600);
+  }, duration);
 }
 
 /** Deliver a new message alert, honouring the notification settings. */
@@ -335,6 +367,19 @@ function avatarColorFor(username) {
   if (isGroupKey(username)) return 'violet';
   const p = state.profiles.get(username);
   return (p && p.avatarColor) || 'mint';
+}
+
+/** A verified account (the checkmark) as far as the client knows. */
+function isVerified(username) {
+  if (isGroupKey(username)) return false;
+  const p = state.profiles.get(username);
+  return !!(p && p.verified);
+}
+
+/** Show or hide a checkmark badge for the given account. */
+function paintBadge(el, username) {
+  if (!el) return;
+  el.hidden = !isVerified(username);
 }
 
 function paintAvatar(el, username, size) {
@@ -544,12 +589,13 @@ function chatItemEl(key) {
 
   const name = key === SAVED ? 'Saved Messages' : displayNameFor(key);
   const avatarText = group ? '👥' : initial(displayNameFor(key));
+  const tick = !group && isVerified(peer) ? '<span class="verified-badge verified-badge-sm" title="Проверенный аккаунт">✓</span>' : '';
 
   li.innerHTML = `
     <div class="avatar small" data-color="${escapeHtml(avatarColorFor(key))}">${escapeHtml(avatarText)}</div>
     <div class="chat-item-body">
       <div class="chat-item-top">
-        <span class="chat-item-name">${escapeHtml(name)}</span>
+        <span class="chat-item-name">${escapeHtml(name)}${tick}</span>
         <span class="chat-item-time">${chat.lastTs ? escapeHtml(timeLabel(chat.lastTs)) : ''}</span>
       </div>
       <div class="chat-item-last">${escapeHtml(chat.last || 'No messages yet')}</div>
@@ -725,6 +771,7 @@ async function openChat(key) {
   if (state.selecting) exitSelectMode();
 
   els.peerName.textContent = key === SAVED ? 'Saved Messages' : displayNameFor(key);
+  paintBadge(els.peerBadge, key);
   paintAvatar(els.peerAvatar, key);
   updatePeerSub();
   renderChatList();
@@ -1267,6 +1314,7 @@ async function showProfile(username, { self = false } = {}) {
   els.profileAvatar.textContent = initial(p.displayName || p.username);
   els.profileDisplay.textContent = p.displayName || p.username;
   els.profileHandle.textContent = '@' + p.username;
+  paintBadge(els.profileBadge, p.username);
   els.profileViewUsername.textContent = p.username;
   els.profileViewBio.textContent = p.bio || '—';
   els.profilePresence.textContent = isSelf ? 'This is you' : (info.online ? 'online' : 'offline');
@@ -1407,13 +1455,39 @@ function applySelfProfile(p) {
     els.meAvatar.dataset.color = p.avatarColor || 'mint';
     els.meAvatar.textContent = initial(p.displayName || p.username);
     els.setUsername.textContent = '@' + p.username;
+    if (els.setAccountHandle) els.setAccountHandle.textContent = '@' + p.username;
+    paintBadge(els.meBadge, p.username);
+    if (els.setHeroAvatar) {
+      els.setHeroAvatar.dataset.color = p.avatarColor || 'mint';
+      els.setHeroAvatar.textContent = initial(p.displayName || p.username);
+    }
+    if (els.setHeroName) els.setHeroName.textContent = p.displayName || p.username;
+    setAdminMode(!!p.admin);
   }
+}
+
+/** Show or hide the admin section, and refresh it when it becomes visible. */
+function setAdminMode(on) {
+  if (state.isAdmin === on) { if (on && state.settingsPane === 'admin') loadAdminPanel(); return; }
+  state.isAdmin = on;
+  els.settingsNavAdmin.hidden = !on;
+  if (!on && state.settingsPane === 'admin') selectSettingsPane('account');
+}
+
+/** Tell the user their account was blocked or deleted, and return to sign-in. */
+function handleKicked(reason) {
+  toast(reason || 'Disconnected by an administrator', 6000);
+  state.isAdmin = false;
+  els.settingsBackdrop.hidden = true;
+  setTimeout(() => { showScreen('auth'); }, 1200);
 }
 
 /* ------------------------------- settings ------------------------------- */
 els.btnSettings.addEventListener('click', () => {
   els.settingsBackdrop.hidden = false;
   els.setServer.value = els.serverUrl.value;
+  if (els.setVersionSub) els.setVersionSub.textContent = `Версия ${els.footVer.textContent.replace(/^v/, '')} · сквозное шифрование`;
+  selectSettingsPane(state.settingsPane);
   syncSettingsUI();
   api.status().then((s) => {
     els.setPubkey.textContent = s.publicKey || '—';
@@ -1434,10 +1508,138 @@ function syncSettingsUI() {
   els.setKeepMedia.value = s.keepMedia || 'month';
   els.setEnter.checked = s.sendWithEnter !== false;
   els.setLanguage.value = s.language || 'ru';
+  els.setChatPreview.checked = s.chatPreview !== false;
+  els.setReduceMotion.checked = s.reduceMotion === true;
+  els.setEscClose.checked = s.escClose !== false;
+  els.setPlainPaste.checked = s.plainPaste === true;
   const blocked = Array.isArray(s.blocked) ? s.blocked : [];
-  els.setBlockedSub.textContent = blocked.length ? `${blocked.length} blocked` : 'Nobody is blocked';
+  els.setBlockedSub.textContent = blocked.length ? `${blocked.length} blocked` : 'Никто не заблокирован';
   updateStorageLabel();
 }
+
+/* ------------------------- settings navigation ------------------------- */
+// Telegram-style: a list of sections on the left, one pane on the right.
+
+function selectSettingsPane(name) {
+  state.settingsPane = name;
+  els.settingsNav.querySelectorAll('.settings-nav-item').forEach((b) => {
+    b.classList.toggle('active', b.dataset.pane === name);
+  });
+  els.settingsPanes.querySelectorAll('.settings-pane').forEach((p) => {
+    p.classList.toggle('active', p.dataset.pane === name);
+  });
+  if (name === 'admin') loadAdminPanel();
+}
+
+els.settingsNav.addEventListener('click', (e) => {
+  const btn = e.target.closest('.settings-nav-item');
+  if (btn) selectSettingsPane(btn.dataset.pane);
+});
+
+/** Render the admin summary and user table from the relay. */
+async function loadAdminPanel() {
+  if (!state.isAdmin) return;
+  els.adminUsers.innerHTML = '<p class="panel-empty">Загрузка…</p>';
+  try {
+    const [{ stats, announcements }, users] = await Promise.all([
+      api.adminOverview(),
+      api.adminUsers()
+    ]);
+    els.adminStats.innerHTML = `
+      <div class="admin-stat"><span class="admin-stat-num">${stats.users}</span><span class="admin-stat-label">Пользователей</span></div>
+      <div class="admin-stat"><span class="admin-stat-num">${stats.online}</span><span class="admin-stat-label">Онлайн</span></div>
+      <div class="admin-stat"><span class="admin-stat-num">${stats.messages}</span><span class="admin-stat-label">Сообщений</span></div>
+      <div class="admin-stat"><span class="admin-stat-num">${stats.groups}</span><span class="admin-stat-label">Групп</span></div>
+    `;
+    renderAdminUsers(users);
+    if (announcements.length) {
+      toast(`Объявлений в истории: ${announcements.length}`, 2500);
+    }
+  } catch (err) {
+    els.adminUsers.innerHTML = '';
+    els.adminUsersEmpty.hidden = false;
+    els.adminUsersEmpty.textContent = err.message || 'Не удалось загрузить панель';
+  }
+}
+
+function renderAdminUsers(users) {
+  els.adminUsers.innerHTML = '';
+  els.adminUsersEmpty.hidden = users.length > 0;
+  for (const u of users) {
+    const row = document.createElement('div');
+    row.className = 'admin-user';
+    const flags = [
+      u.admin ? '<span class="admin-tag">админ</span>' : '',
+      u.verified ? '<span class="admin-tag verified">✓</span>' : '',
+      u.banned ? '<span class="admin-tag banned">заблокирован</span>' : '',
+      u.online ? '<span class="admin-tag online">онлайн</span>' : ''
+    ].filter(Boolean).join(' ');
+    row.innerHTML = `
+      <div class="avatar small" data-color="${escapeHtml(u.avatarColor || 'mint')}">${escapeHtml(initial(u.displayName || u.username))}</div>
+      <div class="admin-user-body">
+        <div class="admin-user-name">${escapeHtml(u.displayName || u.username)} ${flags}</div>
+        <div class="admin-user-sub">@${escapeHtml(u.username)} · ${u.sent} сообщ.</div>
+      </div>
+      <div class="admin-user-actions">
+        <button class="admin-act" data-act="verify" data-user="${escapeHtml(u.username)}" title="Галочка">✓</button>
+        <button class="admin-act" data-act="grantAdmin" data-user="${escapeHtml(u.username)}" title="Админ">🛡️</button>
+        <button class="admin-act" data-act="ban" data-user="${escapeHtml(u.username)}" title="Блокировка">🚫</button>
+        <button class="admin-act danger" data-act="delete" data-user="${escapeHtml(u.username)}" title="Удалить">🗑️</button>
+      </div>
+    `;
+    els.adminUsers.appendChild(row);
+  }
+}
+
+els.adminUsers.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.admin-act');
+  if (!btn) return;
+  const { act, user } = btn.dataset;
+  if (act === 'delete') {
+    const ok = await confirmDialog({
+      title: 'Удалить аккаунт?',
+      text: `Аккаунт @${user} и все его сообщения будут удалены безвозвратно.`,
+      confirmLabel: 'Удалить'
+    });
+    if (!ok) return;
+  }
+  try {
+    await api.adminAction({ action: act, username: user });
+    toast('Готово');
+    loadAdminPanel();
+  } catch (err) {
+    toast(err.message || 'Не удалось выполнить действие');
+  }
+});
+
+els.btnAdminAnnounce.addEventListener('click', async () => {
+  const text = els.adminAnnounceInput.value.trim();
+  if (!text) return;
+  try {
+    await api.adminAction({ action: 'announce', text });
+    els.adminAnnounceInput.value = '';
+    toast('Объявление отправлено');
+  } catch (err) {
+    toast(err.message || 'Не удалось отправить объявление');
+  }
+});
+
+function playTestSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.26);
+  } catch { /* audio is unavailable in some environments */ }
+}
+els.btnTestSound.addEventListener('click', playTestSound);
 
 /** Approximate the local cache footprint from attachment sizes we know about. */
 function updateStorageLabel() {
@@ -1463,6 +1665,46 @@ bindToggle(els.setLastSeen, 'lastSeen');
 bindToggle(els.setReceipts, 'readReceipts');
 bindToggle(els.setAutoPhoto, 'autoDownloadPhotos');
 bindToggle(els.setEnter, 'sendWithEnter');
+bindToggle(els.setChatPreview, 'chatPreview');
+bindToggle(els.setEscClose, 'escClose');
+bindToggle(els.setPlainPaste, 'plainPaste');
+
+// "Reduce motion" is applied straight to the document, not just stored.
+els.setReduceMotion.addEventListener('change', async () => {
+  document.documentElement.classList.toggle('reduce-motion', els.setReduceMotion.checked);
+  await persistSettings({ reduceMotion: els.setReduceMotion.checked });
+});
+
+els.btnReconnect.addEventListener('click', async () => {
+  try {
+    await api.connect(els.setServer.value.trim() || els.serverUrl.value.trim());
+    toast('Переподключено');
+  } catch {
+    toast('Не удалось подключиться');
+  }
+});
+
+els.btnCheckUpdates.addEventListener('click', () => {
+  toast('У вас последняя версия');
+});
+
+els.btnResetSettings.addEventListener('click', async () => {
+  const ok = await confirmDialog({
+    title: 'Сбросить настройки?',
+    text: 'Все настройки вернутся к значениям по умолчанию.',
+    confirmLabel: 'Сбросить'
+  });
+  if (!ok) return;
+  await persistSettings({
+    notify: true, notifyPreview: true, notifySound: true, lastSeen: true,
+    readReceipts: true, autoDownloadPhotos: true, sendWithEnter: true,
+    chatPreview: true, escClose: true, plainPaste: false, reduceMotion: false,
+    autoLock: 0, keepMedia: 'month', blocked: []
+  });
+  document.documentElement.classList.remove('reduce-motion');
+  syncSettingsUI();
+  toast('Настройки сброшены');
+});
 
 els.setAutoLock.addEventListener('change', async () => {
   await persistSettings({ autoLock: Number(els.setAutoLock.value) || 0 });
@@ -1628,9 +1870,18 @@ api.onEvent((evt) => {
       renderChatList();
       if (state.activePeer && peerUsername(state.activePeer) === evt.username) {
         els.peerName.textContent = displayNameFor(evt.username);
+        paintBadge(els.peerBadge, evt.username);
         paintAvatar(els.peerAvatar, evt.username);
       }
       if (state.profileTarget === evt.username) showProfile(evt.username, { self: evt.username === state.username });
+      break;
+
+    case 'announcement':
+      toast(`📣 ${evt.from}: ${evt.text}`, 6000);
+      break;
+
+    case 'kicked':
+      handleKicked(evt.reason);
       break;
 
     case 'key':
@@ -2032,6 +2283,94 @@ els.btnEmoji.addEventListener('click', () => {
   els.emojiPanel.hidden = !els.emojiPanel.hidden;
   els.attachBackdrop.hidden = true;
 });
+
+/* ------------------------------ stickers ------------------------------ */
+// Stickers are sent as small images: a 128px PNG rendered from an emoji, so the
+// picture travels through the same encrypted attachment path as a photo. No new
+// wire format is needed, and the relay still only ever sees ciphertext.
+
+const STICKERS = [
+  { name: 'wink', emoji: '😉', tint: '#FFD37A' },
+  { name: 'heart', emoji: '❤️', tint: '#F2668A' },
+  { name: 'laugh', emoji: '😂', tint: '#57E3B4' },
+  { name: 'cool', emoji: '😎', tint: '#3BA8FF' },
+  { name: 'cry', emoji: '😭', tint: '#8A6BFF' },
+  { name: 'angry', emoji: '😡', tint: '#FF6B6B' },
+  { name: 'party', emoji: '🥳', tint: '#B79BFF' },
+  { name: 'fire', emoji: '🔥', tint: '#F0A93B' },
+  { name: 'star', emoji: '⭐', tint: '#FFD37A' },
+  { name: 'rocket', emoji: '🚀', tint: '#3BA8FF' },
+  { name: 'ghost', emoji: '👻', tint: '#93A1B5' },
+  { name: 'clap', emoji: '👏', tint: '#C6F07A' },
+  { name: 'think', emoji: '🤔', tint: '#7BE8E8' },
+  { name: 'sleep', emoji: '😴', tint: '#B79BFF' },
+  { name: 'cat', emoji: '🐱', tint: '#FFB08A' },
+  { name: 'cake', emoji: '🎂', tint: '#F2668A' }
+];
+
+/** Draw one sticker to a 128x128 PNG data URL. */
+function renderStickerDataUrl(sticker) {
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, size, size);
+  grad.addColorStop(0, sticker.tint);
+  grad.addColorStop(1, 'rgba(20, 25, 34, 0.85)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(6, 6, size - 12, size - 12, 26);
+  } else {
+    ctx.rect(6, 6, size - 12, size - 12);
+  }
+  ctx.fill();
+  ctx.font = '64px "Segoe UI Emoji", "Apple Color Emoji", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(sticker.emoji, size / 2, size / 2 + 4);
+  return canvas.toDataURL('image/png');
+}
+
+function buildStickerPanel() {
+  els.stickerGrid.innerHTML = '';
+  for (const sticker of STICKERS) {
+    const cell = document.createElement('button');
+    cell.type = 'button';
+    cell.className = 'sticker-cell';
+    cell.title = sticker.name;
+    const img = document.createElement('img');
+    img.src = renderStickerDataUrl(sticker);
+    img.alt = sticker.name;
+    cell.appendChild(img);
+    cell.addEventListener('click', async () => {
+      els.emojiPanel.hidden = true;
+      const dataUrl = renderStickerDataUrl(sticker);
+      const base64 = dataUrl.split(',')[1];
+      const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+      await sendWithAttachment({
+        kind: 'image', bytes,
+        name: `${sticker.name}.png`, mime: 'image/png',
+        duration: null, preview: dataUrl
+      });
+    });
+    els.stickerGrid.appendChild(cell);
+  }
+}
+
+function setPanelMode(mode) {
+  els.panelSwitch.querySelectorAll('.panel-switch-tab').forEach((t) => {
+    t.classList.toggle('active', t.dataset.mode === mode);
+  });
+  els.emojiMode.hidden = mode !== 'emoji';
+  els.stickerMode.hidden = mode !== 'stickers';
+}
+
+els.panelSwitch.addEventListener('click', (e) => {
+  const tab = e.target.closest('.panel-switch-tab');
+  if (tab) setPanelMode(tab.dataset.mode);
+});
 els.btnAttach.addEventListener('click', () => {
   els.attachBackdrop.hidden = !els.attachBackdrop.hidden;
   els.emojiPanel.hidden = true;
@@ -2253,6 +2592,7 @@ async function loadAppearance() {
   applyTheme(state.settings.theme === 'light' ? 'light' : 'dark');
   applyWallpaper(WALLPAPERS.includes(state.settings.wallpaper) ? state.settings.wallpaper : 'none');
   buildWallpaperPicker();
+  document.documentElement.classList.toggle('reduce-motion', state.settings.reduceMotion === true);
 }
 
 /* ============================ forward / select ============================ */
@@ -2666,6 +3006,7 @@ els.btnGroupCreate.addEventListener('click', async () => {
 (async function boot() {
   setMode('login');
   buildEmojiPanel();
+  buildStickerPanel();
   loadAppearance();
   const s = await api.status();
   if (s.serverUrl) {

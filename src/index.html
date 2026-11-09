@@ -114,6 +114,7 @@
             <div class="avatar me-avatar" id="me-avatar">?</div>
             <div class="me-meta">
               <span class="me-name" id="me-name">—</span>
+              <span class="verified-badge" id="me-badge" hidden title="Проверенный аккаунт">✓</span>
               <span class="me-status"><i class="dot"></i><span id="me-state">offline</span></span>
             </div>
           </button>
@@ -186,6 +187,7 @@
               <div class="avatar" id="peer-avatar">?</div>
               <div class="chat-head-meta">
                 <span class="chat-head-name" id="peer-name">—</span>
+                <span class="verified-badge" id="peer-badge" hidden title="Проверенный аккаунт">✓</span>
                 <span class="chat-head-sub" id="peer-sub">end-to-end encrypted</span>
               </div>
             </button>
@@ -254,8 +256,17 @@
           </div>
 
           <div class="emoji-panel" id="emoji-panel" hidden>
-            <div class="emoji-tabs" id="emoji-tabs"></div>
-            <div class="emoji-grid" id="emoji-grid"></div>
+            <div class="panel-switch" id="panel-switch">
+              <button class="panel-switch-tab active" data-mode="emoji">Смайлики</button>
+              <button class="panel-switch-tab" data-mode="stickers">Стикеры</button>
+            </div>
+            <div class="emoji-mode" id="emoji-mode">
+              <div class="emoji-tabs" id="emoji-tabs"></div>
+              <div class="emoji-grid" id="emoji-grid"></div>
+            </div>
+            <div class="sticker-mode" id="sticker-mode" hidden>
+              <div class="sticker-grid" id="sticker-grid"></div>
+            </div>
           </div>
 
           <form class="composer" id="composer">
@@ -318,6 +329,8 @@
               <span class="profile-handle" id="profile-handle">@—</span>
               <span class="profile-presence" id="profile-presence"></span>
             </div>
+            <span class="verified-badge verified-badge-lg" id="profile-badge" hidden
+                  title="Проверенный аккаунт">✓</span>
           </div>
 
           <!-- read-only view -->
@@ -384,187 +397,364 @@
 
     <!-- =========================== SETTINGS =========================== -->
     <div class="modal-backdrop" id="settings-backdrop" hidden>
-      <div class="modal">
+      <div class="modal modal-settings">
         <header class="modal-head">
-          <h3>Settings</h3>
+          <h3>Настройки</h3>
           <button class="icon-btn" id="btn-settings-close" title="Close">✕</button>
         </header>
-        <div class="modal-body">
-          <div class="setting-row">
-            <div>
-              <span class="setting-title">Account</span>
-              <span class="setting-sub" id="set-username">—</span>
-            </div>
-            <button class="btn-link" id="btn-open-my-profile">Open profile</button>
-          </div>
-          <div class="setting-row">
-            <div>
-              <span class="setting-title">Saved Messages</span>
-              <span class="setting-sub">Notes and files only you can read</span>
-            </div>
-            <button class="btn-link" id="btn-open-saved">Open</button>
-          </div>
-          <div class="setting-sep"></div>
-          <div class="setting-row">
-            <div>
-              <span class="setting-title">Connection</span>
-              <span class="setting-sub" id="set-conn">—</span>
-            </div>
-            <span class="conn-dot" id="set-conn-dot"></span>
-          </div>
-          <label class="field">
-            <span class="field-label">Server address</span>
-            <input id="set-server" type="text" spellcheck="false" />
-          </label>
-          <button class="btn-secondary" id="btn-apply-server">Apply server</button>
+        <div class="settings-shell">
+          <nav class="settings-nav" id="settings-nav">
+            <button class="settings-nav-item active" data-pane="account">
+              <span class="settings-nav-ico">👤</span><span>Мой аккаунт</span>
+            </button>
+            <button class="settings-nav-item" data-pane="messages">
+              <span class="settings-nav-ico">🔔</span><span>Сообщения и звуки</span>
+            </button>
+            <button class="settings-nav-item" data-pane="privacy">
+              <span class="settings-nav-ico">🔒</span><span>Конфиденциальность</span>
+            </button>
+            <button class="settings-nav-item" data-pane="chats">
+              <span class="settings-nav-ico">💬</span><span>Настройки чатов</span>
+            </button>
+            <button class="settings-nav-item" data-pane="advanced">
+              <span class="settings-nav-ico">🛠️</span><span>Расширенные настройки</span>
+            </button>
+            <button class="settings-nav-item" data-pane="language">
+              <span class="settings-nav-ico">🌐</span><span>Язык</span>
+            </button>
+            <div class="settings-nav-sep"></div>
+            <button class="settings-nav-item" data-pane="premium">
+              <span class="settings-nav-ico">💎</span><span>SleePhy Premium</span>
+            </button>
+            <button class="settings-nav-item" data-pane="rockets">
+              <span class="settings-nav-ico">🚀</span><span>SleePhy Rockets</span>
+            </button>
+            <div class="settings-nav-sep"></div>
+            <button class="settings-nav-item" data-pane="admin" id="settings-nav-admin" hidden>
+              <span class="settings-nav-ico">🛡️</span><span>Админ-панель</span>
+            </button>
+          </nav>
 
-          <div class="setting-sep"></div>
-          <span class="setting-title">Appearance</span>
-          <div class="setting-row">
-            <div>
-              <span class="setting-title">Theme</span>
-              <span class="setting-sub" id="set-theme-sub">Dark</span>
-            </div>
-            <button class="btn-secondary btn-compact" id="btn-theme-toggle">Toggle</button>
-          </div>
-          <div class="field">
-            <span class="field-label">Chat wallpaper</span>
-            <div class="wallpaper-picker" id="wallpaper-picker"></div>
-          </div>
+          <div class="settings-panes" id="settings-panes">
+            <!-- ---------------------- MY ACCOUNT ---------------------- -->
+            <section class="settings-pane active" data-pane="account">
+              <div class="settings-hero">
+                <div class="avatar avatar-lg" id="set-hero-avatar">?</div>
+                <div class="settings-hero-meta">
+                  <span class="settings-hero-name" id="set-hero-name">—</span>
+                  <span class="settings-hero-sub" id="set-username">—</span>
+                </div>
+              </div>
+              <button class="btn-secondary" id="btn-open-my-profile">Открыть профиль</button>
+              <div class="setting-sep"></div>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Сохранённые сообщения</span>
+                  <span class="setting-sub">Заметки и файлы, которые видите только вы</span>
+                </div>
+                <button class="btn-link" id="btn-open-saved">Открыть</button>
+              </div>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Имя пользователя</span>
+                  <span class="setting-sub" id="set-account-handle">—</span>
+                </div>
+              </div>
+              <div class="setting-sep"></div>
+              <span class="setting-title">Ваш публичный ключ</span>
+              <code class="key-box" id="set-pubkey">—</code>
+              <p class="setting-note">
+                Покажите его собеседнику, чтобы он убедился, что пишет именно вам.
+                Приватный ключ никогда не покидает это устройство.
+              </p>
+            </section>
 
-          <div class="setting-sep"></div>
-          <span class="setting-title">Notifications</span>
-          <div class="setting-row">
-            <div>
-              <span class="setting-title">Notifications</span>
-              <span class="setting-sub">Show a popup for new messages</span>
-            </div>
-            <label class="switch"><input type="checkbox" id="set-notify" /><span class="slider"></span></label>
-          </div>
-          <div class="setting-row">
-            <div>
-              <span class="setting-title">Message preview</span>
-              <span class="setting-sub">Include the text in the notification</span>
-            </div>
-            <label class="switch"><input type="checkbox" id="set-preview" /><span class="slider"></span></label>
-          </div>
-          <div class="setting-row">
-            <div>
-              <span class="setting-title">Sound</span>
-              <span class="setting-sub">Play a sound for new messages</span>
-            </div>
-            <label class="switch"><input type="checkbox" id="set-sound" /><span class="slider"></span></label>
-          </div>
+            <!-- ------------------- MESSAGES AND SOUNDS ------------------- -->
+            <section class="settings-pane" data-pane="messages">
+              <span class="settings-pane-title">Уведомления</span>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Уведомления</span>
+                  <span class="setting-sub">Показывать всплывающее окно о новых сообщениях</span>
+                </div>
+                <label class="switch"><input type="checkbox" id="set-notify" /><span class="slider"></span></label>
+              </div>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Текст сообщения</span>
+                  <span class="setting-sub">Показывать текст в уведомлении</span>
+                </div>
+                <label class="switch"><input type="checkbox" id="set-preview" /><span class="slider"></span></label>
+              </div>
+              <div class="setting-sep"></div>
+              <span class="settings-pane-title">Звуки</span>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Звук сообщения</span>
+                  <span class="setting-sub">Проигрывать звук при новом сообщении</span>
+                </div>
+                <label class="switch"><input type="checkbox" id="set-sound" /><span class="slider"></span></label>
+              </div>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Проверить звук</span>
+                  <span class="setting-sub">Проиграть короткий сигнал</span>
+                </div>
+                <button class="btn-secondary btn-compact" id="btn-test-sound">Прослушать</button>
+              </div>
+              <div class="setting-sep"></div>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Отправлять по Enter</span>
+                  <span class="setting-sub">Enter отправляет, Shift+Enter — новая строка</span>
+                </div>
+                <label class="switch"><input type="checkbox" id="set-enter" /><span class="slider"></span></label>
+              </div>
+            </section>
 
-          <div class="setting-sep"></div>
-          <span class="setting-title">Privacy and Security</span>
-          <div class="setting-row">
-            <div>
-              <span class="setting-title">Show last seen</span>
-              <span class="setting-sub">Let contacts see when you were online</span>
-            </div>
-            <label class="switch"><input type="checkbox" id="set-lastseen" /><span class="slider"></span></label>
-          </div>
-          <div class="setting-row">
-            <div>
-              <span class="setting-title">Read receipts</span>
-              <span class="setting-sub">Send read marks for your messages</span>
-            </div>
-            <label class="switch"><input type="checkbox" id="set-receipts" /><span class="slider"></span></label>
-          </div>
-          <div class="setting-row">
-            <div>
-              <span class="setting-title">Auto-lock</span>
-              <span class="setting-sub">Lock the vault after a period of inactivity</span>
-            </div>
-            <select class="setting-select" id="set-autolock">
-              <option value="0">Never</option>
-              <option value="5">5 minutes</option>
-              <option value="15">15 minutes</option>
-              <option value="60">1 hour</option>
-            </select>
-          </div>
-          <div class="setting-row">
-            <div>
-              <span class="setting-title">Blocked users</span>
-              <span class="setting-sub" id="set-blocked-sub">Nobody is blocked</span>
-            </div>
-            <button class="btn-link" id="btn-blocked">Manage</button>
-          </div>
+            <!-- --------------------- PRIVACY --------------------- -->
+            <section class="settings-pane" data-pane="privacy">
+              <span class="settings-pane-title">Приватность</span>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Показывать «был(а) в сети»</span>
+                  <span class="setting-sub">Контакты видят, когда вы были онлайн</span>
+                </div>
+                <label class="switch"><input type="checkbox" id="set-lastseen" /><span class="slider"></span></label>
+              </div>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Отчёты о прочтении</span>
+                  <span class="setting-sub">Отправлять отметки о прочтении</span>
+                </div>
+                <label class="switch"><input type="checkbox" id="set-receipts" /><span class="slider"></span></label>
+              </div>
+              <div class="setting-sep"></div>
+              <span class="settings-pane-title">Безопасность</span>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Автоблокировка</span>
+                  <span class="setting-sub">Заблокировать хранилище после простоя</span>
+                </div>
+                <select class="setting-select" id="set-autolock">
+                  <option value="0">Никогда</option>
+                  <option value="5">5 минут</option>
+                  <option value="15">15 минут</option>
+                  <option value="60">1 час</option>
+                </select>
+              </div>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Заблокированные</span>
+                  <span class="setting-sub" id="set-blocked-sub">Никто не заблокирован</span>
+                </div>
+                <button class="btn-link" id="btn-blocked">Изменить</button>
+              </div>
+              <p class="setting-note">
+                Сервер видит только ник, публичный ключ и время отправки. Текст
+                сообщений остаётся зашифрованным.
+              </p>
+            </section>
 
-          <div class="setting-sep"></div>
-          <span class="setting-title">Data and Storage</span>
-          <div class="setting-row">
-            <div>
-              <span class="setting-title">Auto-download photos</span>
-              <span class="setting-sub">Open images automatically</span>
-            </div>
-            <label class="switch"><input type="checkbox" id="set-autophoto" /><span class="slider"></span></label>
-          </div>
-          <div class="setting-row">
-            <div>
-              <span class="setting-title">Keep media</span>
-              <span class="setting-sub">Cache attachments on this device</span>
-            </div>
-            <select class="setting-select" id="set-keepmedia">
-              <option value="week">1 week</option>
-              <option value="month">1 month</option>
-              <option value="forever">Forever</option>
-            </select>
-          </div>
-          <div class="setting-row">
-            <div>
-              <span class="setting-title">Storage used</span>
-              <span class="setting-sub" id="set-storage">—</span>
-            </div>
-            <button class="btn-secondary btn-compact" id="btn-clear-cache">Clear cache</button>
-          </div>
+            <!-- ------------------- CHAT SETTINGS ------------------- -->
+            <section class="settings-pane" data-pane="chats">
+              <span class="settings-pane-title">Медиа и хранение</span>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Автозагрузка фото</span>
+                  <span class="setting-sub">Открывать изображения сразу</span>
+                </div>
+                <label class="switch"><input type="checkbox" id="set-autophoto" /><span class="slider"></span></label>
+              </div>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Хранить медиа</span>
+                  <span class="setting-sub">Кэшировать вложения на этом устройстве</span>
+                </div>
+                <select class="setting-select" id="set-keepmedia">
+                  <option value="week">1 неделя</option>
+                  <option value="month">1 месяц</option>
+                  <option value="forever">Всегда</option>
+                </select>
+              </div>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Занято памяти</span>
+                  <span class="setting-sub" id="set-storage">—</span>
+                </div>
+                <button class="btn-secondary btn-compact" id="btn-clear-cache">Очистить кэш</button>
+              </div>
+              <div class="setting-sep"></div>
+              <span class="settings-pane-title">Оформление</span>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Тема</span>
+                  <span class="setting-sub" id="set-theme-sub">Тёмная</span>
+                </div>
+                <button class="btn-secondary btn-compact" id="btn-theme-toggle">Переключить</button>
+              </div>
+              <div class="field">
+                <span class="field-label">Обои чата</span>
+                <div class="wallpaper-picker" id="wallpaper-picker"></div>
+              </div>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Показывать текст в списке чатов</span>
+                  <span class="setting-sub">Последнее сообщение под именем</span>
+                </div>
+                <label class="switch"><input type="checkbox" id="set-chatpreview" /><span class="slider"></span></label>
+              </div>
+            </section>
 
-          <div class="setting-sep"></div>
-          <span class="setting-title">Chat settings</span>
-          <div class="setting-row">
-            <div>
-              <span class="setting-title">Send with Enter</span>
-              <span class="setting-sub">Enter sends, Shift+Enter adds a line</span>
-            </div>
-            <label class="switch"><input type="checkbox" id="set-enter" /><span class="slider"></span></label>
-          </div>
-          <div class="setting-row">
-            <div>
-              <span class="setting-title">Language</span>
-              <span class="setting-sub">Interface language</span>
-            </div>
-            <select class="setting-select" id="set-language">
-              <option value="ru">Русский</option>
-              <option value="en">English</option>
-            </select>
-          </div>
+            <!-- ------------------- ADVANCED ------------------- -->
+            <section class="settings-pane" data-pane="advanced">
+              <span class="settings-pane-title">Взаимодействие с мессенджером и окном</span>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Уменьшить анимации</span>
+                  <span class="setting-sub">Отключить переходы и плавные эффекты</span>
+                </div>
+                <label class="switch"><input type="checkbox" id="set-reducemotion" /><span class="slider"></span></label>
+              </div>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Закрывать по Escape</span>
+                  <span class="setting-sub">Esc закрывает открытые окна</span>
+                </div>
+                <label class="switch"><input type="checkbox" id="set-escclose" /><span class="slider"></span></label>
+              </div>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Вставлять из буфера без форматирования</span>
+                  <span class="setting-sub">Только обычный текст</span>
+                </div>
+                <label class="switch"><input type="checkbox" id="set-plainpaste" /><span class="slider"></span></label>
+              </div>
+              <div class="setting-sep"></div>
+              <span class="settings-pane-title">Подключения</span>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Соединение</span>
+                  <span class="setting-sub" id="set-conn">—</span>
+                </div>
+                <span class="conn-dot" id="set-conn-dot"></span>
+              </div>
+              <label class="field">
+                <span class="field-label">Адрес сервера</span>
+                <input id="set-server" type="text" spellcheck="false" />
+              </label>
+              <button class="btn-secondary" id="btn-apply-server">Применить сервер</button>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Переподключиться</span>
+                  <span class="setting-sub">Разорвать и установить соединение заново</span>
+                </div>
+                <button class="btn-secondary btn-compact" id="btn-reconnect">Заново</button>
+              </div>
+              <div class="setting-sep"></div>
+              <span class="settings-pane-title">Версия</span>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">SleePhy</span>
+                  <span class="setting-sub" id="set-version-sub">—</span>
+                </div>
+                <span class="drawer-badge">Beta</span>
+              </div>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Обновления</span>
+                  <span class="setting-sub">Проверяются вручную</span>
+                </div>
+                <button class="btn-secondary btn-compact" id="btn-check-updates">Проверить</button>
+              </div>
+              <div class="setting-row">
+                <div>
+                  <span class="setting-title">Сбросить настройки</span>
+                  <span class="setting-sub">Вернуть значения по умолчанию</span>
+                </div>
+                <button class="btn-danger btn-compact" id="btn-reset-settings">Сбросить</button>
+              </div>
+            </section>
 
-          <div class="setting-sep"></div>
-          <span class="setting-title">Your public key</span>
-          <code class="key-box" id="set-pubkey">—</code>
-          <p class="setting-note">
-            Share this with a contact so they can verify your identity.
-            Your private key never leaves this device.
-          </p>
-          <div class="setting-sep"></div>
-          <span class="setting-title">About</span>
-          <div class="setting-row">
-            <div>
-              <span class="setting-title">SleePhy</span>
-              <span class="setting-sub">Version 0.4.0 · end-to-end encrypted</span>
-            </div>
-            <span class="drawer-badge">Beta</span>
+            <!-- ------------------- LANGUAGE ------------------- -->
+            <section class="settings-pane" data-pane="language">
+              <span class="settings-pane-title">Язык интерфейса</span>
+              <label class="field">
+                <span class="field-label">Язык</span>
+                <select class="setting-select" id="set-language">
+                  <option value="ru">Русский</option>
+                  <option value="en">English</option>
+                </select>
+              </label>
+              <p class="setting-note">
+                Часть подписей пока остаётся на английском — перевод добавляется
+                постепенно.
+              </p>
+            </section>
+
+            <!-- ------------------- PREMIUM ------------------- -->
+            <section class="settings-pane" data-pane="premium">
+              <div class="promo-hero promo-premium">
+                <span class="promo-badge">В разработке</span>
+                <h4>SleePhy Premium</h4>
+                <p>Подписка, которая расширит возможности мессенджера.</p>
+              </div>
+              <span class="settings-pane-title">Что появится</span>
+              <ul class="promo-list">
+                <li>Файлы большего размера</li>
+                <li>Уникальные темы и обои</li>
+                <li>Значок рядом с именем</li>
+                <li>Расширенная история сообщений</li>
+                <li>Ускоренная загрузка медиа</li>
+              </ul>
+              <p class="setting-note">
+                Раздел ещё не работает: здесь появится оформление подписки, когда
+                функция будет готова.
+              </p>
+            </section>
+
+            <!-- ------------------- ROCKETS ------------------- -->
+            <section class="settings-pane" data-pane="rockets">
+              <div class="promo-hero promo-rockets">
+                <span class="promo-badge">В разработке</span>
+                <h4>SleePhy Rockets</h4>
+                <p>Внутренняя валюта — как звёзды в Telegram.</p>
+              </div>
+              <span class="settings-pane-title">Что появятся</span>
+              <ul class="promo-list">
+                <li>Поддержка авторов и каналов</li>
+                <li>Платные реакции на сообщения</li>
+                <li>Подарки за активность</li>
+                <li>Оплата подписки Premium</li>
+              </ul>
+              <p class="setting-note">
+                Баланс и покупки пока недоступны — раздел в разработке.
+              </p>
+            </section>
+
+            <!-- ------------------- ADMIN ------------------- -->
+            <section class="settings-pane" data-pane="admin">
+              <span class="settings-pane-title">Сводка</span>
+              <div class="admin-stats" id="admin-stats"></div>
+              <span class="settings-pane-title">Объявление всем</span>
+              <div class="add-contact-row">
+                <input id="admin-announce-input" class="contact-input" type="text"
+                       spellcheck="false" maxlength="300" placeholder="Текст объявления" />
+                <button class="btn-secondary btn-compact" id="btn-admin-announce">Отправить</button>
+              </div>
+              <div class="setting-sep"></div>
+              <span class="settings-pane-title">Пользователи</span>
+              <div class="admin-users" id="admin-users"></div>
+              <p class="panel-empty" id="admin-users-empty" hidden>Пользователей пока нет.</p>
+            </section>
           </div>
-          <p class="setting-note">
-            Messages are encrypted on this device and stored on the relay only as ciphertext.
-            The server never sees your message contents.
-          </p>
-          <div class="setting-sep"></div>
-          <button class="btn-danger" id="btn-logout">Sign out and erase local keys</button>
+        </div>
+        <div class="modal-foot">
+          <button class="btn-danger" id="btn-logout">Выйти и удалить ключи</button>
         </div>
       </div>
     </div>
+
 
     <!-- ========================= CHAT OPTIONS ========================= -->
     <div class="modal-backdrop" id="chatmenu-backdrop" hidden>

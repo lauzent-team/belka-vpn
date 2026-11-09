@@ -255,6 +255,14 @@ class SleePhyClient {
       this.emit({ type: 'typing', from: msg.from, state: msg.state });
       return;
     }
+    if (msg.t === 'announcement') {
+      this.emit({ type: 'announcement', from: msg.from, text: msg.text, ts: msg.ts });
+      return;
+    }
+    if (msg.t === 'kicked') {
+      this.emit({ type: 'kicked', reason: msg.reason || 'Disconnected by an administrator' });
+      return;
+    }
     if (msg.t === 'presence') {
       this.emit({ type: 'presence', username: msg.username, online: !!msg.online });
       return;
@@ -690,6 +698,23 @@ class SleePhyClient {
   async pinMessage({ id, pinned }) {
     const res = await this.request({ t: 'message.pin', id, pinned });
     return { id: res.id, pinned: !!res.pinned, peer: res.peer };
+  }
+
+  /* ------------------------------- admin ------------------------------- */
+
+  async adminOverview() {
+    const res = await this.request({ t: 'admin.overview' });
+    return { stats: res.stats, announcements: res.announcements || [] };
+  }
+
+  async adminUsers() {
+    const res = await this.request({ t: 'admin.users' });
+    return res.items || [];
+  }
+
+  async adminAction({ action, username, text }) {
+    const res = await this.request({ t: 'admin.action', action, username, text });
+    return { action: res.action, username: res.username };
   }
 
   async pinnedMessages({ peer }) {

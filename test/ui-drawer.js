@@ -101,6 +101,8 @@ async function main() {
   });
 
   await step('a settings toggle persists to the account', async () => {
+    await A.win.click('.settings-nav-item[data-pane="messages"]');
+    await A.win.waitForSelector('.settings-pane[data-pane="messages"].active');
     await A.win.click('label.switch:has(#set-sound) .slider'); // turn sound off
     await wait(500);
     const s = await A.win.evaluate(() => window.sleephy.getSettings());
@@ -111,6 +113,8 @@ async function main() {
     await A.win.click('#btn-settings-close');
     await A.win.click('#btn-settings');
     await A.win.waitForSelector('#settings-backdrop:not([hidden])', { timeout: 5000 });
+    await A.win.click('.settings-nav-item[data-pane="messages"]');
+    await A.win.waitForSelector('.settings-pane[data-pane="messages"].active');
     assert.equal(await A.win.isChecked('#set-sound'), false, 'toggle should reflect the saved value');
     await A.win.click('#btn-settings-close');
   });

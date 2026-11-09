@@ -349,6 +349,8 @@ async function main() {
   await step('the theme can be toggled and persists on the body', async () => {
     await a.win.click('#btn-settings');
     await a.win.waitForSelector('#settings-backdrop:not([hidden])');
+    await a.win.click('.settings-nav-item[data-pane="chats"]');
+    await a.win.waitForSelector('.settings-pane[data-pane="chats"].active');
     await a.win.click('#btn-theme-toggle');
     await a.win.waitForFunction(() => document.body.classList.contains('theme-light'), { timeout: 8000 });
     await a.win.click('#btn-theme-toggle');
@@ -359,6 +361,8 @@ async function main() {
   await step('a chat wallpaper can be selected', async () => {
     await a.win.click('#btn-settings');
     await a.win.waitForSelector('#settings-backdrop:not([hidden])');
+    await a.win.click('.settings-nav-item[data-pane="chats"]');
+    await a.win.waitForSelector('.settings-pane[data-pane="chats"].active');
     await a.win.click('.wallpaper-swatch[data-wallpaper="dots"]');
     await a.win.waitForFunction(
       () => document.querySelector('#chat-view').classList.contains('wallpaper-dots'),
