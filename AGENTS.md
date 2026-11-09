@@ -333,3 +333,31 @@ arriving now can change a header that is already on screen.
   who knows a phone number the ability to log in as it.
 
 
+
+## Presence, last seen and group size (v0.6.4)
+
+- **The relay records `users.last_seen` only when the last socket for an account
+  closes.** `unbindSocket()` writes it in the `set.size === 0` branch and then
+  broadcasts `presence` with the timestamp. Do not move it to every disconnect:
+  a second tab closing would mark an online user offline.
+- **`announcePresence()` always sends `lastSeen`.** It is `null` while online and
+  the timestamp while offline, so the client can clear a stale value on reconnect.
+  `profile.get` and each `chats` row carry the same field so a fresh launch shows
+  it before any live event arrives.
+- **A peer's picture is drawn from the fetched profile, not the cache.** In
+  `showProfile()` the cache is seeded a line earlier, but the header (`#profile-avatar`)
+  must read `p` directly through `avatarInnerHtml(p.username, p)`. Painting only
+  the initial here is the bug v0.6.4 fixes.
+- **`peerPresenceText()` is the one place that decides the subtitle.** It returns
+  `в сети`, `был(а) <time>`, or `null` (caller falls back to "end-to-end
+  encrypted"). Use it in both the chat header and the profile so they never drift.
+- **The group header counts online members, not just size.** `updatePeerSub()`
+  builds `N участников, M в сети` from `state.presence`; `plural()` handles the
+  Russian 1/2/5 forms. Do not hand-roll the ending again.
+
+## Keeping the relay up
+
+- **`uncaughtException` and `unhandledRejection` are logged, not fatal.** Both
+  handlers at the bottom of `server/index.js` print and return, so one bad
+  connection cannot take the relay down for everyone. The async SMS `deliverCode()`
+  is the known source of stray rejections; keep the guards even after it is fixed.
