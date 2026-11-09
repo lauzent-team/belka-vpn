@@ -20,10 +20,14 @@ node test/features.js # profiles, usernames, chats, replies, reactions
 node test/groups.js   # group protocol: create, fan-out, edit, delete, membership
 node test/admin.js    # admin panel, verification, blocking, announcements
 node test/accounts.js # sign-out, account switching, dropping an account
+node test/session.js  # token persistence, relay restart, unlock, avatar images
+node test/peer-badges.js # a peer's checkmark and picture survive re-entry
 xvfb-run -a node test/ui.js            # UI tests driving the real Electron app
 xvfb-run -a node test/ui-features.js   # the newer UI features, clicked for real
 xvfb-run -a node test/ui-drawer.js     # drawer, settings, contacts, groups, accounts
 xvfb-run -a node test/ui-menu.js       # menu bar hidden, editing shortcuts intact
+xvfb-run -a node test/ui-session.js    # reopen the app: no sign-in screen, photo kept
+xvfb-run -a node test/ui-peer-badges.js # a peer's badge and picture survive a re-entry
 xvfb-run -a node test/connection.js    # connection and error handling
 xvfb-run -a node test/shots.js         # regenerate shots/*.png
 ```
@@ -250,6 +254,42 @@ relay, but it is **parked**. The button on the sign-in screen is disabled and
 shows "Скоро"; the flow sits behind it, ready to switch on once an SMS provider
 is funded. `test/_auth.js` reaches it by enabling the button, so the path stays
 covered in the meantime.
+
+## Staying signed in (v0.6.2)
+
+A returning device must not be dropped on the sign-in screen. Three things keep
+that true, and all three matter:
+
+- **The session token is persisted** (identity file and account registry), not
+  held in memory. A relay restart used to invalidate every session because the
+  token only ever lived in RAM.
+- **The relay address is persisted** in `sleephy-server.json`. A device created
+  against a non-default relay came back pointing at the bundled default, where
+  its token was unknown — that looked like a session loss. `writeServerUrl()` is
+  called from `connect()`, and the constructor reads it back.
+- **Boot waits for the connection.** `connect()` resolves only after
+  `autoResume()` settles, and `boot()` awaits `connect()` before reading
+  `status()`. Otherwise the first `status()` reports no user and the sign-in
+  screen flashes (or sticks) for a signed-in device.
+
+`autoResume()` drops only the **token** on an active session refusal, never the
+whole identity file, so the sealed private key survives and the user can still
+unlock with their password.
+
+## A peer's checkmark and picture (v0.6.3)
+
+A peer's badge (the checkmark, or the admin-set picture that replaces it) and
+their profile picture live only in an in-memory profile cache, so a fresh launch
+starts empty. Re-entry must not depend on having seen the grant live: an admin
+usually grants a badge while the viewer is offline.
+
+`chats.list` therefore carries each peer's public profile on its row, and both
+sides seed the cache from it — `SleePhyClient.listChats()` fills `peerProfiles`,
+and `loadChats()` in the renderer fills `state.profiles`. Do not drop the
+`profile` field from a chat row: without it the checkmark and the picture
+disappear on every re-entry, which is the exact symptom users reported. After
+seeding, `loadChats()` repaints the open conversation's header, since a profile
+arriving now can change a header that is already on screen.
 
 ## Errors shown to the user
 

@@ -18,6 +18,17 @@ const cryptoLib = require('./crypto');
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
+/**
+ * True only when the relay actively refused the session token (expired or
+ * unknown), as opposed to a transport failure. `request()` rejects with the
+ * server's message for a refused request and with its own text for a socket
+ * problem, so the two are told apart by wording.
+ */
+function isSessionExpired(err) {
+  const message = (err && err.message) || '';
+  return /session expired|unknown account|blocked by an administrator/i.test(message);
+}
+
 // Where the app looks for a relay by default, in priority order:
 //   1. SLEEPHY_SERVER environment variable
 //   2. a bundled server-default.json (written at build time)
@@ -45,7 +56,12 @@ class SleePhyClient {
     this.deviceKeyFile = path.join(userDataDir, 'sleephy-device.key');
     this.onEvent = onEvent;
     this.ws = null;
-    this.serverUrl = DEFAULT_SERVER;
+    // The relay the accounts on this device belong to. A chosen address is
+    // remembered, so reopening the app reaches the same relay instead of the
+    // bundled default — otherwise the stored session is unknown there and the
+    // user is dropped on the sign-in screen.
+    this.serverFile = path.join(userDataDir, 'sleephy-server.json');
+    this.serverUrl = this.readServerUrl() || DEFAULT_SERVER;
     this.username = null;
     this.secretKey = null; // base64, in memory only
     this.publicKey = null;
@@ -63,6 +79,23 @@ class SleePhyClient {
   /* ------------------------- persisted identity ------------------------- */
   readIdentity() {
     try { return JSON.parse(fs.readFileSync(this.file, 'utf8')); } catch { return null; }
+  }
+
+  /** The relay this device last connected to, if any. */
+  readServerUrl() {
+    try {
+      const data = JSON.parse(fs.readFileSync(this.serverFile, 'utf8'));
+      if (data && typeof data.server === 'string' && data.server) return data.server;
+    } catch { /* no saved address */ }
+    return null;
+  }
+
+  writeServerUrl(url) {
+    if (!url) return;
+    try {
+      fs.mkdirSync(path.dirname(this.serverFile), { recursive: true });
+      fs.writeFileSync(this.serverFile, JSON.stringify({ server: url }), { mode: 0o600 });
+    } catch { /* best effort: a failed write just means the default is used */ }
   }
 
   writeIdentity(data) {
@@ -183,12 +216,17 @@ class SleePhyClient {
     const target = serverUrl || this.serverUrl;
     const changed = target !== this.serverUrl;
     this.serverUrl = target;
+    this.writeServerUrl(target);
     this.intentionalClose = false;
 
     return new Promise((resolve) => {
       // Reuse a live socket only when the address has not changed; otherwise a
-      // new address would silently keep talking to the old server.
-      if (!changed && this.ws && this.ws.readyState === WebSocket.OPEN) return resolve();
+      // new address would silently keep talking to the old server. Even then,
+      // wait for an in-flight resume so a caller that reads status() right
+      // after still sees the signed-in user.
+      if (!changed && this.ws && this.ws.readyState === WebSocket.OPEN) {
+        return (this.resumePromise || Promise.resolve()).then(() => resolve());
+      }
       this.teardownSocket();
 
       let settled = false;
@@ -200,8 +238,11 @@ class SleePhyClient {
       ws.on('open', () => {
         this.reconnectDelay = RECONNECT_BASE_MS;
         this.emit({ type: 'connection', state: 'online' });
-        settle();
-        this.autoResume();
+        // Resume before resolving connect(): callers read status() straight
+        // after, and a resume that finished later left them seeing no user —
+        // which is what dropped a returning device on the sign-in screen.
+        this.resumePromise = this.autoResume().catch(() => {});
+        this.resumePromise.then(settle);
       });
 
       ws.on('message', (raw) => this.handleMessage(raw));
@@ -381,25 +422,38 @@ class SleePhyClient {
   async autoResume() {
     const id = this.readIdentity();
     if (!id || !id.token) return;
+    let res;
     try {
-      const res = await this.request({ t: 'resume', token: id.token });
-      this.applySession(res);
-      this.username = res.username;
-      // A device-sealed key (a phone account with no password yet) opens itself,
-      // so the user lands straight in the app instead of an unlock prompt.
-      if (id.sealedWith === 'device' && id.sealed) {
-        try {
-          this.secretKey = await this.openRecord(id, null);
-          this.publicKey = id.publicKey || this.publicKey;
-          this.emit({ type: 'session', state: 'unlocked', username: res.username });
-          return;
-        } catch { /* fall through to the locked state */ }
+      res = await this.request({ t: 'resume', token: id.token });
+    } catch (err) {
+      // Only a definitive "this token is dead" answer may drop the token. A
+      // network hiccup (relay restarting, no route) must leave the record —
+      // and above all its sealed key — untouched, or a returning user is
+      // stranded on the sign-in screen with no way back to their messages.
+      if (isSessionExpired(err)) {
+        this.writeIdentity({ ...id, token: null });
+        this.emit({ type: 'session', state: 'signed-out' });
+      } else {
+        this.emit({ type: 'session', state: 'locked', username: id.username });
       }
-      this.emit({ type: 'session', state: 'locked', username: res.username });
-    } catch {
-      this.clearIdentity();
-      this.emit({ type: 'session', state: 'signed-out' });
+      return;
     }
+    this.applySession(res);
+    this.username = res.username;
+    // Persist the (possibly rotated) token so the next launch resumes too.
+    this.writeIdentity({ ...id, username: res.username, token: this.token, publicKey: this.publicKey });
+    this.upsertAccount({ ...id, username: res.username, token: this.token, publicKey: this.publicKey });
+    // A device-sealed key (a phone account with no password yet) opens itself,
+    // so the user lands straight in the app instead of an unlock prompt.
+    if (id.sealedWith === 'device' && id.sealed) {
+      try {
+        this.secretKey = await this.openRecord(id, null);
+        this.publicKey = id.publicKey || this.publicKey;
+        this.emit({ type: 'session', state: 'unlocked', username: res.username });
+        return;
+      } catch { /* fall through to the locked state */ }
+    }
+    this.emit({ type: 'session', state: 'locked', username: res.username });
   }
 
   async register({ username, password }) {
@@ -894,12 +948,13 @@ class SleePhyClient {
     return { profile: res.profile, online: !!res.online, isSelf: !!res.isSelf };
   }
 
-  async saveProfile({ displayName, bio, avatarColor }) {
+  async saveProfile({ displayName, bio, avatarColor, avatarImage }) {
     const res = await this.request({
       t: 'profile.set',
       displayName: displayName === undefined ? undefined : displayName,
       bio: bio === undefined ? undefined : bio,
-      avatarColor
+      avatarColor,
+      avatarImage: avatarImage === undefined ? undefined : avatarImage
     });
     this.profile = res.profile;
     return res.profile;
@@ -932,7 +987,14 @@ class SleePhyClient {
   /* ------------------------------- chats ------------------------------- */
   async listChats() {
     const res = await this.request({ t: 'chats.list' });
-    return res.items || [];
+    const items = res.items || [];
+    // Seed the peer-profile cache here, not only in the renderer: a chat row
+    // carries the peer's checkmark and picture, and both the chat list and the
+    // open conversation read them from this cache.
+    for (const row of items) {
+      if (row.peer && row.profile) this.peerProfiles.set(row.peer, row.profile);
+    }
+    return items;
   }
 
   async setChatSettings({ peer, pinned, muted, archived }) {

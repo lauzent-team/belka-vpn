@@ -80,7 +80,7 @@ function installHiddenMenu() {
   Menu.setApplicationMenu(menu);
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   installHiddenMenu();
   client = newClient();
 
@@ -155,7 +155,9 @@ app.whenReady().then(() => {
   ipcMain.handle('sleephy:forgetAllAccounts', async () => client.forgetAllAccounts());
 
   createWindow();
-  client.connect().catch(() => {});
+  // Connect before the window reads its state, so the first status() already
+  // reflects a resumed session. The renderer's own connect reuses this socket.
+  await client.connect().catch(() => {});
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

@@ -398,6 +398,17 @@
               <textarea id="profile-bio" rows="3" maxlength="200" placeholder="A short line about you"></textarea>
             </label>
             <div class="field">
+              <span class="field-label">Фото профиля</span>
+              <div class="avatar-picker">
+                <div class="avatar avatar-lg" id="avatar-preview"></div>
+                <div class="avatar-picker-actions">
+                  <button class="btn-secondary btn-compact" type="button" id="btn-avatar-pick">Выбрать фото</button>
+                  <button class="btn-ghost btn-compact" type="button" id="btn-avatar-clear" hidden>Убрать</button>
+                  <span class="avatar-picker-hint" id="avatar-hint">PNG, JPEG или WebP. Можно вставить Ctrl+V.</span>
+                </div>
+              </div>
+            </div>
+            <div class="field">
               <span class="field-label">Avatar colour</span>
               <div class="swatches" id="profile-colors"></div>
             </div>

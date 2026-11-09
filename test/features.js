@@ -307,6 +307,23 @@ async function main() {
     );
   });
 
+  await step('a file exactly at the size limit is accepted', async () => {
+    // The ciphertext is the file plus the 16-byte box MAC, so the relay must
+    // allow that overhead or a file at the stated limit would be refused.
+    const bytes = new Uint8Array(5 * 1024 * 1024);
+    bytes[0] = 42;
+    bytes[bytes.length - 1] = 7;
+    const res = await A.client.sendMessage({
+      to: B.client.status().username, text: '',
+      attachment: { kind: 'file', bytes, name: 'edge.bin', mime: 'application/octet-stream' }
+    });
+    const opened = await B.client.openAttachment({ id: res.id, peer: A.client.status().username });
+    const out = Buffer.from(opened.dataUrl.split(',')[1], 'base64');
+    assert.strictEqual(out.length, bytes.length, 'every byte should survive the round-trip');
+    assert.strictEqual(out[0], 42);
+    assert.strictEqual(out[out.length - 1], 7);
+  });
+
   await step('a message can be pinned and unpinned, both sides notified', async () => {
     const res = await A.client.sendMessage({ to: B.client.status().username, text: 'pin me' });
     const got = await waitFor(() => B.events.find((e) => e.type === 'message' && e.id === res.id));

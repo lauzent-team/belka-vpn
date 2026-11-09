@@ -148,6 +148,10 @@ const els = {
   btnProfileMessage: $('btn-profile-message'),
   btnProfileEdit: $('btn-profile-edit'),
   profileForm: $('profile-form'),
+  avatarPreview: $('avatar-preview'),
+  btnAvatarPick: $('btn-avatar-pick'),
+  btnAvatarClear: $('btn-avatar-clear'),
+  avatarHint: $('avatar-hint'),
   profileName: $('profile-name'),
   profileBio: $('profile-bio'),
   profileColors: $('profile-colors'),
@@ -428,6 +432,20 @@ function badgeImageFor(username) {
   return (p && p.badgeImage) || null;
 }
 
+/** The profile picture for an account, or null to fall back to its initial. */
+function avatarImageFor(username, profile) {
+  if (isGroupKey(username)) return null;
+  const p = profile || state.profiles.get(username) || (username === state.username ? state.profile : null);
+  return (p && p.avatarImage) || null;
+}
+
+/** Inner markup for an avatar: the picture when set, otherwise the initial. */
+function avatarInnerHtml(username, profile) {
+  const image = avatarImageFor(username, profile);
+  if (image) return `<img class="avatar-img" src="${escapeHtml(image)}" alt="" />`;
+  return escapeHtml(initial(displayNameFor(username)));
+}
+
 /**
  * Fill a badge element for the given account. A picture set by an admin is shown
  * as a round image; otherwise the element keeps the checkmark it ships with.
@@ -459,6 +477,11 @@ function paintAvatar(el, username, size) {
   el.dataset.color = avatarColorFor(username);
   if (isGroupKey(username)) {
     el.innerHTML = icon('i-people');
+    return;
+  }
+  const image = avatarImageFor(username);
+  if (image) {
+    el.innerHTML = `<img class="avatar-img" src="${escapeHtml(image)}" alt="" />`;
     return;
   }
   el.textContent = initial(displayNameFor(username));
@@ -669,8 +692,17 @@ async function loadChats() {
         ? (row.last.deleted ? 'Message deleted' : 'Encrypted message')
         : '';
       if (row.last && row.last.from && row.last.from !== state.username) chat.hasIncoming = true;
+      // The chat row carries the peer's profile: seed it so the checkmark and
+      // the badge/picture show right after a re-entry, not only once the
+      // conversation is opened.
+      if (row.peer && row.profile) state.profiles.set(row.peer, row.profile);
     }
     renderChatList();
+    // A profile arriving now may change the header of the chat already open.
+    if (state.activePeer && !isGroupKey(state.activePeer)) {
+      paintBadge(els.peerBadge, state.activePeer);
+      paintAvatar(els.peerAvatar, state.activePeer);
+    }
     refreshVisibleLastMessages();
   } catch { /* offline: keep whatever we have */ }
 }
@@ -761,7 +793,7 @@ function chatItemEl(key) {
   ].filter(Boolean).join(' ');
 
   const name = key === SAVED ? 'Saved Messages' : displayNameFor(key);
-  const avatarInner = group ? icon('i-people') : escapeHtml(initial(displayNameFor(key)));
+  const avatarInner = group ? icon('i-people') : avatarInnerHtml(key);
   const tickImage = !group ? badgeImageFor(peer) : null;
   const tick = !group && isVerified(peer)
     ? (tickImage
@@ -1073,7 +1105,7 @@ async function runSearch(query) {
     li.className = 'chat-item';
     li.dataset.username = u.username;
     li.innerHTML = `
-      <div class="avatar small" data-color="${escapeHtml(u.avatarColor || 'mint')}">${escapeHtml(initial(u.displayName || u.username))}</div>
+      <div class="avatar small" data-color="${escapeHtml(u.avatarColor || 'mint')}">${avatarInnerHtml(u.username, u)}</div>
       <div class="chat-item-body">
         <div class="chat-item-top">
           <span class="chat-item-name">${escapeHtml(u.displayName || u.username)}</span>
@@ -1507,6 +1539,8 @@ async function showProfile(username, { self = false } = {}) {
   els.profileName.value = p.displayName || '';
   els.profileBio.value = p.bio || '';
   buildSwatches(p.avatarColor || 'mint');
+  avatarPending = undefined;
+  paintAvatarPicker();
   renderPubkey(p.username);
 }
 
@@ -1519,6 +1553,106 @@ async function renderPubkey(username) {
     els.profilePubkey.textContent = '—';
   }
 }
+
+/* --------------------------- avatar image --------------------------- */
+// A profile picture is picked, pasted or dropped, downscaled on this device,
+// and stored as a small data: URL, exactly like the admin badge picture.
+const AVATAR_MAX_SIDE = 256;
+const AVATAR_MAX_CHARS = 64 * 1024;
+let avatarPending; // undefined = unchanged, null = cleared, string = new image
+
+function paintAvatarPicker() {
+  const current = avatarPending !== undefined ? avatarPending : (state.profile && state.profile.avatarImage) || null;
+  els.btnAvatarClear.hidden = !current;
+  els.avatarPreview.className = 'avatar avatar-lg';
+  if (current) {
+    els.avatarPreview.dataset.color = 'mint';
+    els.avatarPreview.innerHTML = `<img class="avatar-img" src="${escapeHtml(current)}" alt="" />`;
+  } else {
+    els.avatarPreview.dataset.color = (state.profile && state.profile.avatarColor) || 'mint';
+    els.avatarPreview.textContent = initial((state.profile && state.profile.displayName) || state.username || '?');
+  }
+}
+
+function downscaleAvatar(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Не удалось прочитать файл'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Это не похоже на картинку'));
+      img.onload = () => {
+        const side = Math.min(img.width, img.height);
+        const size = Math.min(AVATAR_MAX_SIDE, side);
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function acceptAvatarFile(file) {
+  if (!file) return;
+  els.avatarHint.textContent = 'PNG, JPEG или WebP. Можно вставить Ctrl+V.';
+  if (!/^image\//.test(file.type || '')) {
+    els.avatarHint.textContent = 'Нужна картинка (PNG, JPEG или WebP)';
+    return;
+  }
+  try {
+    const dataUrl = await downscaleAvatar(file);
+    if (dataUrl.length > AVATAR_MAX_CHARS) {
+      els.avatarHint.textContent = 'Картинка слишком большая';
+      return;
+    }
+    avatarPending = dataUrl;
+    paintAvatarPicker();
+  } catch (err) {
+    els.avatarHint.textContent = err.message || 'Не удалось обработать картинку';
+  }
+}
+
+els.btnAvatarPick.addEventListener('click', async () => {
+  acceptAvatarFile(await pickFile('image/*'));
+});
+els.btnAvatarClear.addEventListener('click', () => {
+  avatarPending = null;
+  paintAvatarPicker();
+});
+els.avatarPreview.addEventListener('click', async () => {
+  acceptAvatarFile(await pickFile('image/*'));
+});
+els.profileForm.addEventListener('paste', (e) => {
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  for (const item of items) {
+    if (item.type && item.type.startsWith('image/')) {
+      e.preventDefault();
+      acceptAvatarFile(item.getAsFile());
+      return;
+    }
+  }
+});
+for (const evt of ['dragenter', 'dragover']) {
+  els.avatarPreview.addEventListener(evt, (e) => {
+    e.preventDefault();
+    els.avatarPreview.parentElement.classList.add('is-drag');
+  });
+}
+for (const evt of ['dragleave', 'drop']) {
+  els.avatarPreview.addEventListener(evt, (e) => {
+    e.preventDefault();
+    els.avatarPreview.parentElement.classList.remove('is-drag');
+  });
+}
+els.avatarPreview.addEventListener('drop', (e) => {
+  const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  acceptAvatarFile(file);
+});
 
 function buildSwatches(selected) {
   els.profileColors.innerHTML = '';
@@ -1585,7 +1719,8 @@ els.profileForm.addEventListener('submit', async (e) => {
     const p = await api.saveProfile({
       displayName: els.profileName.value,
       bio: els.profileBio.value,
-      avatarColor: selected ? selected.dataset.color : undefined
+      avatarColor: selected ? selected.dataset.color : undefined,
+      avatarImage: avatarPending === undefined ? undefined : avatarPending
     });
     state.profile = p;
     state.profiles.set(p.username, p);
@@ -1636,15 +1771,11 @@ function applySelfProfile(p) {
   state.profile = p;
   if (p.username === state.username) {
     els.meName.textContent = p.displayName || p.username;
-    els.meAvatar.dataset.color = p.avatarColor || 'mint';
-    els.meAvatar.textContent = initial(p.displayName || p.username);
+    paintAvatar(els.meAvatar, p.username);
     els.setUsername.textContent = '@' + p.username;
     if (els.setAccountHandle) els.setAccountHandle.textContent = '@' + p.username;
     paintBadge(els.meBadge, p.username);
-    if (els.setHeroAvatar) {
-      els.setHeroAvatar.dataset.color = p.avatarColor || 'mint';
-      els.setHeroAvatar.textContent = initial(p.displayName || p.username);
-    }
+    if (els.setHeroAvatar) paintAvatar(els.setHeroAvatar, p.username, 'avatar-lg');
     if (els.setHeroName) els.setHeroName.textContent = p.displayName || p.username;
     setAdminMode(!!p.admin || !!p.adminByConfig);
   }
@@ -1775,7 +1906,7 @@ function renderAdminUsers() {
       u.online ? '<span class="admin-tag online">онлайн</span>' : ''
     ].filter(Boolean).join(' ');
     row.innerHTML = `
-      <div class="avatar small" data-color="${escapeHtml(u.avatarColor || 'mint')}">${escapeHtml(initial(u.displayName || u.username))}</div>
+      <div class="avatar small" data-color="${escapeHtml(u.avatarColor || 'mint')}">${avatarInnerHtml(u.username, u)}</div>
       <div class="admin-user-body">
         <div class="admin-user-name">${escapeHtml(u.displayName || u.username)} ${flags}</div>
         <div class="admin-user-sub">@${escapeHtml(u.username)} · ${u.sent} сообщ.</div>
@@ -2588,25 +2719,37 @@ function renderImageAttachment(m, wrap) {
   const img = document.createElement('img');
   img.className = 'att-image loading';
   img.alt = m.attachment.name || 'image';
-  if (m.previewUrl) {
-    img.src = m.previewUrl;
+
+  const show = (src) => {
+    img.src = src;
     img.classList.remove('loading');
-  } else if (m.dataUrl) {
-    img.src = m.dataUrl;
-    img.classList.remove('loading');
-  } else {
-    img.addEventListener('click', async () => {
-      if (img.dataset.loaded) return;
-      try {
-        const res = await fetchAttachment(m);
-        m.dataUrl = res.dataUrl;
-        img.src = res.dataUrl;
-        img.classList.remove('loading');
-        img.dataset.loaded = '1';
-      } catch (err) {
-        toast(err.message || 'Could not open the image');
-      }
-    });
+    img.dataset.loaded = '1';
+  };
+
+  // Decrypt once and remember the result on the message, so a re-render (every
+  // new message rebuilds the list) does not fetch and decrypt it again.
+  const load = async () => {
+    if (img.dataset.loaded || img.dataset.loading) return;
+    img.dataset.loading = '1';
+    try {
+      const res = await fetchAttachment(m);
+      m.dataUrl = res.dataUrl;
+      show(res.dataUrl);
+    } catch (err) {
+      img.classList.remove('loading');
+      toast(err.message || 'Could not open the image');
+    } finally {
+      delete img.dataset.loading;
+    }
+  };
+
+  if (m.previewUrl) show(m.previewUrl);
+  else if (m.dataUrl) show(m.dataUrl);
+  else {
+    // Fetch on sight rather than on click: an image that only appeared after a
+    // click looked like it loaded "sometimes", and the click was easy to miss.
+    img.addEventListener('click', load);
+    load();
   }
   wrap.appendChild(img);
 }
@@ -3032,7 +3175,7 @@ function openForward(messages) {
     const li = document.createElement('li');
     li.className = 'chat-item';
     li.innerHTML = `
-      <div class="avatar small" data-color="${escapeHtml(avatarColorFor(peer))}">${escapeHtml(initial(displayNameFor(peer)))}</div>
+      <div class="avatar small" data-color="${escapeHtml(avatarColorFor(peer))}">${avatarInnerHtml(peer)}</div>
       <div class="chat-item-body">
         <div class="chat-item-top"><span class="chat-item-name">${escapeHtml(key === SAVED ? 'Saved Messages' : displayNameFor(peer))}</span></div>
       </div>
@@ -3218,7 +3361,7 @@ function renderAccounts() {
     row.className = 'menu-item';
     row.dataset.username = acc.username;
     row.innerHTML = `
-      <span class="avatar tiny" data-color="${escapeHtml(avatarColorFor(acc.username))}">${escapeHtml(initial(acc.username))}</span>
+      <span class="avatar tiny" data-color="${escapeHtml(avatarColorFor(acc.username))}">${avatarInnerHtml(acc.username)}</span>
       <span class="drawer-label">${escapeHtml(displayNameFor(acc.username))}</span>
       ${acc.active ? '<span class="drawer-badge">активный</span>' : ''}
       <button class="icon-btn" data-forget="${escapeHtml(acc.username)}" title="Убрать с устройства">${icon('i-close')}</button>
@@ -3319,7 +3462,7 @@ function renderContacts() {
     const row = document.createElement('div');
     row.className = 'menu-item contact-row';
     row.innerHTML = `
-      <span class="avatar tiny" data-color="${escapeHtml(avatarColorFor(username))}">${escapeHtml(initial(displayNameFor(username)))}</span>
+      <span class="avatar tiny" data-color="${escapeHtml(avatarColorFor(username))}">${avatarInnerHtml(username)}</span>
       <span class="contact-name">${escapeHtml(displayNameFor(username))}</span>
       <span class="contact-handle">@${escapeHtml(username)}</span>
       <button class="icon-btn" data-remove="${escapeHtml(username)}" title="Удалить">${icon('i-close')}</button>
@@ -3430,6 +3573,10 @@ els.btnGroupCreate.addEventListener('click', async () => {
   buildEmojiPanel();
   buildStickerPanel();
   loadAppearance();
+  // Wait for the connection (and the session resume it triggers) before reading
+  // status, or a returning device is read as signed out and lands on the sign-in
+  // screen for a moment. A failure just falls through to the auth screen.
+  await api.connect().catch(() => {});
   const s = await api.status();
   if (s.serverUrl) {
     els.serverUrl.value = s.serverUrl;

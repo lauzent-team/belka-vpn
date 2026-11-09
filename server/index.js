@@ -118,6 +118,13 @@ db.exec(`
     attempts   INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
   );
+  -- Issued session tokens. Kept on disk so a relay restart does not sign every
+  -- device out: the token survives, and the client resumes without a password.
+  CREATE TABLE IF NOT EXISTS sessions (
+    token    TEXT PRIMARY KEY,
+    username TEXT NOT NULL,
+    exp      INTEGER NOT NULL
+  );
 `);
 
 // Columns added after the first release. Existing databases are upgraded in
@@ -140,7 +147,9 @@ for (const sql of [
   'ALTER TABLE users ADD COLUMN phone TEXT',
   'ALTER TABLE users ADD COLUMN has_password INTEGER NOT NULL DEFAULT 0',
   // A custom badge image (a small data: URL) that replaces the plain checkmark.
-  'ALTER TABLE users ADD COLUMN badge_image TEXT'
+  'ALTER TABLE users ADD COLUMN badge_image TEXT',
+  // A profile picture (a small data: URL). Distinct from the admin badge.
+  'ALTER TABLE users ADD COLUMN avatar_image TEXT'
 ]) {
   try { db.exec(sql); } catch { /* column already present */ }
 }
@@ -174,8 +183,9 @@ const q = {
   setProfile: db.prepare(
     'UPDATE users SET display_name = ?, bio = ?, avatar_color = ?, updated_at = ? WHERE username = ?'
   ),
+  setAvatarImage: db.prepare('UPDATE users SET avatar_image = ?, updated_at = ? WHERE username = ?'),
   searchUsers: db.prepare(
-    `SELECT username, display_name, bio, avatar_color FROM users
+    `SELECT username, display_name, bio, avatar_color, avatar_image FROM users
       WHERE username LIKE ? OR display_name LIKE ? ORDER BY username ASC LIMIT 20`
   ),
   insertMessage: db.prepare(
@@ -311,7 +321,7 @@ const q = {
   deleteUserReactions: db.prepare('DELETE FROM reactions WHERE username = ?'),
   deleteUserMemberships: db.prepare('DELETE FROM group_members WHERE username = ?'),
   adminListUsers: db.prepare(
-    `SELECT u.username, u.display_name, u.bio, u.avatar_color, u.created_at,
+    `SELECT u.username, u.display_name, u.bio, u.avatar_color, u.avatar_image, u.created_at,
             u.is_admin, u.verified, u.banned, u.badge_image,
             (SELECT COUNT(*) FROM messages m WHERE m.sender = u.username) AS sent
        FROM users u ORDER BY u.created_at ASC`
@@ -320,7 +330,15 @@ const q = {
   countMessages: db.prepare('SELECT COUNT(*) AS c FROM messages'),
   countGroups: db.prepare('SELECT COUNT(*) AS c FROM groups'),
   insertAnnouncement: db.prepare('INSERT INTO announcements (sender, text, ts) VALUES (?, ?, ?)'),
-  recentAnnouncements: db.prepare('SELECT * FROM announcements ORDER BY id DESC LIMIT 20')
+  recentAnnouncements: db.prepare('SELECT * FROM announcements ORDER BY id DESC LIMIT 20'),
+
+  /* ------------------------------ sessions ------------------------------ */
+  insertSession: db.prepare('INSERT OR REPLACE INTO sessions (token, username, exp) VALUES (?, ?, ?)'),
+  getSession: db.prepare('SELECT * FROM sessions WHERE token = ?'),
+  deleteSession: db.prepare('DELETE FROM sessions WHERE token = ?'),
+  deleteUserSessions: db.prepare('DELETE FROM sessions WHERE username = ?'),
+  renameSessions: db.prepare('UPDATE sessions SET username = ? WHERE username = ?'),
+  pruneSessions: db.prepare('DELETE FROM sessions WHERE exp < ?')
 };
 
 /* Statements used only by the username rename, which rewrites every reference. */
@@ -333,7 +351,8 @@ const renameStmts = {
   reactions: db.prepare('UPDATE reactions SET username = ? WHERE username = ?'),
   groupMessages: db.prepare('UPDATE group_messages SET sender = ? WHERE sender = ?'),
   groupMembers: db.prepare('UPDATE group_members SET username = ? WHERE username = ?'),
-  groupsOwner: db.prepare('UPDATE groups SET owner = ? WHERE owner = ?')
+  groupsOwner: db.prepare('UPDATE groups SET owner = ? WHERE owner = ?'),
+  sessions: db.prepare('UPDATE sessions SET username = ? WHERE username = ?')
 };
 
 /* --------------------------- password KDF --------------------------- */
@@ -351,19 +370,31 @@ function timingSafeEqual(a, b) {
 }
 
 /* ------------------------------ tokens ------------------------------ */
+// Tokens are kept in memory for speed and mirrored to the `sessions` table so
+// they survive a relay restart. A restart used to wipe every session, which
+// signed every device out and forced the password again.
 const tokens = new Map(); // token -> { username, exp }
 
 function issueToken(username) {
   const token = crypto.randomBytes(32).toString('base64url');
-  tokens.set(token, { username, exp: Date.now() + TOKEN_TTL_MS });
+  const exp = Date.now() + TOKEN_TTL_MS;
+  tokens.set(token, { username, exp });
+  try { q.insertSession.run(token, username, exp); } catch { /* best effort */ }
   return token;
 }
 
 function resolveToken(token) {
   const rec = tokens.get(token);
-  if (!rec) return null;
-  if (rec.exp < Date.now()) { tokens.delete(token); return null; }
-  return rec.username;
+  if (rec) {
+    if (rec.exp < Date.now()) { tokens.delete(token); try { q.deleteSession.run(token); } catch { /* best effort */ } return null; }
+    return rec.username;
+  }
+  // Not in memory: a token issued before the last restart. Fall back to disk.
+  const row = q.getSession.get(token);
+  if (!row) return null;
+  if (row.exp < Date.now()) { try { q.deleteSession.run(token); } catch { /* best effort */ } return null; }
+  tokens.set(token, { username: row.username, exp: row.exp });
+  return row.username;
 }
 
 /* ------------------------------ helpers ------------------------------ */
@@ -384,6 +415,20 @@ function cleanBadgeImage(value) {
   if (typeof value !== 'string') return { error: 'Badge image must be a string' };
   if (value.length > MAX_BADGE_IMAGE_CHARS) return { error: 'Badge image is too large' };
   if (!BADGE_IMAGE_RE.test(value)) return { error: 'Badge image must be a PNG, JPEG, GIF or WebP' };
+  return { value };
+}
+
+/**
+ * A profile picture arrives as a small data: URL. Same rules as the badge, but
+ * a tighter cap: every profile broadcast carries it, so it must stay tiny.
+ */
+const MAX_AVATAR_IMAGE_CHARS = 64 * 1024;
+
+function cleanAvatarImage(value) {
+  if (value === null || value === '') return { value: null };
+  if (typeof value !== 'string') return { error: 'Avatar image must be a string' };
+  if (value.length > MAX_AVATAR_IMAGE_CHARS) return { error: 'Avatar image is too large' };
+  if (!BADGE_IMAGE_RE.test(value)) return { error: 'Avatar image must be a PNG, JPEG, GIF or WebP' };
   return { value };
 }
 
@@ -418,6 +463,8 @@ function publicProfile(user) {
     displayName: user.display_name || user.username,
     bio: user.bio || '',
     avatarColor: user.avatar_color || 'mint',
+    // A profile picture set by the user, shown instead of their initial.
+    avatarImage: user.avatar_image || null,
     verified: !!user.verified,
     // A custom badge picture replaces the plain checkmark when present.
     badgeImage: user.badge_image || null,
@@ -755,6 +802,13 @@ function handleProfileSet(ws, msg, rid) {
   }
 
   q.setProfile.run(displayName, bio, avatarColor, Date.now(), ws.username);
+  // The picture is separate so a display-name edit never clears it, and a
+  // picture edit never touches the name.
+  if (msg.avatarImage !== undefined) {
+    const parsed = cleanAvatarImage(msg.avatarImage);
+    if (parsed.error) return bad(ws, rid, parsed.error);
+    q.setAvatarImage.run(parsed.value, Date.now(), ws.username);
+  }
   const updated = publicProfile(q.getUser.get(ws.username));
   reply(ws, rid, { t: 'profile.saved', profile: updated });
   broadcastProfile(ws.username, updated);
@@ -782,6 +836,7 @@ function handleUsernameSet(ws, msg, rid) {
     renameStmts.groupMessages.run(next, prev);
     renameStmts.groupMembers.run(next, prev);
     renameStmts.groupsOwner.run(next, prev);
+    renameStmts.sessions.run(next, prev);
     db.exec('COMMIT');
   } catch {
     try { db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
@@ -813,6 +868,11 @@ function handleUserSearch(ws, msg, rid) {
 
 const ATTACHMENT_KINDS = new Set(['image', 'file', 'voice']);
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+// The client caps the file the user picks; the ciphertext it sends is that file
+// plus the 16-byte box MAC and base64 padding. The stored blob is checked
+// against the file limit with this slack, so a file exactly at the limit is
+// accepted instead of failing on the encryption overhead.
+const ATTACHMENT_BOX_SLACK = 1024;
 
 /** Shared metadata checks for both direct and group attachments. */
 function attachmentMeta(value) {
@@ -839,7 +899,7 @@ function parseAttachment(value) {
   }
   // base64 length overestimates bytes by ~4/3; this keeps the stored blob bounded.
   const approxBytes = Math.floor(value.box.length * 3 / 4);
-  if (approxBytes > MAX_ATTACHMENT_BYTES) return { error: 'Attachment is too large' };
+  if (approxBytes > MAX_ATTACHMENT_BYTES + ATTACHMENT_BOX_SLACK) return { error: 'Attachment is too large' };
   return {
     kind: meta.kind,
     attachment: JSON.stringify({
@@ -867,7 +927,7 @@ function parseGroupAttachment(value) {
     if (!validB64(box, 12 * 1024 * 1024) || !validB64(nonce, 100)) {
       return { error: 'Malformed attachment payload' };
     }
-    if (Math.floor(box.length * 3 / 4) > MAX_ATTACHMENT_BYTES) {
+    if (Math.floor(box.length * 3 / 4) > MAX_ATTACHMENT_BYTES + ATTACHMENT_BOX_SLACK) {
       return { error: 'Attachment is too large' };
     }
     perMember[user] = { box, nonce };
@@ -1020,8 +1080,13 @@ function handleChatsList(ws, msg, rid) {
   for (const chat of rows) {
     const last = q.lastMessage.get(ws.username, chat.peer, chat.peer, ws.username);
     const unread = q.unreadCount.get(chat.peer, ws.username, chat.last_read).c;
+    // Carry the peer's public profile so a fresh launch can draw the checkmark
+    // and the badge/profile picture. The badge is usually granted while the
+    // viewer is offline, so re-entry must not depend on having seen it live.
+    const peerUser = q.getUser.get(chat.peer);
     items.push({
       peer: chat.peer,
+      profile: peerUser ? publicProfile(peerUser) : null,
       pinned: !!chat.pinned,
       muted: !!chat.muted,
       archived: !!chat.archived,
@@ -1390,6 +1455,7 @@ function handleAdminUsers(ws, msg, rid) {
       displayName: r.display_name || r.username,
       bio: r.bio || '',
       avatarColor: r.avatar_color || 'mint',
+      avatarImage: r.avatar_image || null,
       createdAt: r.created_at,
       sent: r.sent,
       admin: !!r.is_admin || ADMINS.has(r.username),
@@ -1434,6 +1500,11 @@ function handleAdminAction(ws, msg, rid) {
       break;
     }
     case 'grantAdmin':
+      // Refuse self-demotion: it would hide the panel mid-click and, for the
+      // last admin, lock everyone out of the panel entirely.
+      if (target === actor && user.is_admin && !ADMINS.has(target)) {
+        return bad(ws, rid, 'You cannot remove your own admin rights');
+      }
       q.setAdmin.run(user.is_admin ? 0 : 1, now, target);
       break;
     case 'ban':
@@ -1482,6 +1553,7 @@ function deleteUserData(username) {
     q.deleteUserMemberships.run(username);
     q.deleteUserChats.run(username, username);
     q.deleteUserSettings.run(username);
+    q.deleteUserSessions.run(username);
     q.deleteUser.run(username);
     db.exec('COMMIT');
   } catch {
