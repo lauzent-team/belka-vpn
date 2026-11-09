@@ -155,6 +155,12 @@ async function main() {
     await wait(300);
     assert.ok(!C.events.some((e) => e.type === 'channel.message' && e.id === post.id),
       'C joined after the post and gets no backfill');
+    // The owner must learn about the new subscriber, or their next post
+    // would encrypt no envelope for C.
+    const update = await waitFor(() =>
+      A.events.find((e) => e.type === 'channel.updated' && e.channel && e.channel.id === channel.id
+        && (e.channel.subscribers || []).includes(fan2)));
+    assert.ok(update, 'the owner should be told a new subscriber joined');
   });
 
   await step('a new post reaches everyone subscribed now', async () => {
@@ -196,7 +202,8 @@ async function main() {
   await step('the owner can edit the channel name', async () => {
     const updated = await A.client.editChannel({ channelId: channel.id, name: 'Новости 2' });
     assert.equal(updated.name, 'Новости 2');
-    const gotB = await waitFor(() => B.events.find((e) => e.type === 'channel.updated' && e.channel && e.channel.id === channel.id));
+    const gotB = await waitFor(() => B.events.find((e) => e.type === 'channel.updated'
+      && e.channel && e.channel.id === channel.id && e.channel.name === 'Новости 2'));
     assert.ok(gotB, 'subscribers hear about the rename');
     assert.equal(gotB.channel.name, 'Новости 2');
   });

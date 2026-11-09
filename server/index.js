@@ -1552,6 +1552,18 @@ function deliverToChannel(channelId, payload, exceptUser) {
   }
 }
 
+/**
+ * Tell everyone about a membership change. Each subscriber gets a view built
+ * for them, so the owner receives the fresh list of names to encrypt against.
+ */
+function broadcastChannelUpdate(channelId, exceptUser) {
+  for (const s of q.subsOf.all(channelId)) {
+    if (s.username === exceptUser) continue;
+    const view = channelView(channelId, s.username);
+    if (view) deliverToUser(s.username, { t: 'channel.updated', channel: view });
+  }
+}
+
 function handleChannelCreate(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
   const name = cleanText(msg.name, 64);
@@ -1595,6 +1607,8 @@ function handleChannelJoin(ws, msg, rid) {
   const channelId = Number(msg.channelId);
   if (!q.getChannel.get(channelId)) return bad(ws, rid, 'No such channel');
   q.addSub.run(channelId, ws.username, Date.now());
+  // Notify the rest of the channel so the owner picks up the new subscriber.
+  broadcastChannelUpdate(channelId, ws.username);
   reply(ws, rid, { t: 'channel.joined', channel: channelView(channelId, ws.username) });
 }
 
@@ -1605,6 +1619,8 @@ function handleChannelLeave(ws, msg, rid) {
   if (!ch) return bad(ws, rid, 'No such channel');
   if (ch.owner === ws.username) return bad(ws, rid, 'The owner cannot leave the channel');
   q.removeSub.run(channelId, ws.username);
+  // Keep the owner's subscriber list current so posts stop going to the leaver.
+  broadcastChannelUpdate(channelId);
   reply(ws, rid, { t: 'channel.left', channelId });
 }
 

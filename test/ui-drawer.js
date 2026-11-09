@@ -65,7 +65,7 @@ async function main() {
     await A.win.click('#btn-menu');
     await A.win.waitForSelector('#drawer:not([hidden])', { timeout: 5000 });
     const labels = await A.win.$$eval('#drawer .drawer-item .drawer-label', (els) => els.map((e) => e.textContent.trim()));
-    for (const want of ['Аккаунты', 'Мой профиль', 'Создать аккаунт или группу', 'Контакты', 'Сохранённые сообщения', 'Настройки']) {
+    for (const want of ['Аккаунты', 'Мой профиль', 'Создать аккаунт, группу или канал', 'Каналы', 'Контакты', 'Сохранённые сообщения', 'Настройки']) {
       assert.ok(labels.includes(want), `drawer is missing "${want}"`);
     }
     assert.ok(labels.length >= 7, 'the drawer should offer an extra entry beyond the six required');
@@ -133,12 +133,13 @@ async function main() {
   });
 
   let groupName;
+  let channelName;
   await step('a group can be created from the drawer', async () => {
     groupName = 'Друзья ' + suffix;
     await A.win.click('#btn-menu');
     await A.win.click('#drawer .drawer-item[data-drawer="create"]');
-    await A.win.waitForSelector('#confirm-backdrop:not([hidden])', { timeout: 5000 });
-    await A.win.click('#btn-confirm-no'); // "Новая группа"
+    await A.win.waitForSelector('#create-backdrop:not([hidden])', { timeout: 5000 });
+    await A.win.click('#create-group');
     await A.win.waitForSelector('#group-backdrop:not([hidden])', { timeout: 5000 });
     await A.win.fill('#group-name', groupName);
     await A.win.fill('#group-members', bob);
@@ -198,6 +199,64 @@ async function main() {
     assert.ok(Array.isArray(s.contacts) && s.contacts.includes(bob), 'contacts should be per account');
     const listText = await A.win.textContent('#chat-list');
     assert.ok(listText.includes('Друзья ' + suffix), 'the group should still be there after switching back');
+  });
+
+  await step('a channel can be created, discovered and joined from the UI', async () => {
+    // The owner creates a channel through the drawer's create menu.
+    await A.win.click('#btn-menu');
+    await A.win.click('#drawer .drawer-item[data-drawer="create"]');
+    await A.win.waitForSelector('#create-backdrop:not([hidden])', { timeout: 5000 });
+    await A.win.click('#create-channel');
+    await A.win.waitForSelector('#channel-backdrop:not([hidden])', { timeout: 5000 });
+    channelName = 'Канал ' + suffix;
+    await A.win.fill('#channel-name', channelName);
+    await A.win.fill('#channel-desc', 'Описание канала');
+    await A.win.click('#btn-channel-create');
+    await A.win.waitForSelector('#channel-backdrop', { state: 'hidden', timeout: 8000 });
+    await A.win.waitForSelector('#chat-view:not([hidden])', { timeout: 8000 });
+    assert.strictEqual(await A.win.textContent('#peer-name'), channelName);
+
+    // Bob finds it in the channel directory and subscribes.
+    await B.win.click('#btn-menu');
+    await B.win.click('#drawer .drawer-item[data-drawer="channels"]');
+    await B.win.waitForSelector('#discover-backdrop:not([hidden])', { timeout: 5000 });
+    await B.win.fill('#discover-search', channelName);
+    const found = await B.win.waitForFunction(
+      (name) => document.getElementById('discover-list').textContent.includes(name),
+      channelName,
+      { timeout: 8000 }
+    );
+    assert.ok(found, 'the channel should be discoverable');
+    await B.win.click('#discover-list .contact-row [data-open]');
+    await B.win.waitForSelector('#chat-view:not([hidden])', { timeout: 8000 });
+    assert.strictEqual(await B.win.textContent('#peer-name'), channelName);
+  });
+
+  await step('only the owner can post, and the post reaches the subscriber', async () => {
+    // A subscriber's composer is read-only.
+    assert.ok(await B.win.isDisabled('#composer-input'), 'a subscriber cannot post');
+
+    const text = 'Привет, подписчики!';
+    await A.win.fill('#composer-input', text);
+    await A.win.press('#composer-input', 'Enter');
+    await B.win.waitForFunction(
+      (t) => document.getElementById('messages').textContent.includes(t),
+      text,
+      { timeout: 10000 }
+    );
+  });
+
+  await step('the channel is gone from the subscriber list after leaving', async () => {
+    await B.win.click('#btn-chat-menu');
+    await B.win.waitForSelector('#chatmenu-backdrop:not([hidden])', { timeout: 5000 });
+    await B.win.click('#menu-leave');
+    await B.win.waitForSelector('#confirm-backdrop:not([hidden])', { timeout: 5000 });
+    await B.win.click('#btn-confirm-yes');
+    await B.win.waitForFunction(
+      (name) => !document.getElementById('chat-list').textContent.includes(name),
+      channelName,
+      { timeout: 8000 }
+    );
   });
 
   await step('no uncaught errors in either renderer', async () => {
