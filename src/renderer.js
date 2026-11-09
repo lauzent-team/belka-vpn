@@ -234,6 +234,15 @@ const els = {
   promptInput: $('prompt-input'),
   btnPromptOk: $('btn-prompt-ok'),
   btnPromptCancel: $('btn-prompt-cancel'),
+  badgeBackdrop: $('badge-backdrop'),
+  badgeDrop: $('badge-drop'),
+  badgePreview: $('badge-preview'),
+  badgePreviewImg: $('badge-preview-img'),
+  badgeDropHint: $('badge-drop-hint'),
+  badgeError: $('badge-error'),
+  btnBadgeSave: $('btn-badge-save'),
+  btnBadgeRemove: $('btn-badge-remove'),
+  btnBadgeCancel: $('btn-badge-cancel'),
 
   meBadge: $('me-badge'),
   peerBadge: $('peer-badge'),
@@ -412,9 +421,36 @@ function isVerified(username) {
   return !!(p && p.verified);
 }
 
-/** Show or hide a checkmark badge for the given account. */
+/** The admin-set badge picture for an account, or null for the plain checkmark. */
+function badgeImageFor(username) {
+  if (isGroupKey(username)) return null;
+  const p = state.profiles.get(username);
+  return (p && p.badgeImage) || null;
+}
+
+/**
+ * Fill a badge element for the given account. A picture set by an admin is shown
+ * as a round image; otherwise the element keeps the checkmark it ships with.
+ * Callers show or hide the element themselves.
+ */
+function fillBadge(el, username) {
+  if (!el) return;
+  const image = badgeImageFor(username);
+  const fallback = el.dataset.badgeFallback || el.innerHTML;
+  el.dataset.badgeFallback = fallback;
+  if (image) {
+    el.classList.add('verified-badge-img');
+    el.innerHTML = `<img src="${escapeHtml(image)}" alt="" />`;
+  } else {
+    el.classList.remove('verified-badge-img');
+    el.innerHTML = fallback;
+  }
+}
+
+/** Show or hide a badge for the given account, drawing its picture when set. */
 function paintBadge(el, username) {
   if (!el) return;
+  fillBadge(el, username);
   el.hidden = !isVerified(username);
 }
 
@@ -726,7 +762,12 @@ function chatItemEl(key) {
 
   const name = key === SAVED ? 'Saved Messages' : displayNameFor(key);
   const avatarInner = group ? icon('i-people') : escapeHtml(initial(displayNameFor(key)));
-  const tick = !group && isVerified(peer) ? `<span class="verified-badge verified-badge-sm" title="Проверенный аккаунт">${icon('i-check')}</span>` : '';
+  const tickImage = !group ? badgeImageFor(peer) : null;
+  const tick = !group && isVerified(peer)
+    ? (tickImage
+      ? `<span class="verified-badge verified-badge-sm verified-badge-img" title="Проверенный аккаунт"><img src="${escapeHtml(tickImage)}" alt="" /></span>`
+      : `<span class="verified-badge verified-badge-sm" title="Проверенный аккаунт">${icon('i-check')}</span>`)
+    : '';
 
   li.innerHTML = `
     <div class="avatar small" data-color="${escapeHtml(avatarColorFor(key))}">${avatarInner}</div>
@@ -1741,6 +1782,7 @@ function renderAdminUsers() {
       </div>
       <div class="admin-user-actions">
         <button class="admin-act${u.verified ? ' on' : ''}" data-act="verify" data-user="${escapeHtml(u.username)}" title="${u.verified ? 'Снять галочку' : 'Дать галочку'}">${icon('i-check')}</button>
+        <button class="admin-act${u.badgeImage ? ' on' : ''}" data-act="badge" data-user="${escapeHtml(u.username)}" title="${u.badgeImage ? 'Заменить значок' : 'Свой значок вместо галочки'}">${icon('i-image')}</button>
         <button class="admin-act${u.admin ? ' on' : ''}" data-act="grantAdmin" data-user="${escapeHtml(u.username)}" title="${u.admin ? 'Снять админа' : 'Сделать админом'}">${icon('i-shield')}</button>
         <button class="admin-act danger${u.banned ? ' on' : ''}" data-act="ban" data-user="${escapeHtml(u.username)}" title="${u.banned ? 'Разблокировать' : 'Заблокировать'}">${icon('i-ban')}</button>
         <button class="admin-act danger" data-act="delete" data-user="${escapeHtml(u.username)}" title="Удалить">${icon('i-trash')}</button>
@@ -1750,10 +1792,160 @@ function renderAdminUsers() {
   }
 }
 
+/* --------------------------- badge image dialog --------------------------- */
+// An admin can give an account its own round picture in place of the checkmark.
+// The picture is pasted from the clipboard or picked from a file, downscaled on
+// this device, and stored as a small data: URL.
+const BADGE_MAX_SIDE = 128;
+const BADGE_MAX_CHARS = 128 * 1024;
+let badgeTarget = null;
+let badgePending = null;
+
+function badgeDialogOpen(username, current) {
+  badgeTarget = username;
+  badgePending = current || null;
+  els.badgeError.hidden = true;
+  els.badgeError.textContent = '';
+  els.btnBadgeRemove.hidden = !current;
+  paintBadgePreview(badgePending);
+  els.badgeBackdrop.hidden = false;
+  els.badgeDrop.focus();
+}
+
+function badgeDialogClose() {
+  els.badgeBackdrop.hidden = true;
+  badgeTarget = null;
+  badgePending = null;
+}
+
+function paintBadgePreview(dataUrl) {
+  if (dataUrl) {
+    els.badgePreviewImg.src = dataUrl;
+    els.badgePreview.hidden = false;
+    els.badgeDropHint.textContent = 'Картинка выбрана. Можно вставить другую.';
+  } else {
+    els.badgePreviewImg.removeAttribute('src');
+    els.badgePreview.hidden = true;
+    els.badgeDropHint.textContent = 'Ctrl+V — вставить · или нажмите, чтобы выбрать файл';
+  }
+}
+
+/** Shrink a picture to a small square so the stored data: URL stays tiny. */
+function downscaleBadge(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Не удалось прочитать файл'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Это не похоже на картинку'));
+      img.onload = () => {
+        const side = Math.min(img.width, img.height);
+        const size = Math.min(BADGE_MAX_SIDE, side);
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        // Crop to a centred square so the round badge is not distorted.
+        ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function acceptBadgeFile(file) {
+  if (!file) return;
+  if (!/^image\//.test(file.type || '')) {
+    els.badgeError.textContent = 'Нужна картинка (PNG, JPEG, GIF или WebP)';
+    els.badgeError.hidden = false;
+    return;
+  }
+  try {
+    const dataUrl = await downscaleBadge(file);
+    if (dataUrl.length > BADGE_MAX_CHARS) {
+      els.badgeError.textContent = 'Картинка слишком большая';
+      els.badgeError.hidden = false;
+      return;
+    }
+    badgePending = dataUrl;
+    els.badgeError.hidden = true;
+    els.btnBadgeRemove.hidden = false;
+    paintBadgePreview(dataUrl);
+  } catch (err) {
+    els.badgeError.textContent = err.message || 'Не удалось обработать картинку';
+    els.badgeError.hidden = false;
+  }
+}
+
+els.badgeDrop.addEventListener('click', async () => {
+  const file = await pickFile('image/*');
+  acceptBadgeFile(file);
+});
+
+els.badgeDrop.addEventListener('paste', (e) => {
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  for (const item of items) {
+    if (item.type && item.type.startsWith('image/')) {
+      e.preventDefault();
+      acceptBadgeFile(item.getAsFile());
+      return;
+    }
+  }
+});
+
+for (const evt of ['dragenter', 'dragover']) {
+  els.badgeDrop.addEventListener(evt, (e) => { e.preventDefault(); els.badgeDrop.classList.add('is-drag'); });
+}
+for (const evt of ['dragleave', 'drop']) {
+  els.badgeDrop.addEventListener(evt, (e) => { e.preventDefault(); els.badgeDrop.classList.remove('is-drag'); });
+}
+els.badgeDrop.addEventListener('drop', (e) => {
+  const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  acceptBadgeFile(file);
+});
+
+els.btnBadgeSave.addEventListener('click', async () => {
+  if (!badgeTarget) return;
+  try {
+    await api.adminAction({ action: 'badge', username: badgeTarget, image: badgePending });
+    badgeDialogClose();
+    toast('Значок сохранён');
+    loadAdminPanel();
+  } catch (err) {
+    els.badgeError.textContent = err.message || 'Не удалось сохранить значок';
+    els.badgeError.hidden = false;
+  }
+});
+
+els.btnBadgeRemove.addEventListener('click', async () => {
+  if (!badgeTarget) return;
+  try {
+    await api.adminAction({ action: 'badge', username: badgeTarget, image: null });
+    badgeDialogClose();
+    toast('Значок убран');
+    loadAdminPanel();
+  } catch (err) {
+    els.badgeError.textContent = err.message || 'Не удалось убрать значок';
+    els.badgeError.hidden = false;
+  }
+});
+
+els.btnBadgeCancel.addEventListener('click', badgeDialogClose);
+els.badgeBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.badgeBackdrop) badgeDialogClose();
+});
+
 els.adminUsers.addEventListener('click', async (e) => {
   const btn = e.target.closest('.admin-act');
   if (!btn) return;
   const { act, user } = btn.dataset;
+  if (act === 'badge') {
+    const row = (state.adminUsers || []).find((u) => u.username === user);
+    badgeDialogOpen(user, row && row.badgeImage);
+    return;
+  }
   if (act === 'delete') {
     const ok = await confirmDialog({
       title: 'Удалить аккаунт?',

@@ -138,7 +138,9 @@ for (const sql of [
   'ALTER TABLE users ADD COLUMN verified INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE users ADD COLUMN phone TEXT',
-  'ALTER TABLE users ADD COLUMN has_password INTEGER NOT NULL DEFAULT 0'
+  'ALTER TABLE users ADD COLUMN has_password INTEGER NOT NULL DEFAULT 0',
+  // A custom badge image (a small data: URL) that replaces the plain checkmark.
+  'ALTER TABLE users ADD COLUMN badge_image TEXT'
 ]) {
   try { db.exec(sql); } catch { /* column already present */ }
 }
@@ -299,6 +301,7 @@ const q = {
   /* -------------------------------- admin -------------------------------- */
   setAdmin: db.prepare('UPDATE users SET is_admin = ?, updated_at = ? WHERE username = ?'),
   setVerified: db.prepare('UPDATE users SET verified = ?, updated_at = ? WHERE username = ?'),
+  setBadgeImage: db.prepare('UPDATE users SET badge_image = ?, updated_at = ? WHERE username = ?'),
   setBanned: db.prepare('UPDATE users SET banned = ?, updated_at = ? WHERE username = ?'),
   deleteUser: db.prepare('DELETE FROM users WHERE username = ?'),
   deleteUserSettings: db.prepare('DELETE FROM user_settings WHERE username = ?'),
@@ -309,7 +312,7 @@ const q = {
   deleteUserMemberships: db.prepare('DELETE FROM group_members WHERE username = ?'),
   adminListUsers: db.prepare(
     `SELECT u.username, u.display_name, u.bio, u.avatar_color, u.created_at,
-            u.is_admin, u.verified, u.banned,
+            u.is_admin, u.verified, u.banned, u.badge_image,
             (SELECT COUNT(*) FROM messages m WHERE m.sender = u.username) AS sent
        FROM users u ORDER BY u.created_at ASC`
   ),
@@ -368,6 +371,22 @@ const USERNAME_RE = /^[a-z0-9_]{3,32}$/;
 const VALID_B64 = /^[A-Za-z0-9+/=_-]+$/;
 const AVATAR_COLORS = new Set(['mint', 'sky', 'violet', 'amber', 'rose', 'lime', 'cyan', 'coral']);
 
+/**
+ * A badge picture arrives as a small data: URL from the admin's device. Only
+ * raster images are accepted, and the size is capped so a single account cannot
+ * bloat the database or every profile broadcast.
+ */
+const BADGE_IMAGE_RE = /^data:image\/(png|jpeg|jpg|gif|webp);base64,[A-Za-z0-9+/=]+$/;
+const MAX_BADGE_IMAGE_CHARS = 128 * 1024;
+
+function cleanBadgeImage(value) {
+  if (value === null || value === '') return { value: null };
+  if (typeof value !== 'string') return { error: 'Badge image must be a string' };
+  if (value.length > MAX_BADGE_IMAGE_CHARS) return { error: 'Badge image is too large' };
+  if (!BADGE_IMAGE_RE.test(value)) return { error: 'Badge image must be a PNG, JPEG, GIF or WebP' };
+  return { value };
+}
+
 function bad(ws, rid, message) {
   reply(ws, rid, { t: 'error', message });
 }
@@ -400,6 +419,8 @@ function publicProfile(user) {
     bio: user.bio || '',
     avatarColor: user.avatar_color || 'mint',
     verified: !!user.verified,
+    // A custom badge picture replaces the plain checkmark when present.
+    badgeImage: user.badge_image || null,
     admin: !!user.is_admin,
     // Named in ADMINS but not yet flagged: the relay still treats them as an
     // admin, so the client must show the panel. The flag is set on next login.
@@ -1373,6 +1394,7 @@ function handleAdminUsers(ws, msg, rid) {
       sent: r.sent,
       admin: !!r.is_admin || ADMINS.has(r.username),
       verified: !!r.verified,
+      badgeImage: r.badge_image || null,
       banned: !!r.banned,
       online: isOnline(r.username)
     }))
@@ -1401,6 +1423,16 @@ function handleAdminAction(ws, msg, rid) {
     case 'verify':
       q.setVerified.run(user.verified ? 0 : 1, now, target);
       break;
+    case 'badge': {
+      // An admin-supplied picture replaces the checkmark. `null` clears it, and
+      // setting a picture also marks the account verified, since the badge is
+      // what a verified account is meant to show.
+      const parsed = cleanBadgeImage(msg.image === undefined ? null : msg.image);
+      if (parsed.error) return bad(ws, rid, parsed.error);
+      q.setBadgeImage.run(parsed.value, now, target);
+      if (parsed.value && !user.verified) q.setVerified.run(1, now, target);
+      break;
+    }
     case 'grantAdmin':
       q.setAdmin.run(user.is_admin ? 0 : 1, now, target);
       break;

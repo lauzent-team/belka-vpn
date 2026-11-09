@@ -1198,6 +1198,86 @@ const PAIRS = [
   [
     "Enter a phone number in international format, e.g. +79991234567",
     "Введите номер в международном формате, например +79991234567"
+  ],
+  [
+    "Account badge",
+    "Значок аккаунта"
+  ],
+  [
+    "Badge",
+    "значок"
+  ],
+  [
+    "The picture is shown instead of the checkmark. Paste it from the clipboard or pick a file.",
+    "Картинка показывается вместо галочки. Вставьте её из буфера или выберите файл."
+  ],
+  [
+    "Ctrl+V to paste · or click to pick a file",
+    "Ctrl+V — вставить · или нажмите, чтобы выбрать файл"
+  ],
+  [
+    "Picture selected. You can paste another one.",
+    "Картинка выбрана. Можно вставить другую."
+  ],
+  [
+    "Remove badge",
+    "Убрать значок"
+  ],
+  [
+    "An image is required (PNG, JPEG, GIF or WebP)",
+    "Нужна картинка (PNG, JPEG, GIF или WebP)"
+  ],
+  [
+    "The picture is too large",
+    "Картинка слишком большая"
+  ],
+  [
+    "Could not read the file",
+    "Не удалось прочитать файл"
+  ],
+  [
+    "That does not look like an image",
+    "Это не похоже на картинку"
+  ],
+  [
+    "Could not process the picture",
+    "Не удалось обработать картинку"
+  ],
+  [
+    "Could not save the badge",
+    "Не удалось сохранить значок"
+  ],
+  [
+    "Could not remove the badge",
+    "Не удалось убрать значок"
+  ],
+  [
+    "Badge saved",
+    "Значок сохранён"
+  ],
+  [
+    "Badge removed",
+    "Значок убран"
+  ],
+  [
+    "Replace badge",
+    "Заменить значок"
+  ],
+  [
+    "Own badge instead of the checkmark",
+    "Свой значок вместо галочки"
+  ],
+  [
+    "Badge image is too large",
+    "Значок слишком большой"
+  ],
+  [
+    "Badge image must be a PNG, JPEG, GIF or WebP",
+    "Значок должен быть PNG, JPEG, GIF или WebP"
+  ],
+  [
+    "Badge image must be a string",
+    "Значок должен быть строкой"
   ]
 ];
 

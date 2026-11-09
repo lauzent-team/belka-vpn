@@ -190,6 +190,15 @@ requests.
   only `verified` is rendered as the checkmark (`isVerified()` / `paintBadge()`).
   A badge must never be drawn from local state alone — it comes from the profile
   cache that the relay filled in.
+- **The badge can be a picture, not just a checkmark.** An admin sets
+  `users.badge_image` through `admin.action` with `action: 'badge'`; the relay
+  validates it as a small raster `data:` URL (`cleanBadgeImage`, ≤128 KB, PNG /
+  JPEG / GIF / WebP) and exposes it as `publicProfile().badgeImage`. The renderer
+  crops and downscales the picked file to 128 px on the admin's device before
+  sending, so the payload stays tiny. Setting a picture also sets `verified`;
+  clearing it (`image: null`) leaves the account verified with the checkmark.
+  Anywhere a badge is drawn, use `fillBadge()`/`paintBadge()` so the picture and
+  the checkmark stay interchangeable.
 - **`kicked` is the ban/delete notice.** `kickUser()` sends `{t:'kicked', reason}`
   then closes; `handleKicked()` toasts it and returns to sign-in. Do not remove a
   user's local keys on kick — the account may simply be blocked, and the keys are

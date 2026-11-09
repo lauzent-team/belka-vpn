@@ -862,6 +862,9 @@ body.theme-light ::-webkit-scrollbar-thumb { background: #C4CEDA; }
 .verified-badge-sm .ico { font-size: 10px; }
 .verified-badge-lg { width: 22px; height: 22px; }
 .verified-badge-lg .ico { font-size: 15px; }
+/* A picture set by an admin fills the same round slot as the checkmark. */
+.verified-badge-img { background: var(--bg-2); overflow: hidden; }
+.verified-badge-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 /* ============================== settings shell ============================== */
 .modal-settings { width: min(780px, calc(100% - 32px)); display: flex; flex-direction: column; max-height: calc(100vh - 48px); overflow: hidden; }
@@ -918,6 +921,20 @@ body.theme-light ::-webkit-scrollbar-thumb { background: #C4CEDA; }
 .admin-search:focus { border-color: var(--accent); }
 .admin-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 11px; color: var(--text-faint); padding: 0 2px; }
 .admin-legend b { color: var(--text-dim); font-weight: 600; }
+
+/* ========================== badge image dialog ========================== */
+.badge-drop {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; min-height: 132px; margin: 4px 0 2px; padding: 16px;
+  border: 1px dashed var(--line); border-radius: 12px; background: var(--bg);
+  cursor: pointer; text-align: center; outline: none;
+}
+.badge-drop:hover, .badge-drop:focus-visible { border-color: var(--accent); }
+.badge-drop.is-drag { border-color: var(--accent); background: var(--bg-2); }
+.badge-drop-hint { font-size: 12px; color: var(--text-faint); }
+.badge-preview { width: 64px; height: 64px; }
+.badge-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.badge-error { margin: 8px 0 0; font-size: 12.5px; color: var(--danger, #e5544b); }
 .admin-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .admin-stat { background: var(--bg-3); border-radius: var(--radius-sm); padding: 13px 10px; text-align: center; display: flex; flex-direction: column; gap: 2px; }
 .admin-stat-num { font-size: 21px; font-weight: 600; color: var(--accent); }

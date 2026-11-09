@@ -833,8 +833,8 @@ class SleePhyClient {
     return res.items || [];
   }
 
-  async adminAction({ action, username, text }) {
-    const res = await this.request({ t: 'admin.action', action, username, text });
+  async adminAction({ action, username, text, image }) {
+    const res = await this.request({ t: 'admin.action', action, username, text, image });
     return { action: res.action, username: res.username };
   }
 

@@ -821,6 +821,7 @@
 
               <div class="admin-legend">
                 <span><b><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-check"></use></svg></b> галочка</span>
+                <span><b><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-image"></use></svg></b> значок</span>
                 <span><b><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-shield"></use></svg></b> админ</span>
                 <span><b><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-ban"></use></svg></b> блокировка</span>
                 <span><b><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"></use></svg></b> удалить</span>
@@ -901,6 +902,30 @@
           <div class="profile-actions">
             <button class="btn-primary" id="btn-prompt-ok">Save</button>
             <button class="btn-ghost" id="btn-prompt-cancel">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====================== BADGE IMAGE DIALOG ====================== -->
+    <div class="modal-backdrop" id="badge-backdrop" hidden>
+      <div class="modal modal-confirm">
+        <header class="modal-head">
+          <h3>Значок аккаунта</h3>
+        </header>
+        <div class="modal-body">
+          <p class="confirm-text" id="badge-sub">Картинка показывается вместо галочки. Вставьте её из буфера или выберите файл.</p>
+          <div class="badge-drop" id="badge-drop" tabindex="0">
+            <div class="verified-badge verified-badge-lg badge-preview" id="badge-preview" hidden>
+              <img id="badge-preview-img" alt="" />
+            </div>
+            <span class="badge-drop-hint" id="badge-drop-hint">Ctrl+V — вставить · или нажмите, чтобы выбрать файл</span>
+          </div>
+          <p class="badge-error" id="badge-error" hidden></p>
+          <div class="profile-actions">
+            <button class="btn-primary" id="btn-badge-save">Сохранить</button>
+            <button class="btn-ghost" id="btn-badge-remove" hidden>Убрать значок</button>
+            <button class="btn-ghost" id="btn-badge-cancel">Отмена</button>
           </div>
         </div>
       </div>

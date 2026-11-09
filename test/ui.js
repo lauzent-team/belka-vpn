@@ -193,6 +193,53 @@ async function main() {
     await a.win.click('#btn-profile-close');
   });
 
+  await step('an admin can give an account a badge picture instead of the checkmark', async () => {
+    await a.win.click('#btn-settings');
+    await a.win.waitForSelector('#settings-backdrop:not([hidden])');
+    await a.win.click('.settings-nav-item[data-pane="admin"]');
+    await a.win.waitForSelector('.settings-pane[data-pane="admin"].active');
+    await a.win.click('#admin-users .admin-act[data-act="badge"][data-user="bob"]');
+    await a.win.waitForSelector('#badge-backdrop:not([hidden])', { timeout: 8000 });
+
+    // Paste a real picture the way a person would, then save.
+    await a.win.evaluate(() => {
+      const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+      const bytes = Uint8Array.from(atob(png.split(',')[1]), (c) => c.charCodeAt(0));
+      const file = new File([bytes], 'badge.png', { type: 'image/png' });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      document.getElementById('badge-drop').dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })
+      );
+    });
+    await a.win.waitForFunction(
+      () => !document.getElementById('badge-preview').hidden,
+      { timeout: 8000 }
+    );
+    await a.win.click('#btn-badge-save');
+    await a.win.waitForFunction(
+      () => document.getElementById('badge-backdrop').hidden,
+      { timeout: 8000 }
+    );
+    await a.win.waitForFunction(
+      () => !!document.querySelector('#admin-users .admin-act[data-act="badge"].on'),
+      { timeout: 8000 }
+    );
+
+    // The picture must replace the checkmark wherever Bob's name is shown.
+    await a.win.click('#btn-settings-close');
+    await a.win.fill('#search', 'bob');
+    await a.win.press('#search', 'Enter');
+    await a.win.waitForSelector('#chat-view:not([hidden])', { timeout: 8000 });
+    await a.win.click('#btn-peer-profile');
+    await a.win.waitForSelector('#profile-backdrop:not([hidden])', { timeout: 8000 });
+    await a.win.waitForFunction(
+      () => !!document.querySelector('#profile-badge.verified-badge-img img'),
+      { timeout: 8000 }
+    );
+    await a.win.click('#btn-profile-close');
+  });
+
   await step('an admin announcement reaches the other client', async () => {
     await a.win.click('#btn-settings');
     await a.win.waitForSelector('#settings-backdrop:not([hidden])');

@@ -144,6 +144,49 @@ async function main() {
     assert.strictEqual(evt.from, ADMIN);
   });
 
+  // A badge picture replaces the plain checkmark. A 1x1 PNG is enough to prove
+  // the round trip; the client is what crops and sizes a real picture.
+  const PNG_1PX = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  await step('the admin can give an account a badge picture', async () => {
+    await admin.client.adminAction({ action: 'badge', username: 'victim_user', image: PNG_1PX });
+    const profile = await user.client.getProfile('victim_user');
+    assert.strictEqual(profile.profile.badgeImage, PNG_1PX, 'the picture should reach the public profile');
+    assert.strictEqual(profile.profile.verified, true, 'a picture also marks the account verified');
+  });
+
+  await step('a badge picture is refused when it is not an image', async () => {
+    let message = '';
+    try {
+      await admin.client.adminAction({ action: 'badge', username: 'victim_user', image: 'data:text/html;base64,PHNjcmlwdD4=' });
+    } catch (err) { message = err.message; }
+    assert.ok(/PNG|JPEG|GIF|WebP/i.test(message), `expected an image-type reason, got "${message}"`);
+  });
+
+  await step('a badge picture is refused when it is too large', async () => {
+    let message = '';
+    const huge = 'data:image/png;base64,' + 'A'.repeat(200 * 1024);
+    try {
+      await admin.client.adminAction({ action: 'badge', username: 'victim_user', image: huge });
+    } catch (err) { message = err.message; }
+    assert.ok(/large/i.test(message), `expected a size reason, got "${message}"`);
+  });
+
+  await step('a non-admin cannot set a badge picture', async () => {
+    let threw = false;
+    try {
+      await user.client.adminAction({ action: 'badge', username: 'regular_user', image: PNG_1PX });
+    } catch { threw = true; }
+    assert.ok(threw, 'a non-admin must be refused');
+  });
+
+  await step('clearing a badge picture restores the plain checkmark', async () => {
+    await admin.client.adminAction({ action: 'badge', username: 'victim_user', image: null });
+    const profile = await user.client.getProfile('victim_user');
+    assert.strictEqual(profile.profile.badgeImage, null, 'the picture should be cleared');
+    assert.strictEqual(profile.profile.verified, true, 'the account stays verified');
+  });
+
   await step('blocking an account disconnects it', async () => {
     await admin.client.adminAction({ action: 'ban', username: 'victim_user' });
     const evt = await waitFor(victim.events, (e) => e.type === 'kicked', 5000);
