@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('path');
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu } = require('electron');
 const { SleePhyClient } = require('./src/lib/client');
 
 let win = null;
@@ -37,6 +37,10 @@ function createWindow() {
   win.loadFile(path.join(__dirname, 'src', 'index.html'));
   win.once('ready-to-show', () => win.show());
 
+  // Hide the menu bar. The application menu stays installed (below) so the
+  // standard shortcuts keep working; nothing is drawn on screen.
+  win.setMenuBarVisibility(false);
+
   // External links open in the system browser, never in-app.
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
@@ -44,7 +48,40 @@ function createWindow() {
   });
 }
 
+/**
+ * Install an invisible application menu so the menu bar never renders, while
+ * the role-based accelerators (copy/paste/select-all/reload/zoom) keep working.
+ * Without it, removing the menu also removes Ctrl+C/Ctrl+V.
+ */
+function installHiddenMenu() {
+  const menu = Menu.buildFromTemplate([
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' }, { role: 'redo' }, { type: 'separator' },
+        { role: 'cut' }, { role: 'copy' }, { role: 'paste' },
+        { role: 'selectAll' }
+      ]
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
+        { type: 'separator' }, { role: 'togglefullscreen' }
+      ]
+    },
+    {
+      label: 'Window',
+      submenu: [{ role: 'minimize' }, { role: 'close' }]
+    }
+  ]);
+  Menu.setApplicationMenu(menu);
+}
+
 app.whenReady().then(() => {
+  installHiddenMenu();
   client = newClient();
 
   ipcMain.handle('sleephy:connect', async (_e, url) => {
