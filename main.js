@@ -144,8 +144,24 @@ app.whenReady().then(async () => {
   ipcMain.handle('sleephy:editGroupMessage', async (_e, payload) => client.editGroupMessage(payload));
   ipcMain.handle('sleephy:deleteGroupMessage', async (_e, payload) => client.deleteGroupMessage(payload));
   ipcMain.handle('sleephy:openGroupAttachment', async (_e, payload) => client.openGroupAttachment(payload));
+
+  // Channels
+  ipcMain.handle('sleephy:createChannel', async (_e, payload) => client.createChannel(payload));
+  ipcMain.handle('sleephy:listChannels', async () => client.listChannels());
+  ipcMain.handle('sleephy:discoverChannels', async () => client.discoverChannels());
+  ipcMain.handle('sleephy:channelInfo', async (_e, payload) => client.channelInfo(payload));
+  ipcMain.handle('sleephy:joinChannel', async (_e, payload) => client.joinChannel(payload));
+  ipcMain.handle('sleephy:leaveChannel', async (_e, payload) => client.leaveChannel(payload));
+  ipcMain.handle('sleephy:editChannel', async (_e, payload) => client.editChannel(payload));
+  ipcMain.handle('sleephy:deleteChannel', async (_e, payload) => client.deleteChannel(payload));
+  ipcMain.handle('sleephy:sendChannelPost', async (_e, payload) => client.sendChannelPost(payload));
+  ipcMain.handle('sleephy:channelHistory', async (_e, payload) => client.channelHistory(payload));
+  ipcMain.handle('sleephy:editChannelMessage', async (_e, payload) => client.editChannelMessage(payload));
+  ipcMain.handle('sleephy:deleteChannelMessage', async (_e, payload) => client.deleteChannelMessage(payload));
+  ipcMain.handle('sleephy:openChannelAttachment', async (_e, payload) => client.openChannelAttachment(payload));
   ipcMain.handle('sleephy:adminOverview', async () => client.adminOverview());
   ipcMain.handle('sleephy:adminUsers', async () => client.adminUsers());
+  ipcMain.handle('sleephy:adminChannels', async () => client.adminChannels());
   ipcMain.handle('sleephy:adminAction', async (_e, payload) => client.adminAction(payload));
 
   // Accounts

@@ -103,6 +103,36 @@ db.exec(`
     attachment TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_gmsg_group ON group_messages(group_id, id);
+  -- Channels are one-to-many: only the owner posts, subscribers read. They reuse
+  -- the group_messages envelope layout (one ciphertext copy per subscriber) so a
+  -- post is stored and delivered the same way a group message is.
+  CREATE TABLE IF NOT EXISTS channels (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    owner       TEXT NOT NULL,
+    description TEXT,
+    verified    INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS channel_subs (
+    channel_id INTEGER NOT NULL,
+    username   TEXT NOT NULL,
+    joined_at  INTEGER NOT NULL,
+    PRIMARY KEY (channel_id, username)
+  );
+  CREATE TABLE IF NOT EXISTS channel_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id INTEGER NOT NULL,
+    sender     TEXT NOT NULL,
+    envelope   TEXT NOT NULL,
+    ts         INTEGER NOT NULL,
+    reply_to   INTEGER,
+    edited_at  INTEGER,
+    deleted    INTEGER NOT NULL DEFAULT 0,
+    kind       TEXT,
+    attachment TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_cmsg_channel ON channel_messages(channel_id, id);
   CREATE TABLE IF NOT EXISTS announcements (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     sender   TEXT NOT NULL,
@@ -311,6 +341,48 @@ const q = {
   renameGroupMembers: db.prepare('UPDATE group_members SET username = ? WHERE username = ?'),
   renameGroupsOwner: db.prepare('UPDATE groups SET owner = ? WHERE owner = ?'),
 
+  /* ------------------------------ channels ------------------------------ */
+  insertChannel: db.prepare(
+    'INSERT INTO channels (name, owner, description, created_at) VALUES (?, ?, ?, ?)'
+  ),
+  getChannel: db.prepare('SELECT * FROM channels WHERE id = ?'),
+  renameChannel: db.prepare('UPDATE channels SET name = ?, description = ? WHERE id = ?'),
+  setChannelVerified: db.prepare('UPDATE channels SET verified = ? WHERE id = ?'),
+  deleteChannel: db.prepare('DELETE FROM channels WHERE id = ?'),
+  deleteChannelPosts: db.prepare('DELETE FROM channel_messages WHERE channel_id = ?'),
+  deleteChannelSubs: db.prepare('DELETE FROM channel_subs WHERE channel_id = ?'),
+  addSub: db.prepare(
+    `INSERT INTO channel_subs (channel_id, username, joined_at) VALUES (?, ?, ?)
+     ON CONFLICT(channel_id, username) DO NOTHING`
+  ),
+  removeSub: db.prepare('DELETE FROM channel_subs WHERE channel_id = ? AND username = ?'),
+  subsOf: db.prepare('SELECT username FROM channel_subs WHERE channel_id = ? ORDER BY joined_at ASC'),
+  isSub: db.prepare('SELECT 1 AS ok FROM channel_subs WHERE channel_id = ? AND username = ?'),
+  countSubs: db.prepare('SELECT COUNT(*) AS c FROM channel_subs WHERE channel_id = ?'),
+  channelsFor: db.prepare(
+    'SELECT channel_id FROM channel_subs WHERE username = ? ORDER BY joined_at ASC'
+  ),
+  channelsOwned: db.prepare('SELECT id FROM channels WHERE owner = ? ORDER BY created_at ASC'),
+  // Discovery: every channel, newest first. The client filters by name.
+  allChannels: db.prepare('SELECT * FROM channels ORDER BY created_at DESC LIMIT 200'),
+  insertChannelMessage: db.prepare(
+    `INSERT INTO channel_messages (channel_id, sender, envelope, ts, reply_to, kind, attachment)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ),
+  getChannelMessage: db.prepare('SELECT * FROM channel_messages WHERE id = ?'),
+  channelHistory: db.prepare(
+    'SELECT * FROM channel_messages WHERE channel_id = ? AND deleted = 0 ORDER BY id DESC LIMIT ?'
+  ),
+  editChannelMessage: db.prepare('UPDATE channel_messages SET envelope = ?, edited_at = ? WHERE id = ?'),
+  deleteChannelMessage: db.prepare(
+    "UPDATE channel_messages SET deleted = 1, envelope = '', attachment = NULL WHERE id = ?"
+  ),
+  countChannels: db.prepare('SELECT COUNT(*) AS c FROM channels'),
+  deleteUserSubs: db.prepare('DELETE FROM channel_subs WHERE username = ?'),
+  renameChannelMessages: db.prepare('UPDATE channel_messages SET sender = ? WHERE sender = ?'),
+  renameChannelSubs: db.prepare('UPDATE channel_subs SET username = ? WHERE username = ?'),
+  renameChannelsOwner: db.prepare('UPDATE channels SET owner = ? WHERE owner = ?'),
+
   /* -------------------------------- admin -------------------------------- */
   setAdmin: db.prepare('UPDATE users SET is_admin = ?, updated_at = ? WHERE username = ?'),
   setVerified: db.prepare('UPDATE users SET verified = ?, updated_at = ? WHERE username = ?'),
@@ -355,6 +427,9 @@ const renameStmts = {
   groupMessages: db.prepare('UPDATE group_messages SET sender = ? WHERE sender = ?'),
   groupMembers: db.prepare('UPDATE group_members SET username = ? WHERE username = ?'),
   groupsOwner: db.prepare('UPDATE groups SET owner = ? WHERE owner = ?'),
+  channelMessages: db.prepare('UPDATE channel_messages SET sender = ? WHERE sender = ?'),
+  channelSubs: db.prepare('UPDATE channel_subs SET username = ? WHERE username = ?'),
+  channelsOwner: db.prepare('UPDATE channels SET owner = ? WHERE owner = ?'),
   sessions: db.prepare('UPDATE sessions SET username = ? WHERE username = ?')
 };
 
@@ -854,6 +929,9 @@ function handleUsernameSet(ws, msg, rid) {
     renameStmts.groupMessages.run(next, prev);
     renameStmts.groupMembers.run(next, prev);
     renameStmts.groupsOwner.run(next, prev);
+    renameStmts.channelMessages.run(next, prev);
+    renameStmts.channelSubs.run(next, prev);
+    renameStmts.channelsOwner.run(next, prev);
     renameStmts.sessions.run(next, prev);
     db.exec('COMMIT');
   } catch {
@@ -1442,6 +1520,234 @@ function handleGroupMessageGet(ws, msg, rid) {
   });
 }
 
+/* ------------------------------- channels ------------------------------- */
+// A channel is one-to-many. Only the owner posts; subscribers read. Posts are
+// stored exactly like group messages (a ciphertext copy per subscriber), so the
+// relay never holds plaintext and the delivery path is the same.
+
+function channelView(channelId, viewer) {
+  const ch = q.getChannel.get(channelId);
+  if (!ch) return null;
+  const owner = q.getUser.get(ch.owner);
+  const isOwner = viewer === ch.owner;
+  return {
+    id: ch.id,
+    name: ch.name,
+    description: ch.description || '',
+    owner: ch.owner,
+    ownerProfile: owner ? publicProfile(owner) : null,
+    verified: !!ch.verified,
+    subs: q.countSubs.get(ch.id).c,
+    subscribed: viewer ? !!q.isSub.get(ch.id, viewer) : false,
+    isOwner,
+    // The owner needs every subscriber's name to encrypt one copy per reader.
+    subscribers: isOwner ? q.subsOf.all(ch.id).map((s) => s.username) : undefined
+  };
+}
+
+/** Send a payload to every subscriber of a channel except an optional user. */
+function deliverToChannel(channelId, payload, exceptUser) {
+  for (const s of q.subsOf.all(channelId)) {
+    if (s.username !== exceptUser) deliverToUser(s.username, payload);
+  }
+}
+
+function handleChannelCreate(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const name = cleanText(msg.name, 64);
+  if (!name) return bad(ws, rid, 'Channel needs a name');
+  const description = cleanText(msg.description, 200) || null;
+
+  const info = q.insertChannel.run(name, ws.username, description, Date.now());
+  const channelId = Number(info.lastInsertRowid);
+  // The creator is the first subscriber, so the channel appears in their list.
+  q.addSub.run(channelId, ws.username, Date.now());
+
+  reply(ws, rid, { t: 'channel.created', channel: channelView(channelId, ws.username) });
+}
+
+function handleChannelList(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const ids = new Set([
+    ...q.channelsFor.all(ws.username).map((r) => r.channel_id),
+    ...q.channelsOwned.all(ws.username).map((r) => r.id)
+  ]);
+  const items = [...ids].map((id) => channelView(id, ws.username)).filter(Boolean);
+  reply(ws, rid, { t: 'channels', items });
+}
+
+function handleChannelDiscover(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const items = q.allChannels.all().map((c) => channelView(c.id, ws.username)).filter(Boolean);
+  reply(ws, rid, { t: 'channels.discover', items });
+}
+
+function handleChannelInfo(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const channelId = Number(msg.channelId);
+  const view = channelView(channelId, ws.username);
+  if (!view) return bad(ws, rid, 'No such channel');
+  reply(ws, rid, { t: 'channel.info', channel: view });
+}
+
+function handleChannelJoin(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const channelId = Number(msg.channelId);
+  if (!q.getChannel.get(channelId)) return bad(ws, rid, 'No such channel');
+  q.addSub.run(channelId, ws.username, Date.now());
+  reply(ws, rid, { t: 'channel.joined', channel: channelView(channelId, ws.username) });
+}
+
+function handleChannelLeave(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const channelId = Number(msg.channelId);
+  const ch = q.getChannel.get(channelId);
+  if (!ch) return bad(ws, rid, 'No such channel');
+  if (ch.owner === ws.username) return bad(ws, rid, 'The owner cannot leave the channel');
+  q.removeSub.run(channelId, ws.username);
+  reply(ws, rid, { t: 'channel.left', channelId });
+}
+
+function handleChannelEdit(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const channelId = Number(msg.channelId);
+  const ch = q.getChannel.get(channelId);
+  if (!ch) return bad(ws, rid, 'No such channel');
+  if (ch.owner !== ws.username) return bad(ws, rid, 'Only the owner can edit the channel');
+  const name = cleanText(msg.name, 64) || ch.name;
+  const description = msg.description === undefined ? ch.description : (cleanText(msg.description, 200) || null);
+  q.renameChannel.run(name, description, channelId);
+  const view = channelView(channelId, ws.username);
+  reply(ws, rid, { t: 'channel.edited', channel: view });
+  deliverToChannel(channelId, { t: 'channel.updated', channel: channelView(channelId) }, ws.username);
+}
+
+function handleChannelDelete(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const channelId = Number(msg.channelId);
+  const ch = q.getChannel.get(channelId);
+  if (!ch) return bad(ws, rid, 'No such channel');
+  if (ch.owner !== ws.username) return bad(ws, rid, 'Only the owner can delete the channel');
+  deliverToChannel(channelId, { t: 'channel.deleted', channelId });
+  try {
+    db.exec('BEGIN');
+    q.deleteChannelPosts.run(channelId);
+    q.deleteChannelSubs.run(channelId);
+    q.deleteChannel.run(channelId);
+    db.exec('COMMIT');
+  } catch {
+    try { db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
+    return bad(ws, rid, 'Could not delete the channel');
+  }
+  reply(ws, rid, { t: 'channel.deleted', channelId });
+}
+
+/**
+ * Publish to a channel. The owner sends one encrypted copy per subscriber in
+ * `envelopes: { username: {box, nonce} }`; the relay stores the map and hands
+ * each subscriber only their own copy.
+ */
+function handleChannelPost(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const channelId = Number(msg.channelId);
+  const ch = q.getChannel.get(channelId);
+  if (!ch) return bad(ws, rid, 'No such channel');
+  if (ch.owner !== ws.username) return bad(ws, rid, 'Only the owner can post');
+  if (!msg.envelopes || typeof msg.envelopes !== 'object') return bad(ws, rid, 'Malformed envelopes');
+
+  const parsed = parseGroupAttachment(msg.attachment);
+  if (parsed.error) return bad(ws, rid, parsed.error);
+
+  const envelopes = {};
+  for (const [user, env] of Object.entries(msg.envelopes)) {
+    if (typeof user !== 'string') continue;
+    const box = env && typeof env.box === 'string' ? env.box : '';
+    const nonce = env && typeof env.nonce === 'string' ? env.nonce : '';
+    if (box && (!validB64(box, 100000) || !validB64(nonce, 100))) continue;
+    envelopes[user] = { box, nonce };
+  }
+  if (Object.keys(envelopes).length === 0) return bad(ws, rid, 'No valid envelopes');
+
+  const replyTo = Number.isInteger(msg.replyTo) ? msg.replyTo : null;
+  const ts = Date.now();
+  const info = q.insertChannelMessage.run(
+    channelId, ws.username, JSON.stringify(envelopes), ts, replyTo, parsed.kind, parsed.attachment
+  );
+  const id = Number(info.lastInsertRowid);
+
+  reply(ws, rid, { t: 'channel.posted', id, channelId, ts, replyTo, kind: parsed.kind, attachment: parsed.attachment });
+  for (const [user, env] of Object.entries(envelopes)) {
+    if (user === ws.username) continue;
+    deliverToUser(user, {
+      t: 'channel.message', id, channelId, from: ws.username, box: env.box, nonce: env.nonce,
+      ts, replyTo, kind: parsed.kind, attachment: parsed.attachment
+    });
+  }
+}
+
+function handleChannelHistory(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const channelId = Number(msg.channelId);
+  if (!q.isSub.get(channelId, ws.username)) return bad(ws, rid, 'Not subscribed');
+  const limit = Math.min(Math.max(Number(msg.limit) || 100, 1), 500);
+  const rows = q.channelHistory.all(channelId, limit).reverse();
+  const items = rows.map((r) => {
+    let envelopes = {};
+    try { envelopes = JSON.parse(r.envelope) || {}; } catch { envelopes = {}; }
+    return {
+      id: r.id, channelId: r.channel_id, from: r.sender, ts: r.ts,
+      envelope: envelopes[ws.username] || null,
+      replyTo: r.reply_to, editedAt: r.edited_at, deleted: !!r.deleted,
+      kind: r.kind || null, attachment: r.attachment || null
+    };
+  });
+  reply(ws, rid, { t: 'channel.history', channelId, items });
+}
+
+function handleChannelEditMessage(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const row = q.getChannelMessage.get(Number(msg.id));
+  if (!row) return bad(ws, rid, 'No such message');
+  const ch = q.getChannel.get(row.channel_id);
+  if (!ch || ch.owner !== ws.username) return bad(ws, rid, 'Only the owner can edit a post');
+  if (!msg.envelopes || typeof msg.envelopes !== 'object') return bad(ws, rid, 'Malformed envelopes');
+
+  const editedAt = Date.now();
+  q.editChannelMessage.run(JSON.stringify(msg.envelopes), editedAt, row.id);
+  reply(ws, rid, { t: 'channel.edited', id: row.id, editedAt });
+  for (const [user, env] of Object.entries(msg.envelopes)) {
+    if (user === ws.username) continue;
+    deliverToUser(user, { t: 'channel.edited', id: row.id, channelId: row.channel_id, from: row.sender, box: env.box, nonce: env.nonce, editedAt });
+  }
+}
+
+function handleChannelDeleteMessage(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const row = q.getChannelMessage.get(Number(msg.id));
+  if (!row) return bad(ws, rid, 'No such message');
+  const ch = q.getChannel.get(row.channel_id);
+  if (!ch || ch.owner !== ws.username) return bad(ws, rid, 'Only the owner can delete a post');
+  q.deleteChannelMessage.run(row.id);
+  reply(ws, rid, { t: 'channel.deletedMessage', id: row.id });
+  deliverToChannel(row.channel_id, { t: 'channel.deletedMessage', id: row.id, channelId: row.channel_id, from: row.sender }, ws.username);
+}
+
+function handleChannelMessageGet(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const row = q.getChannelMessage.get(Number(msg.id));
+  if (!row) return bad(ws, rid, 'No such message');
+  if (!q.isSub.get(row.channel_id, ws.username)) return bad(ws, rid, 'Not subscribed');
+  let envelopes = {};
+  try { envelopes = JSON.parse(row.envelope) || {}; } catch { envelopes = {}; }
+  reply(ws, rid, {
+    t: 'channel.message', message: {
+      id: row.id, channelId: row.channel_id, from: row.sender, ts: row.ts,
+      envelope: envelopes[ws.username] || null, attachment: row.attachment || null,
+      kind: row.kind || null, deleted: !!row.deleted
+    }
+  });
+}
+
 /* -------------------------------- admin -------------------------------- */
 // Every admin operation is gated on requireAdmin. The relay still cannot read
 // messages, so an admin can moderate accounts but never message contents.
@@ -1454,6 +1760,7 @@ function handleAdminOverview(ws, msg, rid) {
       users: q.countUsers.get().c,
       messages: q.countMessages.get().c,
       groups: q.countGroups.get().c,
+      channels: q.countChannels.get().c,
       online: sockets.size
     },
     isAdmin: true,
@@ -1485,6 +1792,20 @@ function handleAdminUsers(ws, msg, rid) {
   });
 }
 
+function handleAdminChannels(ws, msg, rid) {
+  if (!requireAdmin(ws, rid)) return;
+  const items = q.allChannels.all().map((c) => ({
+    id: c.id,
+    name: c.name,
+    description: c.description || '',
+    owner: c.owner,
+    verified: !!c.verified,
+    subs: q.countSubs.get(c.id).c,
+    createdAt: c.created_at
+  }));
+  reply(ws, rid, { t: 'admin.channels', items });
+}
+
 function handleAdminAction(ws, msg, rid) {
   if (!requireAdmin(ws, rid)) return;
   const actor = ws.username;
@@ -1496,6 +1817,31 @@ function handleAdminAction(ws, msg, rid) {
     q.insertAnnouncement.run(actor, text, Date.now());
     broadcastAll({ t: 'announcement', from: actor, text, ts: Date.now() });
     return reply(ws, rid, { t: 'admin.ok', action: 'announce' });
+  }
+
+  // Channel moderation targets a channel id, not a username.
+  if (msg.action === 'channelVerify' || msg.action === 'channelDelete') {
+    const channelId = Number(msg.channelId);
+    const ch = q.getChannel.get(channelId);
+    if (!ch) return bad(ws, rid, 'No such channel');
+    if (msg.action === 'channelVerify') {
+      q.setChannelVerified.run(ch.verified ? 0 : 1, channelId);
+      const view = channelView(channelId);
+      deliverToChannel(channelId, { t: 'channel.updated', channel: view });
+      return reply(ws, rid, { t: 'admin.ok', action: 'channelVerify', channelId, channel: view });
+    }
+    deliverToChannel(channelId, { t: 'channel.deleted', channelId });
+    try {
+      db.exec('BEGIN');
+      q.deleteChannelPosts.run(channelId);
+      q.deleteChannelSubs.run(channelId);
+      q.deleteChannel.run(channelId);
+      db.exec('COMMIT');
+    } catch {
+      try { db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
+      return bad(ws, rid, 'Could not delete the channel');
+    }
+    return reply(ws, rid, { t: 'admin.ok', action: 'channelDelete', channelId });
   }
 
   const target = typeof msg.username === 'string' ? msg.username : '';
@@ -1567,6 +1913,7 @@ function deleteUserData(username) {
     db.exec('BEGIN');
     q.deleteUserMessages.run(username, username);
     q.deleteUserGroupMessages.run(username);
+    q.deleteUserSubs.run(username);
     q.deleteUserReactions.run(username);
     q.deleteUserMemberships.run(username);
     q.deleteUserChats.run(username, username);
@@ -1622,8 +1969,22 @@ const handlers = {
   'group.edit': handleGroupEdit,
   'group.delete': handleGroupDelete,
   'group.message.get': handleGroupMessageGet,
+  'channel.create': handleChannelCreate,
+  'channel.list': handleChannelList,
+  'channel.discover': handleChannelDiscover,
+  'channel.info': handleChannelInfo,
+  'channel.join': handleChannelJoin,
+  'channel.leave': handleChannelLeave,
+  'channel.edit': handleChannelEdit,
+  'channel.delete': handleChannelDelete,
+  'channel.post': handleChannelPost,
+  'channel.history': handleChannelHistory,
+  'channel.message.edit': handleChannelEditMessage,
+  'channel.message.delete': handleChannelDeleteMessage,
+  'channel.message.get': handleChannelMessageGet,
   'admin.overview': handleAdminOverview,
   'admin.users': handleAdminUsers,
+  'admin.channels': handleAdminChannels,
   'admin.action': handleAdminAction
 };
 

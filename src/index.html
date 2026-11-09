@@ -840,6 +840,14 @@
 
               <div class="admin-users" id="admin-users"></div>
               <p class="panel-empty" id="admin-users-empty" hidden>Пользователей пока нет.</p>
+
+              <div class="admin-users-head">
+                <span class="admin-card-title">Каналы <span class="admin-count" id="admin-channels-count"></span></span>
+                <input id="admin-channels-search" class="admin-search" type="text"
+                       spellcheck="false" placeholder="Поиск по названию…" />
+              </div>
+              <div class="admin-users" id="admin-channels"></div>
+              <p class="panel-empty" id="admin-channels-empty" hidden>Каналов пока нет.</p>
             </section>
           </div>
         </div>
@@ -864,7 +872,8 @@
           <button class="menu-item" data-action="archive"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-archive"></use></svg></span><span id="menu-archive-label">Archive</span></button>
           <button class="menu-item" data-action="read"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-check"></use></svg></span><span>Mark as read</span></button>
           <button class="menu-item" data-action="clear"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-broom"></use></svg></span><span>Clear history</span></button>
-          <button class="menu-item danger" data-action="delete"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"></use></svg></span><span>Delete chat</span></button>
+          <button class="menu-item" data-action="leave" id="menu-leave"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"></use></svg></span><span id="menu-leave-label">Покинуть канал</span></button>
+          <button class="menu-item danger" data-action="delete" id="menu-delete"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"></use></svg></span><span>Delete chat</span></button>
         </div>
       </div>
     </div>
@@ -982,7 +991,10 @@
           <span class="drawer-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-smile"></use></svg></span><span class="drawer-label">Мой профиль</span>
         </button>
         <button class="drawer-item" data-drawer="create">
-          <span class="drawer-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-plus"></use></svg></span><span class="drawer-label">Создать аккаунт или группу</span>
+          <span class="drawer-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-plus"></use></svg></span><span class="drawer-label">Создать аккаунт, группу или канал</span>
+        </button>
+        <button class="drawer-item" data-drawer="channels">
+          <span class="drawer-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-globe"></use></svg></span><span class="drawer-label">Каналы</span>
         </button>
         <button class="drawer-item" data-drawer="contacts">
           <span class="drawer-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-contact"></use></svg></span><span class="drawer-label">Контакты</span>
@@ -1069,6 +1081,77 @@
             Участники получат зашифрованные копии каждого сообщения. Сервер видит
             только список участников и шифртекст.
           </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====================== CREATE: WHAT? ====================== -->
+    <div class="modal-backdrop" id="create-backdrop" hidden>
+      <div class="modal modal-sheet">
+        <header class="modal-head">
+          <h3>Создать</h3>
+          <button class="icon-btn" id="btn-create-close" title="Close"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"></use></svg></button>
+        </header>
+        <div class="modal-body modal-menu">
+          <button class="menu-item" id="create-account">
+            <span class="drawer-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-contact"></use></svg></span>
+            <span class="drawer-label">Новый аккаунт</span>
+          </button>
+          <button class="menu-item" id="create-group">
+            <span class="drawer-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-people"></use></svg></span>
+            <span class="drawer-label">Новая группа</span>
+          </button>
+          <button class="menu-item" id="create-channel">
+            <span class="drawer-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-globe"></use></svg></span>
+            <span class="drawer-label">Новый канал</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======================== CREATE CHANNEL ======================== -->
+    <div class="modal-backdrop" id="channel-backdrop" hidden>
+      <div class="modal">
+        <header class="modal-head">
+          <h3>Новый канал</h3>
+          <button class="icon-btn" id="btn-channel-close" title="Close"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"></use></svg></button>
+        </header>
+        <div class="modal-body">
+          <label class="field">
+            <span class="field-label">Название канала</span>
+            <input id="channel-name" type="text" spellcheck="false" maxlength="64"
+                   placeholder="Например, Новости" />
+          </label>
+          <label class="field">
+            <span class="field-label">Описание (необязательно)</span>
+            <input id="channel-desc" type="text" spellcheck="false" maxlength="200"
+                   placeholder="О чём этот канал" />
+          </label>
+          <p class="auth-error" id="channel-error" hidden></p>
+          <button class="btn-primary" id="btn-channel-create">Создать канал</button>
+          <p class="setting-note">
+            В канале публикует только владелец. Каждому подписчику уходит своя
+            зашифрованная копия поста — сервер видит только шифртекст.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======================== DISCOVER CHANNELS ======================== -->
+    <div class="modal-backdrop" id="discover-backdrop" hidden>
+      <div class="modal modal-sheet">
+        <header class="modal-head">
+          <h3>Каналы</h3>
+          <button class="icon-btn" id="btn-discover-close" title="Close"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"></use></svg></button>
+        </header>
+        <div class="modal-body">
+          <input id="discover-search" class="contact-input" type="text" spellcheck="false"
+                 placeholder="Поиск по названию…" />
+          <div class="modal-menu" id="discover-list"></div>
+          <p class="panel-empty" id="discover-empty" hidden>Каналов пока нет. Создайте первый.</p>
+        </div>
+        <div class="modal-foot">
+          <button class="btn-secondary" id="btn-discover-create">Создать канал</button>
         </div>
       </div>
     </div>

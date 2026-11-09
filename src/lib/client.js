@@ -394,6 +394,26 @@ class SleePhyClient {
       this.emit({ type: 'group.updated', group: msg.group, left: msg.t === 'group.memberLeft' ? msg.username : null });
       return;
     }
+    if (msg.t === 'channel.message') {
+      this.receiveChannelMessage(msg).catch(() => {});
+      return;
+    }
+    if (msg.t === 'channel.edited') {
+      this.receiveChannelEdit(msg).catch(() => {});
+      return;
+    }
+    if (msg.t === 'channel.deletedMessage') {
+      this.emit({ type: 'channel.deletedMessage', id: msg.id, channelId: msg.channelId, from: msg.from });
+      return;
+    }
+    if (msg.t === 'channel.updated') {
+      this.emit({ type: 'channel.updated', channel: msg.channel });
+      return;
+    }
+    if (msg.t === 'channel.deleted') {
+      this.emit({ type: 'channel.deleted', channelId: msg.channelId });
+      return;
+    }
     if (msg.t === 'ok') {
       this.applySession(msg);
     }
@@ -878,6 +898,179 @@ class SleePhyClient {
     return { id: res.id, pinned: !!res.pinned, peer: res.peer };
   }
 
+  /* ------------------------------ channels ------------------------------ */
+  // A channel is one-to-many: only the owner posts. Every subscriber gets one
+  // encrypted copy, exactly like a group message.
+
+  async createChannel({ name, description }) {
+    const res = await this.request({ t: 'channel.create', name, description });
+    return res.channel;
+  }
+
+  async listChannels() {
+    const res = await this.request({ t: 'channel.list' });
+    return res.items || [];
+  }
+
+  async discoverChannels() {
+    const res = await this.request({ t: 'channel.discover' });
+    return res.items || [];
+  }
+
+  async channelInfo({ channelId }) {
+    const res = await this.request({ t: 'channel.info', channelId });
+    return res.channel;
+  }
+
+  async joinChannel({ channelId }) {
+    const res = await this.request({ t: 'channel.join', channelId });
+    return res.channel;
+  }
+
+  async leaveChannel({ channelId }) {
+    await this.request({ t: 'channel.leave', channelId });
+  }
+
+  async editChannel({ channelId, name, description }) {
+    const res = await this.request({ t: 'channel.edit', channelId, name, description });
+    return res.channel;
+  }
+
+  async deleteChannel({ channelId }) {
+    await this.request({ t: 'channel.delete', channelId });
+  }
+
+  async sendChannelPost({ channelId, text, members, replyTo, attachment }) {
+    if (!this.secretKey) throw new Error('Vault is locked');
+    const caption = typeof text === 'string' ? text : '';
+
+    let encAttachment = null;
+    let kind = null;
+    if (attachment) {
+      kind = attachment.kind;
+      const perMember = {};
+      for (const u of members) {
+        const key = await this.ensurePeerKey(u);
+        const enc = await cryptoLib.encryptBytes(attachment.bytes, key, this.secretKey);
+        perMember[u] = { box: enc.box, nonce: enc.nonce };
+      }
+      encAttachment = {
+        kind,
+        name: attachment.name || null, mime: attachment.mime || null,
+        size: attachment.bytes ? attachment.bytes.length : 0,
+        duration: attachment.duration || null,
+        perMember
+      };
+    }
+
+    const { envelopes } = await this.groupEnvelopes(caption, members);
+    const res = await this.request({
+      t: 'channel.post', channelId, envelopes,
+      replyTo: replyTo || undefined, attachment: encAttachment || undefined
+    });
+    return {
+      id: res.id, channelId, ts: res.ts, text: caption, replyTo: res.replyTo || null,
+      mine: true, kind: res.kind || null,
+      attachment: encAttachment ? { ...encAttachment, dataUrl: null } : null
+    };
+  }
+
+  async channelHistory({ channelId, limit }) {
+    if (!this.secretKey) throw new Error('Vault is locked');
+    const res = await this.request({ t: 'channel.history', channelId, limit });
+    const items = [];
+    for (const m of res.items || []) {
+      let text = '';
+      if (!m.deleted && m.envelope && m.envelope.box) {
+        try {
+          const ownerKey = await this.ensurePeerKey(m.from);
+          text = await cryptoLib.decryptMessage(m.envelope.box, m.envelope.nonce, ownerKey, this.secretKey);
+        } catch {
+          text = '⚠ Message could not be decrypted';
+        }
+      }
+      let attachment = m.attachment ? JSON.parse(m.attachment) : null;
+      if (attachment && attachment.perMember) {
+        attachment = { ...attachment, ...(attachment.perMember[this.username] || {}), perMember: undefined };
+      }
+      items.push({
+        id: m.id, channelId, from: m.from, text, ts: m.ts,
+        mine: m.from === this.username, replyTo: m.replyTo || null,
+        editedAt: m.editedAt || null, deleted: !!m.deleted,
+        kind: m.kind || null, attachment, pinned: false, reactions: []
+      });
+    }
+    return items;
+  }
+
+  async receiveChannelMessage(msg) {
+    if (!this.secretKey) {
+      this.emit({ type: 'channel.queued', channelId: msg.channelId, from: msg.from });
+      return;
+    }
+    let text = '';
+    if (msg.box) {
+      try {
+        const ownerKey = await this.ensurePeerKey(msg.from);
+        text = await cryptoLib.decryptMessage(msg.box, msg.nonce, ownerKey, this.secretKey);
+      } catch {
+        text = '⚠ Message could not be decrypted';
+      }
+    }
+    let attachment = msg.attachment ? JSON.parse(msg.attachment) : null;
+    if (attachment && attachment.perMember) {
+      attachment = { ...attachment, ...(attachment.perMember[this.username] || {}), perMember: undefined };
+    }
+    this.emit({
+      type: 'channel.message', id: msg.id, channelId: msg.channelId, from: msg.from, text,
+      ts: msg.ts, replyTo: msg.replyTo || null, kind: msg.kind || null, attachment
+    });
+  }
+
+  async receiveChannelEdit(msg) {
+    let text = '⚠ Message could not be decrypted';
+    try {
+      const ownerKey = await this.ensurePeerKey(msg.from);
+      text = await cryptoLib.decryptMessage(msg.box, msg.nonce, ownerKey, this.secretKey);
+    } catch { /* leave the warning */ }
+    this.emit({ type: 'channel.edited', id: msg.id, channelId: msg.channelId, from: msg.from, text, editedAt: msg.editedAt });
+  }
+
+  async editChannelMessage({ id, channelId, text, members }) {
+    if (!this.secretKey) throw new Error('Vault is locked');
+    const { envelopes } = await this.groupEnvelopes(text, members);
+    const res = await this.request({ t: 'channel.message.edit', id, envelopes });
+    return { id: res.id, editedAt: res.editedAt, text };
+  }
+
+  async deleteChannelMessage({ id }) {
+    const res = await this.request({ t: 'channel.message.delete', id });
+    return { id: res.id };
+  }
+
+  async openChannelAttachment({ id }) {
+    if (!this.secretKey) throw new Error('Vault is locked');
+    const res = await this.request({ t: 'channel.message.get', id });
+    const row = res.message;
+    if (!row) throw new Error('No such message');
+    const attachment = row.attachment ? JSON.parse(row.attachment) : null;
+    if (!attachment) throw new Error('Message has no attachment');
+    const mine = attachment.perMember ? attachment.perMember[this.username] : null;
+    if (!mine) throw new Error('Attachment is not addressed to you');
+    const ownerKey = await this.ensurePeerKey(row.from);
+    const bytes = await cryptoLib.decryptBytes(mine.box, mine.nonce, ownerKey, this.secretKey);
+    const mime = attachment.mime || 'application/octet-stream';
+    return {
+      name: attachment.name || null, mime, size: bytes.length,
+      dataUrl: `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`
+    };
+  }
+
+  async adminChannels() {
+    const res = await this.request({ t: 'admin.channels' });
+    return res.items || [];
+  }
+
   /* ------------------------------- admin ------------------------------- */
 
   async adminOverview() {
@@ -890,9 +1083,9 @@ class SleePhyClient {
     return res.items || [];
   }
 
-  async adminAction({ action, username, text, image }) {
-    const res = await this.request({ t: 'admin.action', action, username, text, image });
-    return { action: res.action, username: res.username };
+  async adminAction({ action, username, text, image, channelId }) {
+    const res = await this.request({ t: 'admin.action', action, username, text, image, channelId });
+    return { action: res.action, username: res.username, channelId: res.channelId };
   }
 
   async pinnedMessages({ peer }) {

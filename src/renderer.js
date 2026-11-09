@@ -93,6 +93,23 @@ const els = {
   groupError: $('group-error'),
   btnGroupCreate: $('btn-group-create'),
   btnGroupClose: $('btn-group-close'),
+  channelBackdrop: $('channel-backdrop'),
+  channelName: $('channel-name'),
+  channelDesc: $('channel-desc'),
+  channelError: $('channel-error'),
+  btnChannelCreate: $('btn-channel-create'),
+  btnChannelClose: $('btn-channel-close'),
+  discoverBackdrop: $('discover-backdrop'),
+  discoverList: $('discover-list'),
+  discoverEmpty: $('discover-empty'),
+  discoverSearch: $('discover-search'),
+  btnDiscoverClose: $('btn-discover-close'),
+  btnDiscoverCreate: $('btn-discover-create'),
+  createBackdrop: $('create-backdrop'),
+  btnCreateClose: $('btn-create-close'),
+  createAccount: $('create-account'),
+  createGroup: $('create-group'),
+  createChannel: $('create-channel'),
   setNotify: $('set-notify'),
   setPreview: $('set-preview'),
   setSound: $('set-sound'),
@@ -182,6 +199,9 @@ const els = {
   menuPinLabel: $('menu-pin-label'),
   menuMuteLabel: $('menu-mute-label'),
   menuArchiveLabel: $('menu-archive-label'),
+  menuLeave: $('menu-leave'),
+  menuLeaveLabel: $('menu-leave-label'),
+  menuDelete: $('menu-delete'),
 
   ctxBackdrop: $('ctx-backdrop'),
   ctxMenu: $('ctx-menu'),
@@ -272,6 +292,10 @@ const els = {
   adminUsersEmpty: $('admin-users-empty'),
   adminUsersCount: $('admin-users-count'),
   adminUsersSearch: $('admin-users-search'),
+  adminChannels: $('admin-channels'),
+  adminChannelsEmpty: $('admin-channels-empty'),
+  adminChannelsCount: $('admin-channels-count'),
+  adminChannelsSearch: $('admin-channels-search'),
   btnAdminRefresh: $('btn-admin-refresh'),
   adminAnnounceInput: $('admin-announce-input'),
   btnAdminAnnounce: $('btn-admin-announce'),
@@ -307,12 +331,14 @@ const state = {
   searchIndex: -1,
   settings: { theme: 'dark', wallpaper: 'none' },
   groups: new Map(), // groupId -> { id, name, owner, members: [] }
+  channels: new Map(), // channelId -> { id, name, owner, subs, verified, ... }
   contacts: [], // usernames saved as contacts
   accounts: [], // [{ username, publicKey, active }]
   recording: null, // MediaRecorder state for voice notes
   selecting: null, // Set of message ids while in select mode
   isAdmin: false, // whether the signed-in account may open the admin panel
   adminUsers: [], // last admin user list, filtered client-side by the search box
+  adminChannels: [], // last admin channel list, filtered client-side
   adminAnnounceCount: 0,
   settingsPane: 'account' // active settings section
 };
@@ -432,6 +458,13 @@ function groupKey(groupId) { return `group:${groupId}`; }
 function isGroupKey(key) { return typeof key === 'string' && key.startsWith('group:'); }
 function groupIdOf(key) { return Number(String(key).slice('group:'.length)); }
 
+/** Channel chats use the key "channel:<id>", same idea as groups. */
+function channelKey(channelId) { return `channel:${channelId}`; }
+function isChannelKey(key) { return typeof key === 'string' && key.startsWith('channel:'); }
+function channelIdOf(key) { return Number(String(key).slice('channel:'.length)); }
+/** True for any multi-user chat (group or channel). */
+function isMultiKey(key) { return isGroupKey(key) || isChannelKey(key); }
+
 function peerUsername(key) {
   return key === SAVED ? state.username : key;
 }
@@ -441,6 +474,10 @@ function displayNameFor(username) {
     const g = state.groups.get(groupIdOf(username));
     return g ? g.name : 'Группа';
   }
+  if (isChannelKey(username)) {
+    const c = state.channels.get(channelIdOf(username));
+    return c ? c.name : 'Канал';
+  }
   const p = state.profiles.get(username);
   if (!p) return username;
   return p.displayName || username;
@@ -448,6 +485,7 @@ function displayNameFor(username) {
 
 function avatarColorFor(username) {
   if (isGroupKey(username)) return 'violet';
+  if (isChannelKey(username)) return 'cyan';
   const p = state.profiles.get(username);
   return (p && p.avatarColor) || 'mint';
 }
@@ -455,6 +493,10 @@ function avatarColorFor(username) {
 /** A verified account (the checkmark) as far as the client knows. */
 function isVerified(username) {
   if (isGroupKey(username)) return false;
+  if (isChannelKey(username)) {
+    const c = state.channels.get(channelIdOf(username));
+    return !!(c && c.verified);
+  }
   const p = state.profiles.get(username);
   return !!(p && p.verified);
 }
@@ -462,6 +504,10 @@ function isVerified(username) {
 /** The admin-set badge picture for an account, or null for the plain checkmark. */
 function badgeImageFor(username) {
   if (isGroupKey(username)) return null;
+  if (isChannelKey(username)) {
+    const c = state.channels.get(channelIdOf(username));
+    return (c && c.badgeImage) || null;
+  }
   const p = state.profiles.get(username);
   return (p && p.badgeImage) || null;
 }
@@ -469,6 +515,7 @@ function badgeImageFor(username) {
 /** The profile picture for an account, or null to fall back to its initial. */
 function avatarImageFor(username, profile) {
   if (isGroupKey(username)) return null;
+  if (isChannelKey(username)) return null;
   const p = profile || state.profiles.get(username) || (username === state.username ? state.profile : null);
   return (p && p.avatarImage) || null;
 }
@@ -511,6 +558,10 @@ function paintAvatar(el, username, size) {
   el.dataset.color = avatarColorFor(username);
   if (isGroupKey(username)) {
     el.innerHTML = icon('i-people');
+    return;
+  }
+  if (isChannelKey(username)) {
+    el.innerHTML = icon('i-globe');
     return;
   }
   const image = avatarImageFor(username);
@@ -707,9 +758,10 @@ async function enterMain(username) {
   state.presence.clear();
   state.lastSeen.clear();
   state.groups.clear();
+  state.channels.clear();
   await refreshStatus();
   showScreen('main');
-  await Promise.all([loadChats(), loadGroups(), loadContacts()]);
+  await Promise.all([loadChats(), loadGroups(), loadChannels(), loadContacts()]);
   renderChatList();
 }
 
@@ -754,7 +806,9 @@ async function refreshVisibleLastMessages() {
     try {
       const items = isGroupKey(key)
         ? await api.groupHistory({ groupId: groupIdOf(key), limit: 1 })
-        : await api.history({ with: peerUsername(key), limit: 1 });
+        : isChannelKey(key)
+          ? await api.channelHistory({ channelId: channelIdOf(key), limit: 1 })
+          : await api.history({ with: peerUsername(key), limit: 1 });
       const last = items.at(-1);
       if (last) chat.last = previewOf(last);
     } catch { /* leave the placeholder */ }
@@ -798,6 +852,18 @@ async function saveContacts() {
   try { await api.saveSettings({ contacts: state.contacts }); } catch { /* best effort */ }
 }
 
+/** Load every channel the account subscribes to and seed a chat row for each. */
+async function loadChannels() {
+  try {
+    const channels = await api.listChannels();
+    for (const c of channels) {
+      state.channels.set(c.id, c);
+      if (c.ownerProfile) state.profiles.set(c.owner, c.ownerProfile);
+      ensureChat(channelKey(c.id));
+    }
+  } catch { /* offline: keep what we have */ }
+}
+
 function ensureChat(key) {
   if (!state.chats.has(key)) {
     state.chats.set(key, {
@@ -821,6 +887,7 @@ function chatItemEl(key) {
   const chat = state.chats.get(key);
   const peer = peerUsername(key);
   const group = isGroupKey(key);
+  const channel = isChannelKey(key);
   const li = document.createElement('li');
   li.className = 'chat-item' + (key === state.activePeer ? ' active' : '');
   li.dataset.peer = key;
@@ -833,7 +900,7 @@ function chatItemEl(key) {
   ].filter(Boolean).join(' ');
 
   const name = key === SAVED ? 'Saved Messages' : displayNameFor(key);
-  const avatarInner = group ? icon('i-people') : avatarInnerHtml(key);
+  const avatarInner = group ? icon('i-people') : (channel ? icon('i-globe') : avatarInnerHtml(key));
   const tickImage = !group ? badgeImageFor(peer) : null;
   const tick = !group && isVerified(peer)
     ? (tickImage
@@ -1011,6 +1078,7 @@ async function openChat(key) {
   const chat = ensureChat(key);
   chat.unread = 0;
   const group = isGroupKey(key);
+  const channel = isChannelKey(key);
 
   els.chatBlank.hidden = true;
   els.chatView.hidden = false;
@@ -1024,13 +1092,16 @@ async function openChat(key) {
   paintBadge(els.peerBadge, key);
   paintAvatar(els.peerAvatar, key);
   updatePeerSub();
+  updateComposerForChannel(key);
   renderChatList();
 
   if (!chat.loaded) {
     try {
       const items = group
         ? await api.groupHistory({ groupId: groupIdOf(key), limit: 200 })
-        : await api.history({ with: peerUsername(key), limit: 200 });
+        : channel
+          ? await api.channelHistory({ channelId: channelIdOf(key), limit: 200 })
+          : await api.history({ with: peerUsername(key), limit: 200 });
       chat.messages = resolveQuotes(items);
       chat.loaded = true;
       renderMessages();
@@ -1042,10 +1113,20 @@ async function openChat(key) {
   } else {
     renderMessages();
   }
-  if (!group) { try { await api.markRead(peerUsername(key)); } catch { /* best effort */ } }
+  if (!isMultiKey(key)) { try { await api.markRead(peerUsername(key)); } catch { /* best effort */ } }
   updatePinnedBar();
   renderChatList();
   els.composerInput.focus();
+}
+
+/** In a channel only the owner may post; everyone else gets a read-only bar. */
+function updateComposerForChannel(key) {
+  const channel = isChannelKey(key) ? state.channels.get(channelIdOf(key)) : null;
+  const readOnly = !!(channel && !channel.isOwner);
+  els.composer.classList.toggle('readonly', readOnly);
+  els.composerInput.disabled = readOnly;
+  els.composerInput.placeholder = readOnly ? 'Только владелец может публиковать' : 'Message';
+  if (readOnly) els.composerInput.value = '';
 }
 
 function renderMessages() {
@@ -1083,6 +1164,13 @@ function updatePeerSub() {
     els.peerSub.classList.remove('typing');
     const head = `${n} ${plural(n, 'участник', 'участника', 'участников')}`;
     els.peerSub.textContent = online > 0 ? `${head}, ${online} в сети` : head;
+    return;
+  }
+  if (isChannelKey(key)) {
+    const c = state.channels.get(channelIdOf(key));
+    const n = (c && c.subs) || 0;
+    els.peerSub.classList.remove('typing');
+    els.peerSub.textContent = `${n} ${plural(n, 'подписчик', 'подписчика', 'подписчиков')}`;
     return;
   }
   const peer = peerUsername(key);
@@ -1180,6 +1268,15 @@ function groupMemberNames(groupId) {
   return g ? g.members.map((m) => m.username) : [];
 }
 
+/** Subscriber usernames for a channel the signed-in account owns. */
+function channelSubNames(channelId) {
+  const c = state.channels.get(channelId);
+  if (!c) return [];
+  if (Array.isArray(c.subscribers) && c.subscribers.length) return c.subscribers.slice();
+  // Fall back to at least the owner so a post is never addressed to nobody.
+  return state.username ? [state.username] : [];
+}
+
 async function sendCurrentMessage(text) {
   const key = state.activePeer;
   const chat = ensureChat(key);
@@ -1203,6 +1300,13 @@ async function sendCurrentMessage(text) {
       const groupId = groupIdOf(key);
       const res = await api.sendGroup({
         groupId, text, members: groupMemberNames(groupId),
+        replyTo: replyTo ? replyTo.id : undefined
+      });
+      optimistic.id = res.id;
+    } else if (isChannelKey(key)) {
+      const channelId = channelIdOf(key);
+      const res = await api.sendChannelPost({
+        channelId, text, members: channelSubNames(channelId),
         replyTo: replyTo ? replyTo.id : undefined
       });
       optimistic.id = res.id;
@@ -1239,7 +1343,12 @@ els.composer.addEventListener('submit', async (e) => {
               id: target.id, groupId: groupIdOf(state.activePeer), text,
               members: groupMemberNames(groupIdOf(state.activePeer))
             })
-          : await api.edit({ id: target.id, to: peerUsername(state.activePeer), text });
+          : isChannelKey(state.activePeer)
+            ? await api.editChannelMessage({
+                id: target.id, channelId: channelIdOf(state.activePeer), text,
+                members: channelSubNames(channelIdOf(state.activePeer))
+              })
+            : await api.edit({ id: target.id, to: peerUsername(state.activePeer), text });
         m.text = text;
         m.editedAt = res.editedAt;
       } catch (err) {
@@ -1259,7 +1368,7 @@ els.composer.addEventListener('submit', async (e) => {
 /* typing indicator (throttled) */
 let typingSentAt = 0;
 els.composerInput.addEventListener('input', () => {
-  if (!state.activePeer || state.activePeer === SAVED || isGroupKey(state.activePeer)) return;
+  if (!state.activePeer || state.activePeer === SAVED || isMultiKey(state.activePeer)) return;
   const now = Date.now();
   if (now - typingSentAt < 2500) return;
   typingSentAt = now;
@@ -1303,15 +1412,16 @@ els.btnEditCancel.addEventListener('click', () => { clearEditing(); els.composer
 /* ---------------------------- context menu ---------------------------- */
 function openContextMenu(m, x, y) {
   const inGroup = isGroupKey(state.activePeer);
-  state.ctxTarget = { id: m.id, mine: m.mine, text: m.text, pinned: !!m.pinned, group: inGroup };
+  const inChannel = isChannelKey(state.activePeer);
+  state.ctxTarget = { id: m.id, mine: m.mine, text: m.text, pinned: !!m.pinned, group: inGroup, channel: inChannel };
   els.ctxEdit.hidden = !m.mine || !!m.kind;
   els.ctxDelete.hidden = !m.mine;
-  // Pins and reactions are per-conversation on the relay; groups do not carry
-  // them yet, so the menu hides those entries there.
-  els.ctxPin.hidden = inGroup;
+  // Pins and reactions are per-conversation on the relay; groups and channels
+  // do not carry them yet, so the menu hides those entries there.
+  els.ctxPin.hidden = inGroup || inChannel;
   els.ctxPinLabel.textContent = m.pinned ? 'Unpin' : 'Pin';
   els.ctxReactions.innerHTML = '';
-  if (!inGroup) {
+  if (!inGroup && !inChannel) {
     for (const emoji of QUICK_REACTIONS) {
       const b = document.createElement('button');
       b.type = 'button';
@@ -1397,6 +1507,7 @@ els.ctxMenu.addEventListener('click', async (e) => {
     if (!ok) return;
     try {
       if (isGroupKey(state.activePeer)) await api.deleteGroupMessage({ id });
+      else if (isChannelKey(state.activePeer)) await api.deleteChannelMessage({ id });
       else await api.remove(id);
       applyDeleted(id);
       toast('Message deleted');
@@ -1451,11 +1562,15 @@ function openChatMenu() {
   const chat = activeChat();
   if (!chat) return;
   const isSaved = state.activePeer === SAVED;
-  els.chatmenuTitle.textContent = isSaved ? 'Saved Messages' : displayNameFor(peerUsername(state.activePeer));
+  const channel = isChannelKey(state.activePeer) ? state.channels.get(channelIdOf(state.activePeer)) : null;
+  els.chatmenuTitle.textContent = isSaved ? 'Saved Messages' : displayNameFor(state.activePeer);
   els.menuPinLabel.textContent = chat.pinned ? 'Unpin' : 'Pin';
   els.menuMuteLabel.textContent = chat.muted ? 'Unmute' : 'Mute';
   els.menuArchiveLabel.textContent = chat.archived ? 'Unarchive' : 'Archive';
   els.chatmenuBody.querySelectorAll('[data-action="delete"]').forEach((b) => { b.hidden = isSaved; });
+  // Leaving applies to channels only, and never to the channel's own owner.
+  els.menuLeave.hidden = !channel || channel.isOwner;
+  els.menuLeaveLabel.textContent = 'Покинуть канал';
   els.chatmenuBackdrop.hidden = false;
 }
 
@@ -1510,6 +1625,23 @@ els.chatmenuBody.addEventListener('click', async (e) => {
       renderMessages();
       renderChatList();
       toast('History cleared');
+    } else if (action === 'leave') {
+      const channel = isChannelKey(key) ? state.channels.get(channelIdOf(key)) : null;
+      if (!channel) return;
+      const ok = await confirmDialog({
+        title: 'Покинуть канал?',
+        text: `Вы отпишетесь от «${channel.name}». История исчезнет из списка.`,
+        confirmLabel: 'Покинуть'
+      });
+      if (!ok) return;
+      await api.leaveChannel({ channelId: channel.id });
+      state.channels.delete(channel.id);
+      state.chats.delete(key);
+      state.activePeer = null;
+      els.chatBlank.hidden = false;
+      els.chatView.hidden = true;
+      renderChatList();
+      toast('Вы покинули канал');
     } else if (action === 'delete') {
       const ok = await confirmDialog({
         title: 'Delete chat?',
@@ -1517,8 +1649,13 @@ els.chatmenuBody.addEventListener('click', async (e) => {
         confirmLabel: 'Delete'
       });
       if (!ok) return;
-      await api.deleteChat(peer);
-      state.chats.delete(key);
+      if (isMultiKey(key)) {
+        // Groups and channels are not DM chats; just drop the row locally.
+        state.chats.delete(key);
+      } else {
+        await api.deleteChat(peer);
+        state.chats.delete(key);
+      }
       state.activePeer = null;
       els.chatBlank.hidden = false;
       els.chatView.hidden = true;
@@ -1916,19 +2053,23 @@ async function loadAdminPanel() {
   els.adminUsers.innerHTML = '<p class="panel-empty">Загрузка…</p>';
   els.adminUsersEmpty.hidden = true;
   try {
-    const [{ stats, announcements }, users] = await Promise.all([
+    const [{ stats, announcements }, users, channels] = await Promise.all([
       api.adminOverview(),
-      api.adminUsers()
+      api.adminUsers(),
+      api.adminChannels().catch(() => [])
     ]);
     els.adminStats.innerHTML = `
       <div class="admin-stat"><span class="admin-stat-num">${stats.users}</span><span class="admin-stat-label">Пользователей</span></div>
       <div class="admin-stat"><span class="admin-stat-num">${stats.online}</span><span class="admin-stat-label">Онлайн</span></div>
       <div class="admin-stat"><span class="admin-stat-num">${stats.messages}</span><span class="admin-stat-label">Сообщений</span></div>
       <div class="admin-stat"><span class="admin-stat-num">${stats.groups}</span><span class="admin-stat-label">Групп</span></div>
+      <div class="admin-stat"><span class="admin-stat-num">${stats.channels || 0}</span><span class="admin-stat-label">Каналов</span></div>
     `;
     state.adminUsers = users;
+    state.adminChannels = channels;
     state.adminAnnounceCount = announcements.length;
     renderAdminUsers();
+    renderAdminChannels();
   } catch (err) {
     els.adminUsers.innerHTML = '';
     els.adminUsersEmpty.hidden = false;
@@ -1977,6 +2118,64 @@ function renderAdminUsers() {
     els.adminUsers.appendChild(row);
   }
 }
+
+/** Draw the channel list, honouring the search box. */
+function renderAdminChannels() {
+  const query = (els.adminChannelsSearch.value || '').trim().toLowerCase();
+  const channels = (state.adminChannels || []).filter((c) =>
+    !query || c.name.toLowerCase().includes(query) || (c.owner || '').toLowerCase().includes(query)
+  );
+  els.adminChannels.innerHTML = '';
+  els.adminChannelsCount.textContent = String((state.adminChannels || []).length);
+  els.adminChannelsEmpty.hidden = channels.length > 0;
+  if (!channels.length) {
+    els.adminChannelsEmpty.textContent = query ? 'Ничего не найдено.' : 'Каналов пока нет.';
+    return;
+  }
+  for (const c of channels) {
+    const row = document.createElement('div');
+    row.className = 'admin-user';
+    const flags = [
+      c.verified ? '<span class="admin-tag verified">проверен</span>' : ''
+    ].filter(Boolean).join(' ');
+    row.innerHTML = `
+      <div class="avatar small" data-color="cyan">${icon('i-globe')}</div>
+      <div class="admin-user-body">
+        <div class="admin-user-name">${escapeHtml(c.name)} ${flags}</div>
+        <div class="admin-user-sub">@${escapeHtml(c.owner)} · ${c.subs} подписчиков</div>
+      </div>
+      <div class="admin-user-actions">
+        <button class="admin-act${c.verified ? ' on' : ''}" data-act="channelVerify" data-channel="${c.id}" title="${c.verified ? 'Снять галочку канала' : 'Дать каналу галочку'}">${icon('i-check')}</button>
+        <button class="admin-act danger" data-act="channelDelete" data-channel="${c.id}" title="Удалить канал">${icon('i-trash')}</button>
+      </div>
+    `;
+    els.adminChannels.appendChild(row);
+  }
+}
+
+els.adminChannels.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.admin-act');
+  if (!btn) return;
+  const act = btn.dataset.act;
+  const channelId = Number(btn.dataset.channel);
+  const row = (state.adminChannels || []).find((c) => c.id === channelId);
+  if (act === 'channelDelete') {
+    const ok = await confirmDialog({
+      title: 'Удалить канал?',
+      text: `Канал «${row ? row.name : channelId}» и все его посты будут удалены у всех подписчиков.`,
+      confirmLabel: 'Удалить'
+    });
+    if (!ok) return;
+  }
+  try {
+    await api.adminAction({ action: act, channelId });
+    toast('Готово');
+    loadAdminPanel();
+  } catch (err) {
+    toast(err.message || 'Не удалось выполнить действие');
+  }
+});
+els.adminChannelsSearch.addEventListener('input', renderAdminChannels);
 
 /* --------------------------- badge image dialog --------------------------- */
 // An admin can give an account its own round picture in place of the checkmark.
@@ -2656,6 +2855,91 @@ api.onEvent((evt) => {
       toast('New encrypted group message');
       break;
 
+    case 'channel.message': {
+      const key = channelKey(evt.channelId);
+      const chat = ensureChat(key);
+      const m = {
+        id: evt.id, text: evt.text, ts: evt.ts, mine: evt.from === state.username,
+        replyTo: evt.replyTo || null, reactions: [],
+        kind: evt.kind || null, attachment: evt.attachment || null
+      };
+      if (m.replyTo) {
+        const orig = findMessage(m.replyTo);
+        if (orig) m.quote = { from: orig.mine ? state.username : orig.from, text: orig.text, mine: orig.mine };
+      }
+      chat.messages.push(m);
+      chat.last = previewOf(m);
+      chat.lastTs = evt.ts;
+      if (state.activePeer === key) {
+        renderMessages();
+        updateComposerForChannel(key);
+      } else {
+        chat.unread += 1;
+        if (!chat.muted) notifyNewMessage(displayNameFor(key), evt.text);
+      }
+      renderChatList();
+      break;
+    }
+
+    case 'channel.edited': {
+      const key = channelKey(evt.channelId);
+      const chat = state.chats.get(key);
+      if (chat) {
+        const m = chat.messages.find((x) => x.id === evt.id);
+        if (m) { m.text = evt.text; m.editedAt = evt.editedAt; }
+      }
+      if (state.activePeer === key) renderMessages();
+      renderChatList();
+      break;
+    }
+
+    case 'channel.deletedMessage': {
+      const key = channelKey(evt.channelId);
+      const chat = state.chats.get(key);
+      if (chat) {
+        const m = chat.messages.find((x) => x.id === evt.id);
+        if (m) { m.deleted = true; m.text = ''; m.reactions = []; }
+      }
+      if (state.activePeer === key) renderMessages();
+      renderChatList();
+      break;
+    }
+
+    case 'channel.updated': {
+      const c = evt.channel;
+      if (c) {
+        const prev = state.channels.get(c.id);
+        // A non-owner update omits the subscriber list; keep the one we had.
+        if (prev && prev.subscribers && !c.subscribers) c.subscribers = prev.subscribers;
+        state.channels.set(c.id, c);
+        if (c.ownerProfile) state.profiles.set(c.owner, c.ownerProfile);
+      }
+      if (state.activePeer && isChannelKey(state.activePeer) && channelIdOf(state.activePeer) === (c && c.id)) {
+        paintBadge(els.peerBadge, state.activePeer);
+        els.peerName.textContent = displayNameFor(state.activePeer);
+        updatePeerSub();
+      }
+      renderChatList();
+      break;
+    }
+
+    case 'channel.deleted': {
+      const key = channelKey(evt.channelId);
+      state.channels.delete(evt.channelId);
+      state.chats.delete(key);
+      if (state.activePeer === key) {
+        state.activePeer = null;
+        els.chatView.hidden = true;
+        els.chatBlank.hidden = false;
+      }
+      renderChatList();
+      break;
+    }
+
+    case 'channel.queued':
+      toast('New encrypted channel post');
+      break;
+
     default:
       break;
   }
@@ -2748,10 +3032,16 @@ async function sendWithAttachment(att) {
           replyTo: replyTo ? replyTo.id : undefined,
           attachment: { kind: att.kind, bytes: att.bytes, name: att.name, mime: att.mime, duration: att.duration }
         })
-      : await api.send({
-          to: peerUsername(key), text: caption, replyTo: replyTo ? replyTo.id : undefined,
-          attachment: { kind: att.kind, bytes: att.bytes, name: att.name, mime: att.mime, duration: att.duration }
-        });
+      : isChannelKey(key)
+        ? await api.sendChannelPost({
+            channelId: channelIdOf(key), text: caption, members: channelSubNames(channelIdOf(key)),
+            replyTo: replyTo ? replyTo.id : undefined,
+            attachment: { kind: att.kind, bytes: att.bytes, name: att.name, mime: att.mime, duration: att.duration }
+          })
+        : await api.send({
+            to: peerUsername(key), text: caption, replyTo: replyTo ? replyTo.id : undefined,
+            attachment: { kind: att.kind, bytes: att.bytes, name: att.name, mime: att.mime, duration: att.duration }
+          });
     optimistic.id = res.id;
     optimistic.pending = false;
     optimistic.attachment = res.attachment || optimistic.attachment;
@@ -2768,6 +3058,7 @@ async function sendWithAttachment(att) {
 /** Fetch an attachment's bytes for display, whether it is a DM or a group message. */
 async function fetchAttachment(m) {
   if (isGroupKey(state.activePeer)) return api.openGroupAttachment({ id: m.id });
+  if (isChannelKey(state.activePeer)) return api.openChannelAttachment({ id: m.id });
   const peer = m.mine ? peerUsername(state.activePeer) : peerUsername(chatKey(m.from));
   return api.openAttachment({ id: m.id, peer });
 }
@@ -3112,7 +3403,9 @@ function updatePinnedBar() {
   const pinned = chat ? chat.messages.filter((m) => m.pinned && !m.deleted) : [];
   if (!pinned.length) { els.pinnedBar.hidden = true; return; }
   const top = pinned[pinned.length - 1];
-  els.pinnedTitle.textContent = top.mine ? 'Pinned message · you' : `Pinned message · ${displayNameFor(peerUsername(chatKey(top.from || state.username)))}`;
+  els.pinnedTitle.textContent = top.mine
+    ? 'Pinned message · you'
+    : `Pinned message · ${displayNameFor(peerUsername(chatKey(top.from || state.username)))}`;
   els.pinnedText.textContent = top.attachment && !top.text
     ? (top.attachment.name || 'Attachment')
     : (top.text || 'Message');
@@ -3248,22 +3541,32 @@ function openForward(messages) {
 }
 
 async function forwardTo(key, messages) {
-  const target = peerUsername(key);
   let sent = 0;
   for (const m of messages) {
     try {
+      // Re-encrypt the bytes for the destination rather than reusing the old box.
+      let bytes = null;
       if (m.kind && m.attachment) {
-        // Re-encrypt the bytes for the new recipient rather than reusing the box.
-        const res = await api.openAttachment({
-          id: m.id, peer: m.mine ? peerUsername(state.activePeer) : peerUsername(chatKey(m.from))
+        const res = await openAttachmentBytes(m);
+        bytes = await dataUrlToBytes(res.dataUrl);
+      }
+      if (isGroupKey(key)) {
+        await api.sendGroup({
+          groupId: groupIdOf(key), text: m.text || '', members: groupMemberNames(groupIdOf(key)),
+          attachment: bytes ? { kind: m.kind, bytes, name: m.attachment.name, mime: m.attachment.mime, duration: m.attachment.duration } : undefined
         });
-        const bytes = await dataUrlToBytes(res.dataUrl);
+      } else if (isChannelKey(key)) {
+        await api.sendChannelPost({
+          channelId: channelIdOf(key), text: m.text || '', members: channelSubNames(channelIdOf(key)),
+          attachment: bytes ? { kind: m.kind, bytes, name: m.attachment.name, mime: m.attachment.mime, duration: m.attachment.duration } : undefined
+        });
+      } else if (bytes) {
         await api.send({
-          to: target, text: m.text || '',
+          to: peerUsername(key), text: m.text || '',
           attachment: { kind: m.kind, bytes, name: m.attachment.name, mime: m.attachment.mime, duration: m.attachment.duration }
         });
       } else if (m.text) {
-        await api.send({ to: target, text: m.text });
+        await api.send({ to: peerUsername(key), text: m.text });
       }
       sent += 1;
     } catch (err) {
@@ -3273,6 +3576,16 @@ async function forwardTo(key, messages) {
   }
   if (sent) toast(`Forwarded ${sent} message${sent > 1 ? 's' : ''}`);
   exitSelectMode();
+}
+
+/** Fetch the decrypted bytes of a message's attachment, whatever chat it is in. */
+async function openAttachmentBytes(m) {
+  // Forwarding always starts from the open chat, so its kind is authoritative
+  // (a message "from" me would otherwise look like a Saved-Messages peer).
+  const key = state.activePeer;
+  if (isGroupKey(key)) return api.openGroupAttachment({ id: m.id });
+  if (isChannelKey(key)) return api.openChannelAttachment({ id: m.id });
+  return api.openAttachment({ id: m.id, peer: peerUsername(key) });
 }
 
 function dataUrlToBytes(dataUrl) {
@@ -3324,7 +3637,12 @@ els.btnSelectDelete.addEventListener('click', async () => {
   });
   if (!ok) return;
   for (const m of chosen) {
-    try { await api.remove(m.id); applyDeleted(m.id); } catch { /* keep going */ }
+    try {
+      if (isGroupKey(state.activePeer)) await api.deleteGroupMessage({ id: m.id });
+      else if (isChannelKey(state.activePeer)) await api.deleteChannelMessage({ id: m.id });
+      else await api.remove(m.id);
+      applyDeleted(m.id);
+    } catch { /* keep going */ }
   }
   exitSelectMode();
   toast('Deleted');
@@ -3380,6 +3698,7 @@ els.drawer.addEventListener('click', (e) => {
   if (action === 'accounts') openAccounts();
   else if (action === 'my-profile') openMyProfile();
   else if (action === 'create') openCreateMenu();
+  else if (action === 'channels') openDiscover();
   else if (action === 'contacts') openContacts();
   else if (action === 'saved') startChatWith(state.username);
   else if (action === 'settings') els.btnSettings.click();
@@ -3394,16 +3713,27 @@ els.drawer.addEventListener('click', (e) => {
 });
 
 /* --------------------------- create menu --------------------------- */
-async function openCreateMenu() {
-  const choice = await confirmDialog({
-    title: 'Создать',
-    text: 'Новый аккаунт на этом устройстве или новая группа?',
-    confirmLabel: 'Новый аккаунт',
-    cancelLabel: 'Новая группа'
-  });
-  if (choice === true) { await api.logout().catch(() => {}); resetToAuth(); }
-  else if (choice === false) openGroupModal();
+function openCreateMenu() {
+  els.createBackdrop.hidden = false;
 }
+
+els.btnCreateClose.addEventListener('click', () => { els.createBackdrop.hidden = true; });
+els.createBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.createBackdrop) els.createBackdrop.hidden = true;
+});
+els.createAccount.addEventListener('click', async () => {
+  els.createBackdrop.hidden = true;
+  await api.logout().catch(() => {});
+  resetToAuth();
+});
+els.createGroup.addEventListener('click', () => {
+  els.createBackdrop.hidden = true;
+  openGroupModal();
+});
+els.createChannel.addEventListener('click', () => {
+  els.createBackdrop.hidden = true;
+  openChannelModal();
+});
 
 /* ---------------------------- accounts ---------------------------- */
 async function openAccounts() {
@@ -3489,6 +3819,7 @@ async function restartSession() {
   state.presence.clear();
   state.lastSeen.clear();
   state.groups.clear();
+  state.channels.clear();
   state.activePeer = null;
   els.chatList.innerHTML = '';
   els.archivedList.innerHTML = '';
@@ -3624,6 +3955,119 @@ els.btnGroupCreate.addEventListener('click', async () => {
     els.groupError.textContent = err.message || 'Не удалось создать группу';
     els.groupError.hidden = false;
   }
+});
+
+/* --------------------------- create channel --------------------------- */
+function openChannelModal() {
+  els.channelName.value = '';
+  els.channelDesc.value = '';
+  els.channelError.hidden = true;
+  els.channelBackdrop.hidden = false;
+  els.channelName.focus();
+}
+
+els.btnChannelClose.addEventListener('click', () => { els.channelBackdrop.hidden = true; });
+els.channelBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.channelBackdrop) els.channelBackdrop.hidden = true;
+});
+
+els.btnChannelCreate.addEventListener('click', async () => {
+  const name = els.channelName.value.trim();
+  const description = els.channelDesc.value.trim();
+  els.channelError.hidden = true;
+  if (!name) {
+    els.channelError.textContent = 'Введите название канала';
+    els.channelError.hidden = false;
+    return;
+  }
+  try {
+    const channel = await api.createChannel({ name, description });
+    state.channels.set(channel.id, channel);
+    els.channelBackdrop.hidden = true;
+    ensureChat(channelKey(channel.id));
+    renderChatList();
+    openChat(channelKey(channel.id));
+    toast('Канал создан');
+  } catch (err) {
+    els.channelError.textContent = err.message || 'Не удалось создать канал';
+    els.channelError.hidden = false;
+  }
+});
+
+/* -------------------------- discover channels -------------------------- */
+let discoverItems = [];
+
+async function openDiscover() {
+  els.discoverSearch.value = '';
+  els.discoverBackdrop.hidden = false;
+  els.discoverList.innerHTML = '<p class="panel-empty">Загрузка…</p>';
+  try {
+    discoverItems = await api.discoverChannels();
+  } catch (err) {
+    discoverItems = [];
+    els.discoverList.innerHTML = `<p class="panel-empty">${escapeHtml(err.message || 'Не удалось загрузить')}</p>`;
+    return;
+  }
+  renderDiscover();
+}
+
+function renderDiscover() {
+  const query = (els.discoverSearch.value || '').trim().toLowerCase();
+  const items = discoverItems.filter((c) => !query || c.name.toLowerCase().includes(query));
+  els.discoverList.innerHTML = '';
+  els.discoverEmpty.hidden = items.length > 0;
+  if (!items.length) {
+    els.discoverEmpty.textContent = query ? 'Ничего не найдено.' : 'Каналов пока нет. Создайте первый.';
+    return;
+  }
+  for (const c of items) {
+    const row = document.createElement('div');
+    row.className = 'menu-item contact-row';
+    const tick = c.verified
+      ? `<span class="verified-badge verified-badge-sm" title="Проверенный канал">${icon('i-check')}</span>`
+      : '';
+    const label = c.subscribed
+      ? (c.isOwner ? 'ваш канал' : 'вы подписаны')
+      : `${c.subs} ${plural(c.subs, 'подписчик', 'подписчика', 'подписчиков')}`;
+    row.innerHTML = `
+      <span class="avatar tiny" data-color="cyan">${icon('i-globe')}</span>
+      <span class="contact-name">${escapeHtml(c.name)}${tick}</span>
+      <span class="contact-handle">${escapeHtml(label)}</span>
+      <button class="btn-secondary btn-compact" data-open="${c.id}">${c.subscribed ? 'Открыть' : 'Подписаться'}</button>
+    `;
+    row.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-open]');
+      if (!btn) return;
+      els.discoverBackdrop.hidden = true;
+      if (c.subscribed) openChat(channelKey(c.id));
+      else subscribeToChannel(c.id);
+    });
+    els.discoverList.appendChild(row);
+  }
+}
+
+async function subscribeToChannel(channelId) {
+  try {
+    const channel = await api.joinChannel({ channelId });
+    state.channels.set(channel.id, channel);
+    if (channel.ownerProfile) state.profiles.set(channel.owner, channel.ownerProfile);
+    ensureChat(channelKey(channel.id));
+    renderChatList();
+    openChat(channelKey(channel.id));
+    toast('Вы подписались');
+  } catch (err) {
+    toast(err.message || 'Не удалось подписаться');
+  }
+}
+
+els.discoverSearch.addEventListener('input', renderDiscover);
+els.btnDiscoverClose.addEventListener('click', () => { els.discoverBackdrop.hidden = true; });
+els.discoverBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.discoverBackdrop) els.discoverBackdrop.hidden = true;
+});
+els.btnDiscoverCreate.addEventListener('click', () => {
+  els.discoverBackdrop.hidden = true;
+  openChannelModal();
 });
 
 /* --------------------------------- boot --------------------------------- */
