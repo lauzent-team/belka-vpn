@@ -112,9 +112,10 @@ on a native Windows runner instead. See `.github/workflows/build.yml`.
 
 ```bash
 node test/e2e.js                          # real server + real crypto (11 checks)
-node test/features.js                     # profiles, chats, replies (22 checks)
-xvfb-run -a node test/ui.js               # drives the real Electron UI (9 checks)
-xvfb-run -a node test/ui-features.js      # the new features, clicked for real (15 checks)
+node test/features.js                     # profiles, chats, replies (32 checks)
+node test/sms-adapter.js                  # SMS delivery against a fake provider (19 checks)
+xvfb-run -a node test/ui.js               # drives the real Electron UI (16 checks)
+xvfb-run -a node test/ui-features.js      # the new features, clicked for real (22 checks)
 xvfb-run -a node test/connection.js       # connection and error handling (4 checks)
 ```
 
@@ -131,6 +132,55 @@ SLEEPHY_PORT=8787 SLEEPHY_DB=/var/lib/sleephy/sleephy.db node server/index.js
 
 Put it behind TLS (`wss://`) in production — the app accepts any WebSocket URL
 in Settings → Server address.
+
+### Sending login codes by SMS
+
+Sign-in is by phone and a one-time code, so the relay needs a way to deliver that
+code. Without a provider it prints the code to its own log, which is fine for
+development and useless for real users.
+
+The relay only knows how to POST `{ phone, code }` as JSON to one URL
+(`SLEEPHY_SMS_WEBHOOK`). Providers do not speak that shape, so a small adapter
+translates between them and adds the throttling the relay does not have:
+
+```
+relay ──{phone,code}──▶ sms-adapter ──provider API──▶ SMS gateway
+```
+
+1. Get an account with a provider and an API key. For SMS.ru that is `api_id`
+   on the dashboard; the endpoint is `https://sms.ru/sms/send`.
+2. Start the adapter next to the relay, with the key in the environment:
+
+```bash
+SMSRU_API_ID=your-api-id SMS_ADAPTER_TOKEN=$(openssl rand -hex 16) \
+  node server/sms-adapter.js
+```
+
+3. Point the relay at it and restart the relay:
+
+```bash
+SLEEPHY_SMS_WEBHOOK=http://127.0.0.1:8790/send/your-token node server/index.js
+```
+
+4. Sign in with a real number and confirm the message arrives.
+
+The adapter listens on `127.0.0.1` only and is not meant to be exposed. Its
+limits are deliberately low, because **every `phone.request` costs money and the
+relay has no rate limiting of its own** — anyone who can reach the relay could
+otherwise drain the balance by requesting codes in a loop:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SMS_MIN_INTERVAL` | 60 | seconds between codes to one number |
+| `SMS_PER_HOUR` | 3 | codes to one number per hour |
+| `SMS_PER_DAY` | 5 | codes to one number per day |
+| `SMS_DAILY_CAP` | 500 | codes to all numbers per day |
+
+A refused request is logged and answered with `429`; the relay logs the failure
+and the user sees the normal "try again" path. Set `SMS_TEXT` to change the
+message (`{code}` is replaced), or `SMS_PROVIDER=generic` with
+`SMS_GENERIC_URL` to use a different gateway. `test/sms-adapter.js` covers all of
+this against a fake provider, so it runs without sending anything.
 
 ## What is not done yet
 
@@ -152,13 +202,15 @@ This is an honest list. The app should not be described as more secure than it i
 - **Profiles and usernames are public metadata** — anyone can search for a
   username and see the display name, bio and avatar colour.
 - **The relay has no rate limiting or abuse protection** — needed before it
-  faces the public internet.
+  faces the public internet. The SMS adapter throttles code requests, but nothing
+  yet limits messages, searches or failed logins.
 - **Accounts cannot be recovered.** Lose the password, lose the keys.
 
 ## Layout
 
 ```
 server/index.js        WebSocket relay + accounts, profiles and chats (node:sqlite)
+server/sms-adapter.js  relay JSON -> provider API, with per-number throttling
 src/lib/crypto.js      libsodium + scrypt helpers (main process)
 src/lib/client.js      connection, identity, encryption (main process)
 main.js                Electron main process and IPC

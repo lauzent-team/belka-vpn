@@ -14,6 +14,7 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { _electron: electron } = require('playwright-core');
+const { signInWithPhone } = require('./_auth');
 
 const PORT = 8793;
 const URL = `ws://127.0.0.1:${PORT}`;
@@ -43,19 +44,13 @@ async function launch(label) {
   return { app, win, dir, errors };
 }
 
-async function register(win, username, password) {
-  await win.click('.auth-tab[data-tab="register"]');
-  await win.fill('#auth-username', username);
-  await win.fill('#auth-password', password);
-  await win.fill('#auth-confirm', password);
-  await win.fill('#server-url', URL);
-  await win.click('#btn-auth');
-  await win.waitForSelector('#screen-main.active', { timeout: 20000 });
-}
-
 async function main() {
   const server = spawn(process.execPath, [path.join(__dirname, '..', 'server', 'index.js')], {
-    env: { ...process.env, SLEEPHY_PORT: String(PORT), SLEEPHY_DB: DB, SLEEPHY_ADMINS: 'alice' },
+    env: {
+      ...process.env, SLEEPHY_PORT: String(PORT), SLEEPHY_DB: DB,
+      // 'alice' is the admin; the phone accounts are renamed to match below.
+      SLEEPHY_ADMINS: 'alice', SLEEPHY_DEV_CODES: '1'
+    },
     stdio: ['ignore', 'ignore', 'pipe']
   });
   server.stderr.on('data', (d) => process.stderr.write('[server] ' + d));
@@ -71,13 +66,13 @@ async function main() {
   });
 
   await step('registering an account reaches the main screen', async () => {
-    await register(a.win, 'alice', 'correct-horse-battery');
+    await signInWithPhone(a.win, URL, { username: 'alice' });
     assert.strictEqual(await a.win.textContent('#me-name'), 'alice');
     assert.ok(await a.win.isVisible('#screen-main'));
   });
 
   await step('second account registers', async () => {
-    await register(b.win, 'bob', 'hunter2-hunter2');
+    await signInWithPhone(b.win, URL, { username: 'bob' });
     assert.strictEqual(await b.win.textContent('#me-name'), 'bob');
   });
 

@@ -6,6 +6,7 @@ const fs = require('fs');
 const assert = require('assert');
 const { spawn } = require('child_process');
 const { _electron: electron } = require('playwright-core');
+const { signInWithPhone } = require('./_auth');
 
 const PORT = 8796;
 const URL = `ws://127.0.0.1:${PORT}`;
@@ -20,7 +21,7 @@ async function step(name, fn) {
 
 (async () => {
   const server = spawn(process.execPath, [path.join(__dirname, '..', 'server', 'index.js')], {
-    env: { ...process.env, SLEEPHY_PORT: String(PORT), SLEEPHY_DB: DB },
+    env: { ...process.env, SLEEPHY_PORT: String(PORT), SLEEPHY_DB: DB, SLEEPHY_DEV_CODES: '1' },
     stdio: ['ignore', 'ignore', 'inherit']
   });
   await wait(1200);
@@ -55,7 +56,7 @@ async function step(name, fn) {
   });
 
   await step('copy and paste still work through the hidden menu', async () => {
-    const field = await win.$('#auth-username');
+    const field = await win.$('#auth-phone');
     await field.fill('copy-paste-probe');
     await field.selectText();
     await win.keyboard.press('Control+C');
@@ -68,13 +69,7 @@ async function step(name, fn) {
 
   await step('an account can still be created after the menu change', async () => {
     const suffix = Math.random().toString(36).slice(2, 6);
-    await win.click('.auth-tab[data-tab="register"]');
-    await win.fill('#auth-username', `menu_${suffix}`);
-    await win.fill('#auth-password', 'password-1234');
-    await win.fill('#auth-confirm', 'password-1234');
-    await win.fill('#server-url', URL);
-    await win.click('#btn-auth');
-    await win.waitForSelector('#screen-main.active', { timeout: 20000 });
+    await signInWithPhone(win, URL, { username: `menu_${suffix}` });
     await wait(400);
   });
 

@@ -2,7 +2,7 @@
   "name": "sleephy",
   "productName": "SleePhy",
   "version": "0.6.0",
-  "description": "SleePhy \u2014 end-to-end encrypted messenger with a blind relay server",
+  "description": "SleePhy — end-to-end encrypted messenger with a blind relay server",
   "main": "main.js",
   "author": "SleePhy",
   "license": "MIT",
@@ -10,6 +10,7 @@
   "scripts": {
     "start": "electron .",
     "server": "node server/index.js",
+    "sms-adapter": "node server/sms-adapter.js",
     "dist": "electron-builder",
     "dist:win": "electron-builder --win",
     "dist:linux": "electron-builder --linux"

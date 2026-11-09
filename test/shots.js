@@ -12,7 +12,7 @@ fs.mkdirSync(OUT, { recursive: true });
 
 (async () => {
   const server = spawn(process.execPath, [path.join(__dirname, '..', 'server', 'index.js')], {
-    env: { ...process.env, SLEEPHY_PORT: String(PORT), SLEEPHY_DB: DB },
+    env: { ...process.env, SLEEPHY_PORT: String(PORT), SLEEPHY_DB: DB, SLEEPHY_DEV_CODES: '1' },
     stdio: ['ignore', 'ignore', 'inherit']
   });
   await new Promise((r) => setTimeout(r, 1200));
@@ -28,12 +28,13 @@ fs.mkdirSync(OUT, { recursive: true });
 
   await win.screenshot({ path: path.join(OUT, '1-auth.png') });
 
-  await win.click('.auth-tab[data-tab="register"]');
-  await win.fill('#auth-username', 'alice');
-  await win.fill('#auth-password', 'correct-horse-battery');
-  await win.fill('#auth-confirm', 'correct-horse-battery');
+  await win.fill('#auth-phone', '+79990001234');
   await win.fill('#server-url', URL);
   await win.click('#btn-auth');
+  await win.waitForSelector('#form-code:not([hidden])', { timeout: 20000 });
+  await win.screenshot({ path: path.join(OUT, '2-code.png') });
+  await win.waitForFunction(() => (document.getElementById('auth-code').value || '').length === 6, { timeout: 10000 });
+  await win.click('#btn-code');
   await win.waitForSelector('#screen-main.active', { timeout: 20000 });
   await win.screenshot({ path: path.join(OUT, '2-main-empty.png') });
 

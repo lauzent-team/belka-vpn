@@ -15,16 +15,19 @@ const $ = (id) => document.getElementById(id);
 
 const els = {
   screens: { auth: $('screen-auth'), unlock: $('screen-unlock'), main: $('screen-main') },
-  authTabs: document.querySelector('.auth-tabs'),
-  tabs: Array.from(document.querySelectorAll('.auth-tab')),
   formAuth: $('form-auth'),
-  authUser: $('auth-username'),
-  authPass: $('auth-password'),
-  authConfirm: $('auth-confirm'),
-  fieldConfirm: $('field-confirm'),
+  authPhone: $('auth-phone'),
   authHint: $('auth-hint'),
   authError: $('auth-error'),
   btnAuth: $('btn-auth'),
+  stepPhone: $('auth-step-phone'),
+  stepCode: $('auth-step-code'),
+  formCode: $('form-code'),
+  authCode: $('auth-code'),
+  authCodeHint: $('auth-code-hint'),
+  authCodeError: $('auth-code-error'),
+  btnCode: $('btn-code'),
+  btnCodeBack: $('btn-code-back'),
   serverUrl: $('server-url'),
   authConn: $('auth-conn'),
 
@@ -86,6 +89,13 @@ const els = {
   setAutoLock: $('set-autolock'),
   setBlockedSub: $('set-blocked-sub'),
   btnBlocked: $('btn-blocked'),
+  setPasswordSub: $('set-password-sub'),
+  btnSetPassword: $('btn-set-password'),
+  formPassword: $('form-password'),
+  setPasswordInput: $('set-password-input'),
+  setPasswordConfirm: $('set-password-confirm'),
+  setPasswordError: $('set-password-error'),
+  btnPasswordCancel: $('btn-password-cancel'),
   setAutoPhoto: $('set-autophoto'),
   setKeepMedia: $('set-keepmedia'),
   setStorage: $('set-storage'),
@@ -288,7 +298,10 @@ function showScreen(name) {
 
 function showError(el, message) {
   if (!message) { el.hidden = true; el.textContent = ''; return; }
-  el.textContent = message;
+  // Errors arrive from the main process as plain English sentences. Run them
+  // through the dictionary so the user reads them in their own language; a
+  // phrase with no entry comes back unchanged.
+  el.textContent = i18n.t(message);
   el.hidden = false;
   el.style.animation = 'none';
   void el.offsetWidth;
@@ -404,52 +417,76 @@ function paintAvatar(el, username, size) {
 }
 
 /* -------------------------------- auth UI -------------------------------- */
-function setMode(mode, { clearError = true } = {}) {
-  state.mode = mode;
-  els.authTabs.dataset.active = mode;
-  els.tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === mode));
-  els.fieldConfirm.hidden = mode !== 'register';
-  els.btnAuth.textContent = mode === 'register' ? 'Create account' : 'Sign in';
-  els.authHint.textContent = mode === 'register'
-    ? 'We generate your encryption keys on this device. Your password protects them — it never leaves your device.'
-    : 'Your password protects your encryption keys on this device. We can never read your messages.';
-  if (clearError) showError(els.authError, null);
-}
+// Sign-in is two steps: a phone number, then the code the relay sends. The
+// username is chosen later in settings, and the password too.
+let authPhone = null;
 
-els.tabs.forEach((tab) => tab.addEventListener('click', () => setMode(tab.dataset.tab)));
+function showAuthStep(step) {
+  const onCode = step === 'code';
+  els.formAuth.hidden = onCode;
+  els.formCode.hidden = !onCode;
+  els.stepPhone.classList.toggle('active', !onCode);
+  els.stepPhone.classList.toggle('done', onCode);
+  els.stepCode.classList.toggle('active', onCode);
+  showError(els.authError, null);
+  showError(els.authCodeError, null);
+  if (onCode) {
+    els.authCode.value = '';
+    els.authCode.focus();
+  } else {
+    els.authPhone.focus();
+  }
+}
 
 els.formAuth.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const username = els.authUser.value.trim().toLowerCase();
-  const password = els.authPass.value;
-  const confirm = els.authConfirm.value;
   showError(els.authError, null);
-
-  if (!/^[a-z0-9_]{3,32}$/.test(username)) {
-    return showError(els.authError, 'Username: 3–32 characters, a–z, 0–9 or _');
-  }
-  if (password.length < 8) {
-    return showError(els.authError, 'Password must be at least 8 characters');
-  }
-  if (state.mode === 'register' && password !== confirm) {
-    return showError(els.authError, 'Passwords do not match');
+  const phone = els.authPhone.value.trim();
+  if (!/^\+[1-9]\d{6,14}$/.test(phone.replace(/[\s()-]/g, ''))) {
+    return showError(els.authError, 'Enter a phone number in international format, e.g. +79991234567');
   }
 
   els.btnAuth.disabled = true;
-  els.btnAuth.textContent = state.mode === 'register' ? 'Creating…' : 'Signing in…';
+  els.btnAuth.textContent = i18n.t('Sending…');
   try {
     await api.connect(els.serverUrl.value.trim());
-    if (state.mode === 'register') await api.register({ username, password });
-    else await api.login({ username, password });
-    els.authPass.value = '';
-    els.authConfirm.value = '';
+    const res = await api.requestCode(phone);
+    authPhone = res.phone;
+    els.authCodeHint.textContent = res.isNew
+      ? i18n.t('A new account was created for this number.')
+      : i18n.t('Welcome back. Enter the code to sign in.');
+    // The relay can hand the code back while no SMS provider is configured.
+    showAuthStep('code');
+    if (res.code) els.authCode.value = res.code;
   } catch (err) {
-    showError(els.authError, err.message || 'Something went wrong');
+    showError(els.authError, err.message || i18n.t('Something went wrong'));
   } finally {
     els.btnAuth.disabled = false;
-    setMode(state.mode, { clearError: false });
+    els.btnAuth.textContent = i18n.t('Send code');
   }
 });
+
+els.formCode.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  showError(els.authCodeError, null);
+  const code = els.authCode.value.trim();
+  if (!/^\d{6}$/.test(code)) {
+    return showError(els.authCodeError, i18n.t('Enter the 6-digit code'));
+  }
+  els.btnCode.disabled = true;
+  els.btnCode.textContent = i18n.t('Checking…');
+  try {
+    await api.verifyCode({ phone: authPhone, code });
+    els.authCode.value = '';
+  } catch (err) {
+    showError(els.authCodeError, err.message || i18n.t('Something went wrong'));
+  } finally {
+    els.btnCode.disabled = false;
+    els.btnCode.textContent = i18n.t('Confirm');
+  }
+});
+
+els.btnCodeBack.addEventListener('click', () => showAuthStep('phone'));
 
 els.formUnlock.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -470,6 +507,7 @@ els.btnSwitch.addEventListener('click', async () => {
 function resetToAuth() {
   state.username = null;
   state.profile = null;
+  state.profileTarget = null;
   state.unlocked = false;
   state.activePeer = null;
   state.chats.clear();
@@ -480,6 +518,7 @@ function resetToAuth() {
   els.chatBlank.hidden = false;
   els.chatView.hidden = true;
   renderChatList();
+  showAuthStep('phone');
   showScreen('auth');
 }
 
@@ -1374,11 +1413,17 @@ function buildSwatches(selected) {
   }
 }
 
+/** Close the profile overlay and stop it from reopening on the next event. */
+function closeProfile() {
+  els.profileBackdrop.hidden = true;
+  state.profileTarget = null;
+}
+
 els.btnMyProfile.addEventListener('click', openMyProfile);
 els.btnOpenMyProfile.addEventListener('click', () => { els.settingsBackdrop.hidden = true; openMyProfile(); });
-els.btnProfileClose.addEventListener('click', () => { els.profileBackdrop.hidden = true; });
+els.btnProfileClose.addEventListener('click', closeProfile);
 els.profileBackdrop.addEventListener('click', (e) => {
-  if (e.target === els.profileBackdrop) els.profileBackdrop.hidden = true;
+  if (e.target === els.profileBackdrop) closeProfile();
 });
 els.btnPeerProfile.addEventListener('click', () => {
   if (!state.activePeer || state.activePeer === SAVED) return;
@@ -1386,7 +1431,7 @@ els.btnPeerProfile.addEventListener('click', () => {
 });
 els.btnProfileMessage.addEventListener('click', () => {
   const target = state.profileTarget;
-  els.profileBackdrop.hidden = true;
+  closeProfile();
   if (target) startChatWith(target);
 });
 
@@ -1507,6 +1552,7 @@ els.btnSettings.addEventListener('click', () => {
   if (els.setVersionSub) els.setVersionSub.textContent = `Версия ${els.footVer.textContent.replace(/^v/, '')} · сквозное шифрование`;
   selectSettingsPane(state.settingsPane);
   syncSettingsUI();
+  refreshPasswordUI();
   api.status().then((s) => {
     els.setPubkey.textContent = s.publicKey || '—';
     updateConnIndicators(s.online);
@@ -1751,6 +1797,7 @@ els.setKeepMedia.addEventListener('change', async () => {
   await persistSettings({ keepMedia: els.setKeepMedia.value });
 });
 els.setLanguage.addEventListener('change', async () => {
+  applyLanguage(els.setLanguage.value);
   await persistSettings({ language: els.setLanguage.value });
 });
 
@@ -1776,6 +1823,56 @@ els.btnBlocked.addEventListener('click', async () => {
   await persistSettings({ blocked: list });
   syncSettingsUI();
   toast(list.length ? 'Список блокировок обновлён' : 'Никто не заблокирован');
+});
+
+/* ---------------------------- account password ---------------------------- */
+// The password is optional. It only guards the key file on this device; the
+// relay sees a verifier, never the password itself.
+async function refreshPasswordUI() {
+  try {
+    const s = await api.status();
+    const has = !!s.hasPassword;
+    els.setPasswordSub.textContent = has ? i18n.t('Password set') : i18n.t('No password set');
+    els.btnSetPassword.textContent = has ? i18n.t('Change password') : i18n.t('Set a password');
+  } catch { /* leave the last known label */ }
+}
+
+els.btnSetPassword.addEventListener('click', () => {
+  els.formPassword.hidden = false;
+  els.btnSetPassword.hidden = true;
+  showError(els.setPasswordError, null);
+  els.setPasswordInput.focus();
+});
+
+els.btnPasswordCancel.addEventListener('click', () => {
+  els.formPassword.hidden = true;
+  els.btnSetPassword.hidden = false;
+  els.setPasswordInput.value = '';
+  els.setPasswordConfirm.value = '';
+  showError(els.setPasswordError, null);
+});
+
+els.formPassword.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  showError(els.setPasswordError, null);
+  const password = els.setPasswordInput.value;
+  if (password.length < 8) {
+    return showError(els.setPasswordError, i18n.t('Password must be at least 8 characters'));
+  }
+  if (password !== els.setPasswordConfirm.value) {
+    return showError(els.setPasswordError, i18n.t('Passwords do not match'));
+  }
+  try {
+    await api.setPassword(password);
+    els.setPasswordInput.value = '';
+    els.setPasswordConfirm.value = '';
+    els.formPassword.hidden = true;
+    els.btnSetPassword.hidden = false;
+    await refreshPasswordUI();
+    toast(i18n.t('Password set'));
+  } catch (err) {
+    showError(els.setPasswordError, err.message || i18n.t('Something went wrong'));
+  }
 });
 els.btnSettingsClose.addEventListener('click', () => { els.settingsBackdrop.hidden = true; });
 els.settingsBackdrop.addEventListener('click', (e) => {
@@ -2628,9 +2725,21 @@ async function loadAppearance() {
     if (s && typeof s === 'object') state.settings = { ...state.settings, ...s };
   } catch { /* defaults are fine */ }
   applyTheme(state.settings.theme === 'light' ? 'light' : 'dark');
+  applyLanguage(state.settings.language);
   applyWallpaper(WALLPAPERS.includes(state.settings.wallpaper) ? state.settings.wallpaper : 'none');
   buildWallpaperPicker();
   document.documentElement.classList.toggle('reduce-motion', state.settings.reduceMotion === true);
+}
+
+/** Switch the interface language and re-translate everything on screen. */
+function applyLanguage(next) {
+  const lang = i18n.setLang(next || 'ru');
+  state.settings.language = lang;
+  document.documentElement.lang = lang;
+  i18n.apply(document.body);
+  if (els.setLanguage) els.setLanguage.value = lang;
+  if (typeof refreshLocalizedText === 'function') refreshLocalizedText();
+  return lang;
 }
 
 /* ============================ forward / select ============================ */
@@ -2753,7 +2862,7 @@ document.addEventListener('keydown', (e) => {
     if (!els.ctxBackdrop.hidden) return closeContextMenu();
     if (!els.confirmBackdrop.hidden) return settleConfirm(false);
     if (!els.forwardBackdrop.hidden) return void (els.forwardBackdrop.hidden = true);
-    if (!els.profileBackdrop.hidden) return void (els.profileBackdrop.hidden = true);
+    if (!els.profileBackdrop.hidden) return closeProfile();
     if (!els.chatmenuBackdrop.hidden) return void (els.chatmenuBackdrop.hidden = true);
     if (!els.settingsBackdrop.hidden) return void (els.settingsBackdrop.hidden = true);
     if (state.selecting) return exitSelectMode();
@@ -3042,7 +3151,7 @@ els.btnGroupCreate.addEventListener('click', async () => {
 
 /* --------------------------------- boot --------------------------------- */
 (async function boot() {
-  setMode('login');
+  showAuthStep('phone');
   buildEmojiPanel();
   buildStickerPanel();
   loadAppearance();

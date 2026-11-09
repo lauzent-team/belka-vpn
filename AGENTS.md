@@ -203,3 +203,73 @@ requests.
   a 128px PNG from an emoji and `sendWithAttachment()` sends it as `kind: 'image'`,
   so the relay still only sees ciphertext. Do not invent a sticker wire format.
 
+## Phone sign-in, i18n and vault passwords (v0.6.0)
+
+- **Sign-in is two steps: phone, then one-time code.** The auth screen has two
+  `auth-step` panels (`data-step="phone"` / `data-step="code"`); `showAuthStep()`
+  toggles them. `resetToAuth()` must call `showAuthStep('phone')` — leaving the
+  code step active hides the phone field and the next sign-in cannot start.
+- **The username is assigned by the relay, not chosen at sign-up.** `freeUsername()`
+  returns a handle like `user_5848a98c`; the user renames it later in the profile.
+  Renaming is a real account move: `changeUsername()` must rewrite the identity
+  file **and** carry the `sleephy-accounts.json` entry across, because the registry
+  keys accounts by username. Skipping the registry leaves a stale handle and the
+  account switcher lists the wrong name.
+- **A phone account has no password until the user sets one.** Such an account is
+  sealed with the per-device key (`sealedWith: 'device'`) and `autoResume()`
+  unlocks it on restart so the user never sees the unlock screen. `setPassword()`
+  re-seals with the derived key and may `clearDeviceKey()` **only when no other
+  account still depends on it** — several passwordless accounts can share one
+  device key.
+- **`i18n.js` is generated; do not hand-edit it.** Rows are `[English, Russian]`
+  and the generator normalises direction (a Cyrillic left side means the row was
+  written the other way round). Keep every row pointing the same way: if a string
+  appears as both an English and a Russian source, `translate()` maps it to itself
+  and part of the UI stays untranslated.
+- **Translate in place, and expect to run it again.** `i18n.apply(root)` rewrites
+  text nodes and `placeholder` / `title` / `aria-label` attributes under a root.
+  It is idempotent, so call it after any markup the renderer rebuilds (drawer,
+  admin rows, chat list) via `refreshLocalizedText()`.
+
+## Errors shown to the user
+
+- **IPC rejections arrive wrapped, and `showError()` translates them.** Electron
+  turns a rejection from `ipcMain.handle` into `"Error invoking remote method
+  'sleephy:x': Error: <reason>"`. `preload.js` unwraps that once in its `invoke()`
+  helper, and `showError()` runs the result through `i18n.t()` so the user reads
+  the reason in their own language. Add new server error strings to `src/i18n.js`
+  or they will show up in English.
+- **Keep the reason text identical to the dictionary key.** `i18n.translate()`
+  matches whole normalised strings; a reworded server message silently stops
+  being translated.
+
+## Closing overlays
+
+- **Clear the state that reopens an overlay when you close it.** The `profile`
+  event calls `showProfile()` whenever `state.profileTarget` matches, so closing
+  the profile with `els.profileBackdrop.hidden = true` alone lets the next event
+  pop it straight back open. Use `closeProfile()`, which also nulls
+  `profileTarget`. The same trap applies to any overlay a broadcast can re-open.
+
+## Delivering login codes (v0.6.0)
+
+- **The relay cannot talk to a real SMS provider directly.** `deliverCode()` POSTs
+  `{ phone, code }` as JSON to `SLEEPHY_SMS_WEBHOOK` and nothing else; providers
+  want their own shape (SMS.ru wants `api_id`/`to`/`msg`/`json=1` as query
+  params). Keep the translation in `server/sms-adapter.js` rather than teaching
+  the relay provider-specific code.
+- **The number arrives with a leading `+`.** `PHONE_RE` requires E.164, and
+  gateways want bare digits — strip the `+` at the adapter boundary.
+- **Every `phone.request` costs money and nothing throttles it.** The relay has no
+  rate limiting, so an open `SLEEPHY_SMS_WEBHOOK` is a way to drain the balance in
+  a loop. The adapter enforces per-number and global limits for that reason; do
+  not remove them to "make testing easier".
+- **A provider error must not be swallowed.** `deliverCode()` logs a failed
+  webhook and still answers `phone.request` with `ok`, because the code is
+  already stored. That is deliberate: the user retries, the log shows why. Do not
+  make the reply depend on the provider being reachable.
+- **`SLEEPHY_DEV_CODES=1` puts the code in the reply.** That is for tests and for
+  a server with no provider. Never leave it on in production — it hands anyone
+  who knows a phone number the ability to log in as it.
+
+

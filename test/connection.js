@@ -15,6 +15,7 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { _electron: electron } = require('playwright-core');
+const { signInWithPhone } = require('./_auth');
 
 const PORT = 8796;
 const GOOD = `ws://127.0.0.1:${PORT}`;
@@ -38,18 +39,15 @@ async function launch(label) {
   return { app, win, dir };
 }
 
-async function submit(win, username, password, server) {
-  await win.click('.auth-tab[data-tab="register"]');
-  await win.fill('#auth-username', username);
-  await win.fill('#auth-password', password);
-  await win.fill('#auth-confirm', password);
+async function submit(win, server) {
   await win.fill('#server-url', server);
+  await win.fill('#auth-phone', '+79990000001');
   await win.click('#btn-auth');
 }
 
 async function main() {
   const server = spawn(process.execPath, [path.join(__dirname, '..', 'server', 'index.js')], {
-    env: { ...process.env, SLEEPHY_PORT: String(PORT), SLEEPHY_DB: DB },
+    env: { ...process.env, SLEEPHY_PORT: String(PORT), SLEEPHY_DB: DB, SLEEPHY_DEV_CODES: '1' },
     stdio: ['ignore', 'ignore', 'inherit']
   });
   await new Promise((r) => setTimeout(r, 1200));
@@ -62,7 +60,7 @@ async function main() {
   });
 
   await step('unreachable server gives a clear error', async () => {
-    await submit(a.win, 'nobody', 'password-1234', BAD);
+    await submit(a.win, BAD);
     await a.win.waitForSelector('#auth-error:not([hidden])', { timeout: 20000 });
     const text = await a.win.textContent('#auth-error');
     assert.ok(/server/i.test(text), `error should mention the server, got: "${text}"`);
@@ -70,14 +68,31 @@ async function main() {
   });
 
   await step('reachable server lets the account be created', async () => {
-    await submit(a.win, 'connuser', 'password-1234', GOOD);
-    await a.win.waitForSelector('#screen-main.active', { timeout: 20000 });
+    await signInWithPhone(a.win, GOOD, { username: 'connuser' });
     assert.strictEqual(await a.win.textContent('#me-name'), 'connuser');
   });
 
   await step('connection indicator turns on', async () => {
     const cls = await a.win.getAttribute('#auth-conn', 'class');
     assert.ok(cls.includes('on'), `expected the indicator on, got "${cls}"`);
+  });
+
+  // A rejected code must read as a sentence, in the user's language — not as
+  // Electron's "Error invoking remote method ..." wrapper, and not in English.
+  await step('a wrong code shows a translated reason, not an IPC wrapper', async () => {
+    const b = await launch('b');
+    await b.win.fill('#server-url', GOOD);
+    await b.win.fill('#auth-phone', '+79990007777');
+    await b.win.click('#btn-auth');
+    await b.win.waitForSelector('#form-code:not([hidden])', { timeout: 20000 });
+    await b.win.fill('#auth-code', '000000');
+    await b.win.click('#btn-code');
+    await b.win.waitForSelector('#auth-code-error:not([hidden])', { timeout: 20000 });
+    const text = (await b.win.textContent('#auth-code-error')).trim();
+    assert.ok(!/invoking remote method/i.test(text), `raw IPC text leaked: "${text}"`);
+    assert.ok(!/Error/i.test(text), `error wrapper leaked: "${text}"`);
+    assert.strictEqual(text, 'Неверный код', `expected the Russian message, got "${text}"`);
+    await b.app.close();
   });
 
   await a.app.close();

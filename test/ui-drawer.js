@@ -14,6 +14,7 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { _electron: electron } = require('playwright-core');
+const { signInWithPhone, setAccountPassword } = require('./_auth');
 
 const PORT = 8791;
 const URL = `ws://127.0.0.1:${PORT}`;
@@ -39,21 +40,12 @@ async function launch(label) {
   return { app, win, dir, errors };
 }
 
-async function register(win, username, password) {
-  await win.click('.auth-tab[data-tab="register"]');
-  await win.fill('#auth-username', username);
-  await win.fill('#auth-password', password);
-  await win.fill('#auth-confirm', password);
-  await win.fill('#server-url', URL);
-  await win.click('#btn-auth');
-  await win.waitForSelector('#screen-main.active', { timeout: 20000 });
-}
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
   const server = spawn(process.execPath, [path.join(__dirname, '..', 'server', 'index.js')], {
-    env: { ...process.env, SLEEPHY_PORT: String(PORT), SLEEPHY_DB: DB },
+    env: { ...process.env, SLEEPHY_PORT: String(PORT), SLEEPHY_DB: DB, SLEEPHY_DEV_CODES: '1' },
     stdio: ['ignore', 'ignore', 'inherit']
   });
   await wait(1200);
@@ -64,8 +56,10 @@ async function main() {
   const alice = `alice_${suffix}`;
   const bob = `bob_${suffix}`;
 
-  await register(A.win, alice, 'password-1234');
-  await register(B.win, bob, 'password-1234');
+  await signInWithPhone(A.win, URL, { username: alice });
+  await signInWithPhone(B.win, URL, { username: bob });
+  // Alice protects her vault, so switching back to her asks for a password.
+  await setAccountPassword(A.win, 'password-1234');
 
   await step('the hamburger opens the drawer with all seven entries', async () => {
     await A.win.click('#btn-menu');
@@ -183,7 +177,7 @@ async function main() {
 
   await step('the account switcher lists both accounts and can switch back', async () => {
     const second = `carol_${suffix}`;
-    await register(A.win, second, 'password-1234');
+    await signInWithPhone(A.win, URL, { username: second });
     await A.win.click('#btn-menu');
     await A.win.click('#drawer .drawer-item[data-drawer="accounts"]');
     await A.win.waitForSelector('#accounts-backdrop:not([hidden])', { timeout: 5000 });

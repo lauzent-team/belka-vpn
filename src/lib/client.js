@@ -39,6 +39,10 @@ class SleePhyClient {
     // Registry of every account on this device. The active account's keys are
     // mirrored into `file` so older single-account paths keep working.
     this.accountsFile = path.join(userDataDir, 'sleephy-accounts.json');
+    // Phone accounts start without a password, so their key is sealed with a
+    // random per-device key kept beside the identity file. Setting a password
+    // re-seals the key and removes this file.
+    this.deviceKeyFile = path.join(userDataDir, 'sleephy-device.key');
     this.onEvent = onEvent;
     this.ws = null;
     this.serverUrl = DEFAULT_SERVER;
@@ -68,6 +72,39 @@ class SleePhyClient {
 
   clearIdentity() {
     try { fs.unlinkSync(this.file); } catch { /* nothing to remove */ }
+  }
+
+  /* ----------------------------- device key ----------------------------- */
+  /** The per-device key, created on first use. Protects passwordless accounts. */
+  readDeviceKey() {
+    try {
+      const key = Buffer.from(fs.readFileSync(this.deviceKeyFile, 'utf8').trim(), 'base64');
+      return key.length === 32 ? key : null;
+    } catch { return null; }
+  }
+
+  ensureDeviceKey() {
+    const existing = this.readDeviceKey();
+    if (existing) return existing;
+    const key = require('crypto').randomBytes(32);
+    fs.mkdirSync(path.dirname(this.deviceKeyFile), { recursive: true });
+    fs.writeFileSync(this.deviceKeyFile, key.toString('base64'), { mode: 0o600 });
+    return key;
+  }
+
+  clearDeviceKey() {
+    try { fs.unlinkSync(this.deviceKeyFile); } catch { /* nothing to remove */ }
+  }
+
+  /** Open a stored record with whichever key sealed it (password or device). */
+  async openRecord(record, password) {
+    if (record.sealedWith === 'device') {
+      const key = this.readDeviceKey();
+      if (!key) throw new Error('The device key for this account is missing');
+      return cryptoLib.openSecret(record.sealed, record.nonce, key);
+    }
+    const key = cryptoLib.deriveKey(password, record.salt);
+    return cryptoLib.openSecret(record.sealed, record.nonce, key);
   }
 
   /**
@@ -348,6 +385,16 @@ class SleePhyClient {
       const res = await this.request({ t: 'resume', token: id.token });
       this.applySession(res);
       this.username = res.username;
+      // A device-sealed key (a phone account with no password yet) opens itself,
+      // so the user lands straight in the app instead of an unlock prompt.
+      if (id.sealedWith === 'device' && id.sealed) {
+        try {
+          this.secretKey = await this.openRecord(id, null);
+          this.publicKey = id.publicKey || this.publicKey;
+          this.emit({ type: 'session', state: 'unlocked', username: res.username });
+          return;
+        } catch { /* fall through to the locked state */ }
+      }
       this.emit({ type: 'session', state: 'locked', username: res.username });
     } catch {
       this.clearIdentity();
@@ -368,7 +415,8 @@ class SleePhyClient {
     const key = cryptoLib.deriveKey(password, salt);
     const { sealed, nonce } = await cryptoLib.sealSecret(identity.secretKey, key);
     const record = {
-      username, salt, sealed, nonce, publicKey: identity.publicKey, token: this.token
+      username, salt, sealed, nonce, publicKey: identity.publicKey, token: this.token,
+      sealedWith: 'password', hasPassword: true
     };
     this.writeIdentity(record);
     this.upsertAccount(record);
@@ -387,8 +435,7 @@ class SleePhyClient {
     const id = this.keyRecordFor(username);
     if (!id) throw new Error('No key material for this account on this device');
 
-    const key = cryptoLib.deriveKey(password, id.salt);
-    const secretKey = await cryptoLib.openSecret(id.sealed, id.nonce, key);
+    const secretKey = await this.openRecord(id, password);
     this.secretKey = secretKey;
     const updated = { ...id, username, token: this.token, publicKey: this.publicKey };
     this.writeIdentity(updated);
@@ -402,11 +449,71 @@ class SleePhyClient {
   async unlock(password) {
     const id = this.keyRecordFor(this.username) || this.readIdentity();
     if (!id || !id.sealed) throw new Error('No key material on this device');
-    const key = cryptoLib.deriveKey(password, id.salt);
-    this.secretKey = await cryptoLib.openSecret(id.sealed, id.nonce, key);
+    this.secretKey = await this.openRecord(id, password);
     this.publicKey = id.publicKey;
     this.emit({ type: 'session', state: 'unlocked', username: id.username });
     return { username: id.username };
+  }
+
+  /* ---------------------------- phone sign-in ---------------------------- */
+  /**
+   * Ask the relay for a login code. On a new number the relay creates the
+   * account; the identity is generated here and sealed with the device key, so
+   * there is no password to type on first use.
+   */
+  async requestCode(phone) {
+    const identity = await cryptoLib.generateIdentity();
+    const res = await this.request({ t: 'phone.request', phone, publicKey: identity.publicKey });
+    this.pendingPhone = { phone, identity };
+    return { phone: res.phone, isNew: !!res.isNew, code: res.code || null };
+  }
+
+  async verifyCode({ phone, code }) {
+    const pending = this.pendingPhone;
+    if (!pending || pending.phone !== phone) {
+      throw new Error('Request a new code for this number');
+    }
+    const res = await this.request({ t: 'phone.verify', phone, code });
+    this.applySession(res);
+    this.publicKey = res.publicKey;
+
+    const deviceKey = this.ensureDeviceKey();
+    const { sealed, nonce } = await cryptoLib.sealSecret(pending.identity.secretKey, deviceKey);
+    const record = {
+      username: res.username, phone, salt: null, sealed, nonce,
+      publicKey: res.publicKey, token: this.token,
+      sealedWith: 'device', hasPassword: !!res.hasPassword
+    };
+    this.writeIdentity(record);
+    this.upsertAccount(record);
+
+    this.secretKey = pending.identity.secretKey;
+    this.pendingPhone = null;
+    this.emit({ type: 'session', state: 'unlocked', username: res.username });
+    return { username: res.username, hasPassword: !!res.hasPassword };
+  }
+
+  /** Set the account password from settings. Re-seals the key under it. */
+  async setPassword(password) {
+    if (!this.secretKey) throw new Error('Vault is locked');
+    const salt = cryptoLib.makeSalt();
+    const verifier = cryptoLib.passwordVerifier(password, salt);
+    await this.request({ t: 'password.set', password, salt, verifier });
+
+    const key = cryptoLib.deriveKey(password, salt);
+    const { sealed, nonce } = await cryptoLib.sealSecret(this.secretKey, key);
+    const id = this.readIdentity() || {};
+    const record = {
+      ...id, username: this.username, salt, sealed, nonce, publicKey: this.publicKey,
+      token: this.token, sealedWith: 'password', hasPassword: true
+    };
+    this.writeIdentity(record);
+    this.upsertAccount(record);
+    // Drop the device key only when no other account still leans on it.
+    const stillUsed = this.readAccounts().accounts
+      .some((a) => a.username !== this.username && a.sealedWith === 'device' && a.sealed);
+    if (!stillUsed) this.clearDeviceKey();
+    return { ok: true };
   }
 
   async ensurePeerKey(username) {
@@ -807,7 +914,13 @@ class SleePhyClient {
     // The rename rewrites history, so drop cached per-peer state.
     this.peerKeys.delete(old);
     const id = this.readIdentity();
-    if (id) this.writeIdentity({ ...id, username: res.username });
+    const updated = { ...(id || {}), username: res.username, publicKey: this.publicKey, token: this.token };
+    this.writeIdentity(updated);
+    // The registry keys accounts by username, so carry the entry across too.
+    const data = this.readAccounts();
+    const idx = data.accounts.findIndex((a) => a.username === old);
+    if (idx >= 0) { data.accounts.splice(idx, 1); }
+    this.upsertAccount(updated);
     return { username: res.username, previous: old };
   }
 
@@ -914,7 +1027,8 @@ class SleePhyClient {
       unlocked: !!this.secretKey,
       serverUrl: this.serverUrl,
       accounts: this.listAccounts(),
-      hasStoredIdentity: !!this.readIdentity()
+      hasStoredIdentity: !!this.readIdentity(),
+      hasPassword: !!(this.readIdentity() || {}).hasPassword
     };
   }
 }

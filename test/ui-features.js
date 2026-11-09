@@ -14,6 +14,7 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { _electron: electron } = require('playwright-core');
+const { signInWithPhone } = require('./_auth');
 
 const PORT = 8792;
 const URL = `ws://127.0.0.1:${PORT}`;
@@ -39,15 +40,6 @@ async function launch(label) {
   return { app, win, dir, errors };
 }
 
-async function register(win, username, password) {
-  await win.click('.auth-tab[data-tab="register"]');
-  await win.fill('#auth-username', username);
-  await win.fill('#auth-password', password);
-  await win.fill('#auth-confirm', password);
-  await win.fill('#server-url', URL);
-  await win.click('#btn-auth');
-  await win.waitForSelector('#screen-main.active', { timeout: 20000 });
-}
 
 async function openChatWith(win, username) {
   await win.fill('#search', username);
@@ -57,7 +49,7 @@ async function openChatWith(win, username) {
 
 async function main() {
   const server = spawn(process.execPath, [path.join(__dirname, '..', 'server', 'index.js')], {
-    env: { ...process.env, SLEEPHY_PORT: String(PORT), SLEEPHY_DB: DB },
+    env: { ...process.env, SLEEPHY_PORT: String(PORT), SLEEPHY_DB: DB, SLEEPHY_DEV_CODES: '1' },
     stdio: ['ignore', 'ignore', 'pipe']
   });
   server.stderr.on('data', (d) => process.stderr.write('[server] ' + d));
@@ -69,8 +61,8 @@ async function main() {
   const alice = `alice_${suffix}`;
   const bob = `bob_${suffix}`;
 
-  await register(a.win, alice, 'password-1234');
-  await register(b.win, bob, 'password-1234');
+  await signInWithPhone(a.win, URL, { username: alice });
+  await signInWithPhone(b.win, URL, { username: bob });
 
   await step('search finds the other user and opens a chat', async () => {
     await a.win.fill('#search', bob.slice(0, 5));

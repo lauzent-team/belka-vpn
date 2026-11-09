@@ -3,3 +3,8 @@ dist/
 out/
 *.log
 .DS_Store
+
+# Runtime relay state: contains real accounts and phone numbers
+server/*.db
+server/*.db-shm
+server/*.db-wal

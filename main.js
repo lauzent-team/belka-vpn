@@ -91,6 +91,9 @@ app.whenReady().then(() => {
   ipcMain.handle('sleephy:status', () => client.status());
   ipcMain.handle('sleephy:register', async (_e, payload) => client.register(payload));
   ipcMain.handle('sleephy:login', async (_e, payload) => client.login(payload));
+  ipcMain.handle('sleephy:requestCode', async (_e, phone) => client.requestCode(phone));
+  ipcMain.handle('sleephy:verifyCode', async (_e, payload) => client.verifyCode(payload));
+  ipcMain.handle('sleephy:setPassword', async (_e, password) => client.setPassword(password));
   ipcMain.handle('sleephy:unlock', async (_e, password) => client.unlock(password));
   ipcMain.handle('sleephy:logout', async () => {
     client.signOut();

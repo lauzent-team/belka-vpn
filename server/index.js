@@ -109,6 +109,15 @@ db.exec(`
     text     TEXT NOT NULL,
     ts       INTEGER NOT NULL
   );
+  -- One-time codes for phone sign-in. The relay only ever stores the code, its
+  -- expiry and an attempt counter; the phone number itself lives on the users row.
+  CREATE TABLE IF NOT EXISTS phone_codes (
+    phone      TEXT PRIMARY KEY,
+    code       TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    attempts   INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
 `);
 
 // Columns added after the first release. Existing databases are upgraded in
@@ -127,17 +136,39 @@ for (const sql of [
   'ALTER TABLE chats ADD COLUMN pinned_message INTEGER',
   'ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE users ADD COLUMN verified INTEGER NOT NULL DEFAULT 0',
-  'ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0'
+  'ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE users ADD COLUMN phone TEXT',
+  'ALTER TABLE users ADD COLUMN has_password INTEGER NOT NULL DEFAULT 0'
 ]) {
   try { db.exec(sql); } catch { /* column already present */ }
 }
 
+// One account per phone number. Username/password accounts keep phone NULL,
+// and SQLite exempts NULLs from a UNIQUE index, so they never collide.
+try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone ON users(phone)'); }
+catch { /* a legacy database already holds a duplicate number */ }
+
 const q = {
   getUser: db.prepare('SELECT * FROM users WHERE username = ?'),
   insertUser: db.prepare(
-    `INSERT INTO users (username, salt, verifier, public_key, display_name, bio, avatar_color, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO users (username, salt, verifier, public_key, display_name, bio, avatar_color, created_at, updated_at, has_password)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ),
+  getUserByPhone: db.prepare('SELECT * FROM users WHERE phone = ?'),
+  setPhone: db.prepare('UPDATE users SET phone = ?, updated_at = ? WHERE username = ?'),
+  setPassword: db.prepare(
+    'UPDATE users SET salt = ?, verifier = ?, has_password = ?, updated_at = ? WHERE username = ?'
+  ),
+  insertPhoneCode: db.prepare(
+    `INSERT INTO phone_codes (phone, code, expires_at, attempts, created_at)
+     VALUES (?, ?, ?, 0, ?)
+     ON CONFLICT(phone) DO UPDATE SET
+       code = excluded.code, expires_at = excluded.expires_at, attempts = 0,
+       created_at = excluded.created_at`
+  ),
+  getPhoneCode: db.prepare('SELECT * FROM phone_codes WHERE phone = ?'),
+  bumpPhoneCodeAttempts: db.prepare('UPDATE phone_codes SET attempts = attempts + 1 WHERE phone = ?'),
+  deletePhoneCode: db.prepare('DELETE FROM phone_codes WHERE phone = ?'),
   setProfile: db.prepare(
     'UPDATE users SET display_name = ?, bio = ?, avatar_color = ?, updated_at = ? WHERE username = ?'
   ),
@@ -458,6 +489,140 @@ function reactionsOf(messageId) {
   return q.reactionsFor.all(messageId).map((r) => ({ username: r.username, emoji: r.emoji }));
 }
 
+/* --------------------------- phone sign-in --------------------------- */
+// Codes are 6 digits and live for five minutes. Three wrong guesses drop the
+// code, so a short code cannot be brute-forced inside its window.
+const PHONE_CODE_TTL_MS = 5 * 60 * 1000;
+const PHONE_CODE_MAX_ATTEMPTS = 3;
+const PHONE_RE = /^\+[1-9]\d{6,14}$/;
+
+/**
+ * Deliver a login code. Without an SMS provider the relay prints the code to
+ * its log so a self-hosted server can be used before one is wired up. Set
+ * SLEEPHY_SMS_WEBHOOK to POST {phone, code} to a provider instead.
+ */
+async function deliverCode(phone, code) {
+  const hook = process.env.SLEEPHY_SMS_WEBHOOK;
+  if (hook) {
+    try {
+      await fetch(hook, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ phone, code })
+      });
+      return;
+    } catch (err) {
+      console.error('[sms] webhook failed:', err.message);
+    }
+  }
+  console.log(`[sms] code for ${phone}: ${code}`);
+}
+
+/** A free username derived from the phone number, e.g. user_7f3a91c2. */
+function freeUsername() {
+  for (let i = 0; i < 50; i++) {
+    const name = 'user_' + crypto.randomBytes(4).toString('hex');
+    if (!q.getUser.get(name)) return name;
+  }
+  return 'user_' + crypto.randomBytes(8).toString('hex');
+}
+
+/**
+ * First step of phone sign-in: create an account if the number is new and send
+ * a one-time code. The account has no password yet — the owner sets one from
+ * Privacy settings, and it only ever guards the keys on their device.
+ */
+async function handlePhoneRequest(ws, msg, rid) {
+  const phone = typeof msg.phone === 'string' ? msg.phone.replace(/[\s()-]/g, '') : '';
+  if (!PHONE_RE.test(phone)) {
+    return bad(ws, rid, 'Enter a phone number in international format, e.g. +79991234567');
+  }
+  if (!validB64(msg.publicKey, 200)) return bad(ws, rid, 'Invalid public key');
+
+  let user = q.getUserByPhone.get(phone);
+  let created = false;
+  if (!user) {
+    const username = freeUsername();
+    const now = Date.now();
+    const salt = crypto.randomBytes(16).toString('base64');
+    // A phone account starts passwordless: the verifier is a random secret the
+    // client never learns, and has_password = 0 makes login refuse it.
+    const verifier = crypto.randomBytes(32).toString('base64');
+    q.insertUser.run(username, salt, verifier, msg.publicKey, null, null, null, now, now, 0);
+    q.setPhone.run(phone, now, username);
+    if (ADMINS.has(username)) q.setAdmin.run(1, now, username);
+    user = q.getUser.get(username);
+    created = true;
+  }
+
+  const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+  const now = Date.now();
+  q.insertPhoneCode.run(phone, code, now + PHONE_CODE_TTL_MS, now);
+  await deliverCode(phone, code);
+
+  const res = { t: 'ok', action: 'phone.request', phone, isNew: created };
+  // Handing the code back in the reply is opt-in, for tests and for a server
+  // whose SMS delivery is not configured yet.
+  if (process.env.SLEEPHY_DEV_CODES === '1') res.code = code;
+  reply(ws, rid, res);
+}
+
+/** Second step: check the code and open a session. */
+function handlePhoneVerify(ws, msg, rid) {
+  const phone = typeof msg.phone === 'string' ? msg.phone.replace(/[\s()-]/g, '') : '';
+  const code = typeof msg.code === 'string' ? msg.code.trim() : '';
+  if (!PHONE_RE.test(phone)) return bad(ws, rid, 'Invalid phone number');
+  if (!/^\d{6}$/.test(code)) return bad(ws, rid, 'Enter the 6-digit code');
+
+  const rec = q.getPhoneCode.get(phone);
+  if (!rec) return bad(ws, rid, 'Request a new code');
+  if (rec.expires_at < Date.now()) {
+    q.deletePhoneCode.run(phone);
+    return bad(ws, rid, 'The code has expired, request a new one');
+  }
+  if (rec.attempts >= PHONE_CODE_MAX_ATTEMPTS) {
+    q.deletePhoneCode.run(phone);
+    return bad(ws, rid, 'Too many attempts, request a new code');
+  }
+  if (rec.code !== code) {
+    q.bumpPhoneCodeAttempts.run(phone);
+    return bad(ws, rid, 'Wrong code');
+  }
+  q.deletePhoneCode.run(phone);
+
+  const user = q.getUserByPhone.get(phone);
+  if (!user) return bad(ws, rid, 'No account for this number');
+  if (user.banned) return bad(ws, rid, 'This account has been blocked by an administrator');
+  if (ADMINS.has(user.username) && !user.is_admin) q.setAdmin.run(1, Date.now(), user.username);
+
+  const token = issueToken(user.username);
+  ws.username = user.username;
+  bindSocket(user.username, ws);
+  reply(ws, rid, {
+    t: 'ok', action: 'phone.verify', username: user.username, token,
+    publicKey: user.public_key, hasPassword: !!user.has_password,
+    profile: publicProfile(q.getUser.get(user.username))
+  });
+  announcePresence(user.username, true);
+  flushUndelivered(user.username);
+}
+
+/** Set or change the account password. Guarded by the live session. */
+function handlePasswordSet(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const { password, salt, verifier } = msg;
+  if (typeof password !== 'string' || password.length < 8 || password.length > 512) {
+    return bad(ws, rid, 'Password must be at least 8 characters');
+  }
+  if (!validB64(salt, 64)) return bad(ws, rid, 'Invalid salt');
+  if (!validB64(verifier, 128)) return bad(ws, rid, 'Invalid verifier');
+
+  // The client sends salt + verifier so the server never sees the password and
+  // the same secret can protect the local key file.
+  q.setPassword.run(salt, verifier, 1, Date.now(), ws.username);
+  reply(ws, rid, { t: 'ok', action: 'password.set' });
+}
+
 /* ------------------------------- handlers ------------------------------- */
 function handleRegister(ws, msg, rid) {
   const { username, password, publicKey, salt, verifier } = msg;
@@ -480,7 +645,7 @@ function handleRegister(ws, msg, rid) {
     : scrypt(password, useSalt);
 
   const now = Date.now();
-  q.insertUser.run(username, useSalt, useVerifier, publicKey, null, null, null, now, now);
+  q.insertUser.run(username, useSalt, useVerifier, publicKey, null, null, null, now, now, 1);
   if (ADMINS.has(username)) q.setAdmin.run(1, now, username);
 
   const token = issueToken(username);
@@ -501,6 +666,8 @@ function handleLogin(ws, msg, rid) {
   }
   const user = q.getUser.get(username);
   if (!user) return bad(ws, rid, 'Wrong username or password');
+  // Phone accounts start without a password; they sign in by phone number.
+  if (!user.has_password) return bad(ws, rid, 'This account signs in by phone number');
   if (!timingSafeEqual(scrypt(password, user.salt), user.verifier)) {
     return bad(ws, rid, 'Wrong username or password');
   }
@@ -1298,6 +1465,9 @@ const handlers = {
   register: handleRegister,
   login: handleLogin,
   resume: handleResume,
+  'phone.request': handlePhoneRequest,
+  'phone.verify': handlePhoneVerify,
+  'password.set': handlePasswordSet,
   directory: handleDirectory,
   'profile.get': handleProfileGet,
   'profile.set': handleProfileSet,
