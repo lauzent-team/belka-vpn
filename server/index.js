@@ -149,7 +149,9 @@ for (const sql of [
   // A custom badge image (a small data: URL) that replaces the plain checkmark.
   'ALTER TABLE users ADD COLUMN badge_image TEXT',
   // A profile picture (a small data: URL). Distinct from the admin badge.
-  'ALTER TABLE users ADD COLUMN avatar_image TEXT'
+  'ALTER TABLE users ADD COLUMN avatar_image TEXT',
+  // When this account was last seen online, so peers can show "last seen".
+  'ALTER TABLE users ADD COLUMN last_seen INTEGER'
 ]) {
   try { db.exec(sql); } catch { /* column already present */ }
 }
@@ -184,6 +186,7 @@ const q = {
     'UPDATE users SET display_name = ?, bio = ?, avatar_color = ?, updated_at = ? WHERE username = ?'
   ),
   setAvatarImage: db.prepare('UPDATE users SET avatar_image = ?, updated_at = ? WHERE username = ?'),
+  setLastSeen: db.prepare('UPDATE users SET last_seen = ? WHERE username = ?'),
   searchUsers: db.prepare(
     `SELECT username, display_name, bio, avatar_color, avatar_image FROM users
       WHERE username LIKE ? OR display_name LIKE ? ORDER BY username ASC LIMIT 20`
@@ -465,6 +468,8 @@ function publicProfile(user) {
     avatarColor: user.avatar_color || 'mint',
     // A profile picture set by the user, shown instead of their initial.
     avatarImage: user.avatar_image || null,
+    // When the account was last connected, for "last seen" under the name.
+    lastSeen: user.last_seen || null,
     verified: !!user.verified,
     // A custom badge picture replaces the plain checkmark when present.
     badgeImage: user.badge_image || null,
@@ -505,12 +510,20 @@ function unbindSocket(ws) {
   set.delete(ws);
   if (set.size === 0) {
     sockets.delete(ws.username);
-    announcePresence(ws.username, false);
+    const seen = Date.now();
+    q.setLastSeen.run(seen, ws.username);
+    announcePresence(ws.username, false, seen);
   }
 }
 
 function isOnline(username) {
   return sockets.has(username);
+}
+
+function lastSeenOf(username) {
+  if (isOnline(username)) return null;
+  const user = q.getUser.get(username);
+  return (user && user.last_seen) || null;
 }
 
 function deliverToUser(username, payload) {
@@ -530,9 +543,13 @@ function audienceOf(username) {
   return audience;
 }
 
-function announcePresence(username, online) {
+function announcePresence(username, online, lastSeen) {
+  const payload = { t: 'presence', username, online };
+  if (online) payload.lastSeen = null;
+  else if (lastSeen !== undefined) payload.lastSeen = lastSeen;
+  else payload.lastSeen = lastSeenOf(username);
   for (const who of audienceOf(username)) {
-    deliverToUser(who, { t: 'presence', username, online });
+    deliverToUser(who, payload);
   }
 }
 
@@ -785,6 +802,7 @@ function handleProfileGet(ws, msg, rid) {
   if (!user) return bad(ws, rid, 'No such user');
   reply(ws, rid, {
     t: 'profile', profile: publicProfile(user), online: isOnline(user.username),
+    lastSeen: lastSeenOf(user.username),
     isSelf: user.username === ws.username
   });
 }
@@ -1650,6 +1668,15 @@ const heartbeat = setInterval(() => {
   }
 }, 30000);
 wss.on('close', () => clearInterval(heartbeat));
+
+// One bad connection must not take the relay down for everyone. Log and keep
+// serving: a relay that stays up is worth more than a crash that loses it.
+process.on('uncaughtException', (err) => {
+  console.error('[relay] uncaught exception:', err && err.stack ? err.stack : err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[relay] unhandled rejection:', reason);
+});
 
 server.listen(PORT, () => {
   console.log(`SleePhy relay listening on ws://0.0.0.0:${PORT}  (db: ${DB_PATH})`);

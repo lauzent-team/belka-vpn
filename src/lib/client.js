@@ -358,7 +358,10 @@ class SleePhyClient {
       return;
     }
     if (msg.t === 'presence') {
-      this.emit({ type: 'presence', username: msg.username, online: !!msg.online });
+      this.emit({
+        type: 'presence', username: msg.username, online: !!msg.online,
+        lastSeen: msg.lastSeen || null
+      });
       return;
     }
     if (msg.t === 'profile') {
@@ -945,7 +948,10 @@ class SleePhyClient {
     if (res.profile && res.profile.username) {
       this.peerProfiles.set(res.profile.username, res.profile);
     }
-    return { profile: res.profile, online: !!res.online, isSelf: !!res.isSelf };
+    return {
+      profile: res.profile, online: !!res.online, isSelf: !!res.isSelf,
+      lastSeen: res.lastSeen || null
+    };
   }
 
   async saveProfile({ displayName, bio, avatarColor, avatarImage }) {

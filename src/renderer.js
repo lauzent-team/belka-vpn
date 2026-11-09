@@ -295,6 +295,7 @@ const state = {
   chats: new Map(), // peerKey -> chat
   profiles: new Map(), // username -> profile
   presence: new Map(), // username -> bool
+  lastSeen: new Map(), // username -> timestamp when last online
   typing: new Map(), // username -> timeout id
   replyTo: null, // { id, text, from, mine }
   editing: null, // { id, original }
@@ -376,6 +377,39 @@ function dayLabel(ts) {
   if (d.toDateString() === today.toDateString()) return 'Today';
   if (d.toDateString() === y.toDateString()) return 'Yesterday';
   return d.toLocaleDateString([], { day: 'numeric', month: 'short' });
+}
+
+/** Russian plural form: 1 участник, 2 участника, 5 участников. */
+function plural(n, one, few, many) {
+  const m10 = n % 10;
+  const m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
+  return many;
+}
+
+/** "был(а) в сети …" text for a last-seen timestamp, or null when unknown. */
+function lastSeenLabel(ts) {
+  if (!ts) return null;
+  const diff = Math.max(0, Date.now() - ts);
+  if (diff < 60000) return 'только что';
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins} ${plural(mins, 'минуту', 'минуты', 'минут')} назад`;
+  const d = new Date(ts);
+  const today = new Date();
+  const yest = new Date(today.getTime() - 86400000);
+  if (d.toDateString() === today.toDateString()) return `сегодня в ${timeLabel(ts)}`;
+  if (d.toDateString() === yest.toDateString()) return `вчера в ${timeLabel(ts)}`;
+  const days = Math.floor(diff / 86400000);
+  if (days < 7) return `${days} ${plural(days, 'день', 'дня', 'дней')} назад`;
+  return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+}
+
+/** Subtitle for a peer: online, or when they were last seen. */
+function peerPresenceText(username) {
+  if (state.presence.get(username)) return 'в сети';
+  const seen = lastSeenLabel(state.lastSeen.get(username));
+  return seen ? `был(а) ${seen}` : null;
 }
 
 function escapeHtml(s) {
@@ -655,6 +689,7 @@ function resetToAuth() {
   state.chats.clear();
   state.profiles.clear();
   state.presence.clear();
+  state.lastSeen.clear();
   els.chatList.innerHTML = '';
   els.archivedList.innerHTML = '';
   els.chatBlank.hidden = false;
@@ -670,6 +705,7 @@ async function enterMain(username) {
   state.chats.clear();
   state.profiles.clear();
   state.presence.clear();
+  state.lastSeen.clear();
   state.groups.clear();
   await refreshStatus();
   showScreen('main');
@@ -695,7 +731,10 @@ async function loadChats() {
       // The chat row carries the peer's profile: seed it so the checkmark and
       // the badge/picture show right after a re-entry, not only once the
       // conversation is opened.
-      if (row.peer && row.profile) state.profiles.set(row.peer, row.profile);
+      if (row.peer && row.profile) {
+        state.profiles.set(row.peer, row.profile);
+        if (row.profile.lastSeen) state.lastSeen.set(row.peer, row.profile.lastSeen);
+      }
     }
     renderChatList();
     // A profile arriving now may change the header of the chat already open.
@@ -703,6 +742,7 @@ async function loadChats() {
       paintBadge(els.peerBadge, state.activePeer);
       paintAvatar(els.peerAvatar, state.activePeer);
     }
+    updatePeerSub();
     refreshVisibleLastMessages();
   } catch { /* offline: keep whatever we have */ }
 }
@@ -1037,9 +1077,12 @@ function updatePeerSub() {
   }
   if (isGroupKey(key)) {
     const g = state.groups.get(groupIdOf(key));
-    const n = g ? g.members.length : 0;
+    const members = (g && g.members) || [];
+    const n = members.length;
+    const online = members.filter((m) => m.username !== state.username && state.presence.get(m.username)).length;
     els.peerSub.classList.remove('typing');
-    els.peerSub.textContent = `${n} ${n === 1 ? 'участник' : 'участников'} · end-to-end encrypted`;
+    const head = `${n} ${plural(n, 'участник', 'участника', 'участников')}`;
+    els.peerSub.textContent = online > 0 ? `${head}, ${online} в сети` : head;
     return;
   }
   const peer = peerUsername(key);
@@ -1050,8 +1093,8 @@ function updatePeerSub() {
     return;
   }
   els.peerSub.classList.remove('typing');
-  const online = state.presence.get(peer);
-  els.peerSub.textContent = online ? 'online' : 'end-to-end encrypted';
+  const presence = peerPresenceText(peer);
+  els.peerSub.textContent = presence || 'end-to-end encrypted';
 }
 
 /* ------------------------------- searching ------------------------------- */
@@ -1517,17 +1560,21 @@ async function showProfile(username, { self = false } = {}) {
   const p = info.profile;
   state.profiles.set(p.username, p);
   if (typeof info.online === 'boolean') state.presence.set(p.username, info.online);
+  if (info.lastSeen) state.lastSeen.set(p.username, info.lastSeen);
   const isSelf = info.isSelf || self;
 
+  // Read the picture straight from the fetched profile: the cache was just
+  // seeded with it, and paintAvatar falls back to the initial when absent.
   els.profileAvatar.className = 'avatar avatar-xl';
   els.profileAvatar.dataset.color = p.avatarColor || 'mint';
-  els.profileAvatar.textContent = initial(p.displayName || p.username);
+  els.profileAvatar.innerHTML = avatarInnerHtml(p.username, p);
   els.profileDisplay.textContent = p.displayName || p.username;
   els.profileHandle.textContent = '@' + p.username;
   paintBadge(els.profileBadge, p.username);
   els.profileViewUsername.textContent = p.username;
   els.profileViewBio.textContent = p.bio || '—';
-  els.profilePresence.textContent = isSelf ? 'This is you' : (info.online ? 'online' : 'offline');
+  const presenceText = peerPresenceText(p.username);
+  els.profilePresence.textContent = isSelf ? 'Это вы' : (presenceText || 'не в сети');
   els.profilePresence.classList.toggle('online', !isSelf && !!info.online);
   els.profileViewBio.parentElement.hidden = false;
 
@@ -1542,6 +1589,14 @@ async function showProfile(username, { self = false } = {}) {
   avatarPending = undefined;
   paintAvatarPicker();
   renderPubkey(p.username);
+}
+
+/** Repaint just the presence line of the open profile overlay. */
+function refreshProfilePresence(username) {
+  if (username === state.username) return;
+  const text = peerPresenceText(username);
+  els.profilePresence.textContent = text || 'не в сети';
+  els.profilePresence.classList.toggle('online', !!state.presence.get(username));
 }
 
 async function renderPubkey(username) {
@@ -2433,7 +2488,10 @@ api.onEvent((evt) => {
 
     case 'presence':
       state.presence.set(evt.username, evt.online);
+      if (evt.online) state.lastSeen.delete(evt.username);
+      else if (evt.lastSeen) state.lastSeen.set(evt.username, evt.lastSeen);
       updatePeerSub();
+      if (state.profileTarget === evt.username) refreshProfilePresence(evt.username);
       break;
 
     case 'typing': {
@@ -3429,6 +3487,7 @@ async function restartSession() {
   state.chats.clear();
   state.profiles.clear();
   state.presence.clear();
+  state.lastSeen.clear();
   state.groups.clear();
   state.activePeer = null;
   els.chatList.innerHTML = '';
