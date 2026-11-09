@@ -18,6 +18,8 @@ npm run dist:win      # build the Windows installer
 node test/e2e.js      # end-to-end tests (real server, real crypto)
 node test/features.js # profiles, usernames, chats, replies, reactions
 node test/groups.js   # group protocol: create, fan-out, edit, delete, membership
+node test/admin.js    # admin panel, verification, blocking, announcements
+node test/accounts.js # sign-out, account switching, dropping an account
 xvfb-run -a node test/ui.js            # UI tests driving the real Electron app
 xvfb-run -a node test/ui-features.js   # the newer UI features, clicked for real
 xvfb-run -a node test/ui-drawer.js     # drawer, settings, contacts, groups, accounts
