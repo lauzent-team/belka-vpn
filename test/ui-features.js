@@ -14,7 +14,7 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { _electron: electron } = require('playwright-core');
-const { signInWithPhone } = require('./_auth');
+const { signIn } = require('./_auth');
 
 const PORT = 8792;
 const URL = `ws://127.0.0.1:${PORT}`;
@@ -61,8 +61,8 @@ async function main() {
   const alice = `alice_${suffix}`;
   const bob = `bob_${suffix}`;
 
-  await signInWithPhone(a.win, URL, { username: alice });
-  await signInWithPhone(b.win, URL, { username: bob });
+  await signIn(a.win, URL, { username: alice });
+  await signIn(b.win, URL, { username: bob });
 
   await step('search finds the other user and opens a chat', async () => {
     await a.win.fill('#search', bob.slice(0, 5));
@@ -111,8 +111,9 @@ async function main() {
     await a.win.fill('#username-input', bob);
     await a.win.click('#btn-username-save');
     await a.win.waitForSelector('#username-error:not([hidden])', { timeout: 8000 });
-    const text = await a.win.textContent('#username-error');
-    assert.ok(/taken/i.test(text), `expected a "taken" message, got: ${text}`);
+    const text = (await a.win.textContent('#username-error')).trim();
+    assert.ok(!/invoking remote method/i.test(text), `raw IPC text leaked: ${text}`);
+    assert.ok(/занято/i.test(text), `expected a "taken" message, got: ${text}`);
   });
 
   await step('Saved Messages opens and round-trips a note', async () => {

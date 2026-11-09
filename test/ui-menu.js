@@ -6,7 +6,7 @@ const fs = require('fs');
 const assert = require('assert');
 const { spawn } = require('child_process');
 const { _electron: electron } = require('playwright-core');
-const { signInWithPhone } = require('./_auth');
+const { signIn } = require('./_auth');
 
 const PORT = 8796;
 const URL = `ws://127.0.0.1:${PORT}`;
@@ -56,7 +56,7 @@ async function step(name, fn) {
   });
 
   await step('copy and paste still work through the hidden menu', async () => {
-    const field = await win.$('#auth-phone');
+    const field = await win.$('#auth-username');
     await field.fill('copy-paste-probe');
     await field.selectText();
     await win.keyboard.press('Control+C');
@@ -69,7 +69,7 @@ async function step(name, fn) {
 
   await step('an account can still be created after the menu change', async () => {
     const suffix = Math.random().toString(36).slice(2, 6);
-    await signInWithPhone(win, URL, { username: `menu_${suffix}` });
+    await signIn(win, URL, { username: `menu_${suffix}` });
     await wait(400);
   });
 

@@ -176,6 +176,25 @@ input, textarea { user-select: text; }
 .field textarea { resize: vertical; min-height: 64px; line-height: 1.5; }
 .field-inline { flex: 1; }
 .auth-hint { color: var(--text-faint); font-size: 11.5px; line-height: 1.55; margin: 2px 0 0; }
+
+/* The phone button stays disabled until an SMS provider is funded. */
+.auth-alt { position: relative; margin-top: 16px; }
+.auth-alt .btn-ghost { margin-top: 0; }
+.btn-ghost[disabled] { opacity: .45; cursor: not-allowed; }
+.btn-ghost[disabled]:hover { background: none; color: var(--text-dim); }
+.soon-tip {
+  position: absolute; right: 10px; top: 50%;
+  transform: translateY(-50%) scale(.9);
+  padding: 3px 9px; border-radius: 999px;
+  background: var(--accent); color: #fff;
+  font-size: 10.5px; font-weight: 600; letter-spacing: .02em;
+  opacity: 0; pointer-events: none;
+  transition: opacity .16s ease, transform .16s ease;
+}
+.auth-alt:hover .soon-tip,
+.btn-ghost[disabled]:focus-visible ~ .soon-tip {
+  opacity: 1; transform: translateY(-50%) scale(1);
+}
 .auth-error {
   margin: 0; padding: 9px 12px;
   background: rgba(224, 82, 78, 0.12);

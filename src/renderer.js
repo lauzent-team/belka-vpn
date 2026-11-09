@@ -16,10 +16,22 @@ const $ = (id) => document.getElementById(id);
 const els = {
   screens: { auth: $('screen-auth'), unlock: $('screen-unlock'), main: $('screen-main') },
   formAuth: $('form-auth'),
-  authPhone: $('auth-phone'),
+  authTabs: $('auth-tabs'),
+  tabs: Array.from(document.querySelectorAll('.auth-tab')),
+  authUser: $('auth-username'),
+  authPass: $('auth-password'),
+  authConfirm: $('auth-confirm'),
+  fieldConfirm: $('field-confirm'),
   authHint: $('auth-hint'),
   authError: $('auth-error'),
   btnAuth: $('btn-auth'),
+  phoneFlow: $('auth-phone-flow'),
+  btnPhoneSignin: $('btn-phone-signin'),
+  formPhone: $('form-phone'),
+  authPhone: $('auth-phone'),
+  authPhoneHint: $('auth-phone-hint'),
+  authPhoneError: $('auth-phone-error'),
+  btnPhone: $('btn-phone'),
   stepPhone: $('auth-step-phone'),
   stepCode: $('auth-step-code'),
   formCode: $('form-code'),
@@ -417,18 +429,72 @@ function paintAvatar(el, username, size) {
 }
 
 /* -------------------------------- auth UI -------------------------------- */
-// Sign-in is two steps: a phone number, then the code the relay sends. The
-// username is chosen later in settings, and the password too.
+// Sign-in is a username and a password. The password protects the keys on this
+// device and never leaves it. Phone sign-in is built but parked behind a
+// disabled button until an SMS provider is paid for.
 let authPhone = null;
 
+function setMode(mode) {
+  state.mode = mode;
+  els.authTabs.dataset.active = mode;
+  els.tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === mode));
+  els.fieldConfirm.hidden = mode !== 'register';
+  els.btnAuth.textContent = i18n.t(mode === 'register' ? 'Create account' : 'Sign in');
+  els.authHint.textContent = mode === 'register'
+    ? i18n.t('We generate your encryption keys on this device. Your password protects them — it never leaves your device.')
+    : i18n.t('Your password protects your encryption keys on this device. We can never read your messages.');
+  // The error is not cleared here: a failed sign-in runs setMode in its
+  // `finally`, which would wipe the message before it could be read.
+}
+
+els.tabs.forEach((tab) => tab.addEventListener('click', () => {
+  showError(els.authError, null);
+  setMode(tab.dataset.tab);
+}));
+
+els.formAuth.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  showError(els.authError, null);
+  const username = els.authUser.value.trim().toLowerCase();
+  const password = els.authPass.value;
+  const confirm = els.authConfirm.value;
+
+  if (!/^[a-z0-9_]{3,32}$/.test(username)) {
+    return showError(els.authError, i18n.t('Username: 3–32 characters, a–z, 0–9 or _'));
+  }
+  if (password.length < 8) {
+    return showError(els.authError, i18n.t('Password must be at least 8 characters'));
+  }
+  if (state.mode === 'register' && password !== confirm) {
+    return showError(els.authError, i18n.t('Passwords do not match'));
+  }
+
+  els.btnAuth.disabled = true;
+  els.btnAuth.textContent = i18n.t(state.mode === 'register' ? 'Creating…' : 'Signing in…');
+  try {
+    await api.connect(els.serverUrl.value.trim());
+    if (state.mode === 'register') await api.register({ username, password });
+    else await api.login({ username, password });
+    els.authPass.value = '';
+    els.authConfirm.value = '';
+  } catch (err) {
+    showError(els.authError, err.message || i18n.t('Something went wrong'));
+  } finally {
+    els.btnAuth.disabled = false;
+    setMode(state.mode);
+  }
+});
+
+/* ----------------------------- phone sign-in ----------------------------- */
+// Reachable only when els.btnPhoneSignin is enabled, which it is not yet.
 function showAuthStep(step) {
   const onCode = step === 'code';
-  els.formAuth.hidden = onCode;
+  els.formPhone.hidden = onCode;
   els.formCode.hidden = !onCode;
   els.stepPhone.classList.toggle('active', !onCode);
   els.stepPhone.classList.toggle('done', onCode);
   els.stepCode.classList.toggle('active', onCode);
-  showError(els.authError, null);
+  showError(els.authPhoneError, null);
   showError(els.authCodeError, null);
   if (onCode) {
     els.authCode.value = '';
@@ -438,16 +504,33 @@ function showAuthStep(step) {
   }
 }
 
-els.formAuth.addEventListener('submit', async (e) => {
+els.btnPhoneSignin.addEventListener('click', () => {
+  els.phoneFlow.hidden = false;
+  els.formAuth.hidden = true;
+  els.authTabs.hidden = true;
+  showAuthStep('phone');
+});
+
+/** Back to the username-and-password form, which is the way in for now. */
+function showAuthHome() {
+  els.phoneFlow.hidden = true;
+  els.formAuth.hidden = false;
+  els.authTabs.hidden = false;
+  els.authPhone.value = '';
+  els.authCode.value = '';
+  setMode('login');
+}
+
+els.formPhone.addEventListener('submit', async (e) => {
   e.preventDefault();
-  showError(els.authError, null);
+  showError(els.authPhoneError, null);
   const phone = els.authPhone.value.trim();
   if (!/^\+[1-9]\d{6,14}$/.test(phone.replace(/[\s()-]/g, ''))) {
-    return showError(els.authError, 'Enter a phone number in international format, e.g. +79991234567');
+    return showError(els.authPhoneError, i18n.t('Enter a phone number in international format, e.g. +79991234567'));
   }
 
-  els.btnAuth.disabled = true;
-  els.btnAuth.textContent = i18n.t('Sending…');
+  els.btnPhone.disabled = true;
+  els.btnPhone.textContent = i18n.t('Sending…');
   try {
     await api.connect(els.serverUrl.value.trim());
     const res = await api.requestCode(phone);
@@ -459,10 +542,10 @@ els.formAuth.addEventListener('submit', async (e) => {
     showAuthStep('code');
     if (res.code) els.authCode.value = res.code;
   } catch (err) {
-    showError(els.authError, err.message || i18n.t('Something went wrong'));
+    showError(els.authPhoneError, err.message || i18n.t('Something went wrong'));
   } finally {
-    els.btnAuth.disabled = false;
-    els.btnAuth.textContent = i18n.t('Send code');
+    els.btnPhone.disabled = false;
+    els.btnPhone.textContent = i18n.t('Send code');
   }
 });
 
@@ -518,7 +601,7 @@ function resetToAuth() {
   els.chatBlank.hidden = false;
   els.chatView.hidden = true;
   renderChatList();
-  showAuthStep('phone');
+  showAuthHome();
   showScreen('auth');
 }
 
@@ -3151,7 +3234,7 @@ els.btnGroupCreate.addEventListener('click', async () => {
 
 /* --------------------------------- boot --------------------------------- */
 (async function boot() {
-  showAuthStep('phone');
+  showAuthHome();
   buildEmojiPanel();
   buildStickerPanel();
   loadAppearance();

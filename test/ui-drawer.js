@@ -14,7 +14,7 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { _electron: electron } = require('playwright-core');
-const { signInWithPhone, setAccountPassword } = require('./_auth');
+const { signIn, setAccountPassword } = require('./_auth');
 
 const PORT = 8791;
 const URL = `ws://127.0.0.1:${PORT}`;
@@ -56,8 +56,8 @@ async function main() {
   const alice = `alice_${suffix}`;
   const bob = `bob_${suffix}`;
 
-  await signInWithPhone(A.win, URL, { username: alice });
-  await signInWithPhone(B.win, URL, { username: bob });
+  await signIn(A.win, URL, { username: alice });
+  await signIn(B.win, URL, { username: bob });
   // Alice protects her vault, so switching back to her asks for a password.
   await setAccountPassword(A.win, 'password-1234');
 
@@ -177,7 +177,7 @@ async function main() {
 
   await step('the account switcher lists both accounts and can switch back', async () => {
     const second = `carol_${suffix}`;
-    await signInWithPhone(A.win, URL, { username: second });
+    await signIn(A.win, URL, { username: second });
     await A.win.click('#btn-menu');
     await A.win.click('#drawer .drawer-item[data-drawer="accounts"]');
     await A.win.waitForSelector('#accounts-backdrop:not([hidden])', { timeout: 5000 });

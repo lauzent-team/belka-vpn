@@ -231,6 +231,17 @@ requests.
   It is idempotent, so call it after any markup the renderer rebuilds (drawer,
   admin rows, chat list) via `refreshLocalizedText()`.
 
+## Sign-in
+
+Sign-in is a username and a password. The password never leaves the device: it
+unlocks the private key, and the relay only ever stores a verifier.
+
+Phone sign-in (phone number + one-time code) is built and wired to the same
+relay, but it is **parked**. The button on the sign-in screen is disabled and
+shows "Скоро"; the flow sits behind it, ready to switch on once an SMS provider
+is funded. `test/_auth.js` reaches it by enabling the button, so the path stays
+covered in the meantime.
+
 ## Errors shown to the user
 
 - **IPC rejections arrive wrapped, and `showError()` translates them.** Electron

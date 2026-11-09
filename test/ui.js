@@ -14,7 +14,7 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { _electron: electron } = require('playwright-core');
-const { signInWithPhone } = require('./_auth');
+const { signIn } = require('./_auth');
 
 const PORT = 8793;
 const URL = `ws://127.0.0.1:${PORT}`;
@@ -66,13 +66,13 @@ async function main() {
   });
 
   await step('registering an account reaches the main screen', async () => {
-    await signInWithPhone(a.win, URL, { username: 'alice' });
+    await signIn(a.win, URL, { username: 'alice' });
     assert.strictEqual(await a.win.textContent('#me-name'), 'alice');
     assert.ok(await a.win.isVisible('#screen-main'));
   });
 
   await step('second account registers', async () => {
-    await signInWithPhone(b.win, URL, { username: 'bob' });
+    await signIn(b.win, URL, { username: 'bob' });
     assert.strictEqual(await b.win.textContent('#me-name'), 'bob');
   });
 

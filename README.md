@@ -11,7 +11,10 @@ and forwards ciphertext it cannot read.
 ## What works
 
 **Accounts and profiles**
-- Create an account and sign in (password-protected keys on your device)
+- Create an account and sign in with a username and password
+  (the password protects the keys on your device)
+- Phone sign-in is built but parked: the button is disabled and shows "Скоро",
+  because delivering codes needs a funded SMS provider
 - **Claim a username** — it is unique, and nobody else can take it
 - **Change your username** at any time; the old one is freed immediately
 - Profile: display name, bio and avatar colour, visible to your contacts
@@ -133,9 +136,13 @@ SLEEPHY_PORT=8787 SLEEPHY_DB=/var/lib/sleephy/sleephy.db node server/index.js
 Put it behind TLS (`wss://`) in production — the app accepts any WebSocket URL
 in Settings → Server address.
 
-### Sending login codes by SMS
+### Sending login codes by SMS (not enabled)
 
-Sign-in is by phone and a one-time code, so the relay needs a way to deliver that
+Sign-in is by username and password, so nothing here is needed for the app to
+work. This is the phone flow, kept ready for when an SMS provider is paid for.
+The button on the sign-in screen stays disabled until then.
+
+The flow is phone plus a one-time code, so the relay needs a way to deliver that
 code. Without a provider it prints the code to its own log, which is fine for
 development and useless for real users.
 

@@ -75,40 +75,79 @@
           <p class="brand-tag">Private messaging. Your keys, your messages.</p>
         </div>
 
-        <div class="auth-steps">
-          <span class="auth-step active" id="auth-step-phone">1</span>
-          <span class="auth-step-line"></span>
-          <span class="auth-step" id="auth-step-code">2</span>
+        <div class="auth-tabs" role="tablist" id="auth-tabs" data-active="login">
+          <button class="auth-tab active" data-tab="login" role="tab" type="button">Sign in</button>
+          <button class="auth-tab" data-tab="register" role="tab" type="button">Create account</button>
+          <span class="auth-tab-ink" id="auth-ink"></span>
         </div>
 
-        <!-- step 1: the phone number -->
+        <!-- username and password -->
         <form id="form-auth" class="auth-form" autocomplete="off">
           <label class="field">
-            <span class="field-label">Phone number</span>
-            <input id="auth-phone" type="tel" inputmode="tel" spellcheck="false"
-                   placeholder="+7 999 123-45-67" autocomplete="off" />
+            <span class="field-label">Username</span>
+            <input id="auth-username" type="text" spellcheck="false" autocapitalize="none"
+                   placeholder="lowercase, 3–32, a–z 0–9 _" autocomplete="username" />
+          </label>
+          <label class="field">
+            <span class="field-label">Password</span>
+            <input id="auth-password" type="password" placeholder="at least 8 characters"
+                   autocomplete="current-password" />
+          </label>
+          <label class="field" id="field-confirm" hidden>
+            <span class="field-label">Repeat password</span>
+            <input id="auth-confirm" type="password" placeholder="repeat your password"
+                   autocomplete="new-password" />
           </label>
 
           <p class="auth-hint" id="auth-hint">
-            We will send a login code to this number. A new number creates a new account.
+            Your password protects your encryption keys on this device.
+            We can never read your messages.
           </p>
           <p class="auth-error" id="auth-error" hidden></p>
 
-          <button class="btn-primary" id="btn-auth" type="submit">Send code</button>
+          <button class="btn-primary" id="btn-auth" type="submit">Sign in</button>
         </form>
 
-        <!-- step 2: the one-time code -->
-        <form id="form-code" class="auth-form" hidden autocomplete="off">
-          <label class="field">
-            <span class="field-label">Enter the code</span>
-            <input id="auth-code" type="text" inputmode="numeric" maxlength="6"
-                   spellcheck="false" placeholder="6-digit code" autocomplete="one-time-code" />
-          </label>
-          <p class="auth-hint" id="auth-code-hint"></p>
-          <p class="auth-error" id="auth-code-error" hidden></p>
-          <button class="btn-primary" id="btn-code" type="submit">Confirm</button>
-          <button class="btn-ghost" type="button" id="btn-code-back">Back</button>
-        </form>
+        <!-- Phone sign-in is kept ready but not reachable until an SMS
+             provider is funded; the button below stays disabled. -->
+        <div id="auth-phone-flow" hidden>
+          <div class="auth-steps">
+            <span class="auth-step active" id="auth-step-phone">1</span>
+            <span class="auth-step-line"></span>
+            <span class="auth-step" id="auth-step-code">2</span>
+          </div>
+
+          <form id="form-phone" class="auth-form" autocomplete="off">
+            <label class="field">
+              <span class="field-label">Phone number</span>
+              <input id="auth-phone" type="tel" inputmode="tel" spellcheck="false"
+                     placeholder="+7 999 123-45-67" autocomplete="off" />
+            </label>
+            <p class="auth-hint" id="auth-phone-hint">
+              We will send a login code to this number. A new number creates a new account.
+            </p>
+            <p class="auth-error" id="auth-phone-error" hidden></p>
+            <button class="btn-primary" id="btn-phone" type="submit">Send code</button>
+          </form>
+
+          <form id="form-code" class="auth-form" hidden autocomplete="off">
+            <label class="field">
+              <span class="field-label">Enter the code</span>
+              <input id="auth-code" type="text" inputmode="numeric" maxlength="6"
+                     spellcheck="false" placeholder="6-digit code" autocomplete="one-time-code" />
+            </label>
+            <p class="auth-hint" id="auth-code-hint"></p>
+            <p class="auth-error" id="auth-code-error" hidden></p>
+            <button class="btn-primary" id="btn-code" type="submit">Confirm</button>
+            <button class="btn-ghost" type="button" id="btn-code-back">Back</button>
+          </form>
+        </div>
+
+        <div class="auth-alt">
+          <button class="btn-ghost" id="btn-phone-signin" type="button" disabled
+                  aria-describedby="phone-soon">Sign in by phone number</button>
+          <span class="soon-tip" id="phone-soon" role="tooltip">Скоро</span>
+        </div>
 
         <div class="server-row">
           <label class="field field-inline">

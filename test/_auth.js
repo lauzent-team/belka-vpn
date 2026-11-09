@@ -3,14 +3,15 @@
 /**
  * Shared sign-in helper for the UI suites.
  *
- * Sign-in is by phone number and a one-time code; the relay returns the code in
- * its reply when SLEEPHY_DEV_CODES=1, and the renderer fills the field with it.
- * The username is chosen afterwards, in the profile, exactly as a person would.
+ * Sign-in is a username and a password, so a suite creates its account by
+ * filling the form and pressing the button, exactly as a person would. The
+ * phone flow still exists but its button is disabled, so it is not exercised
+ * from here.
  */
 
 let seq = 0;
 
-/** A unique, valid E.164 number. */
+/** A unique, valid E.164 number, for the phone flow. */
 function nextPhone() {
   seq += 1;
   const stamp = String(Date.now()).slice(-6);
@@ -20,12 +21,39 @@ function nextPhone() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Sign in (creating the account on a new number) and reach the main screen. */
+const DEFAULT_PASSWORD = 'sleephy-test-1234';
+
+/** Create an account with a username and a password, and reach the main screen. */
+async function signIn(win, serverUrl, { username, password = DEFAULT_PASSWORD } = {}) {
+  await win.fill('#server-url', serverUrl);
+  await win.click('.auth-tab[data-tab="register"]');
+  await win.fill('#auth-username', username);
+  await win.fill('#auth-password', password);
+  await win.fill('#auth-confirm', password);
+  await win.click('#btn-auth');
+  await win.waitForSelector('#screen-main.active', { timeout: 20000 });
+  return { username, password };
+}
+
+/** Sign in to an existing account. */
+async function logIn(win, serverUrl, { username, password = DEFAULT_PASSWORD } = {}) {
+  await win.fill('#server-url', serverUrl);
+  await win.click('.auth-tab[data-tab="login"]');
+  await win.fill('#auth-username', username);
+  await win.fill('#auth-password', password);
+  await win.click('#btn-auth');
+  await win.waitForSelector('#screen-main.active', { timeout: 20000 });
+  return { username };
+}
+
+/** Sign in through the phone flow, which the disabled button does not reach. */
 async function signInWithPhone(win, serverUrl, { phone, username } = {}) {
   const number = phone || nextPhone();
   await win.fill('#server-url', serverUrl);
+  await win.evaluate(() => document.getElementById('btn-phone-signin').disabled = false);
+  await win.click('#btn-phone-signin');
   await win.fill('#auth-phone', number);
-  await win.click('#btn-auth');
+  await win.click('#btn-phone');
   await win.waitForSelector('#form-code:not([hidden])', { timeout: 20000 });
   // The code arrives in the reply in dev mode and the UI writes it in.
   await win.waitForFunction(
@@ -77,4 +105,4 @@ async function setAccountPassword(win, password) {
   await sleep(150);
 }
 
-module.exports = { nextPhone, signInWithPhone, claimUsername, setAccountPassword };
+module.exports = { nextPhone, signIn, logIn, signInWithPhone, claimUsername, setAccountPassword, DEFAULT_PASSWORD };

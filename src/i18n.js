@@ -1162,6 +1162,42 @@ const PAIRS = [
   [
     "Change username",
     "Сменить имя пользователя"
+  ],
+  [
+    "We generate your encryption keys on this device. Your password protects them — it never leaves your device.",
+    "Мы создаём ключи шифрования на этом устройстве. Пароль защищает их и никуда не отправляется."
+  ],
+  [
+    "Signing in…",
+    "Входим…"
+  ],
+  [
+    "Creating…",
+    "Создаём…"
+  ],
+  [
+    "Sign in by phone number",
+    "Войти по номеру телефона"
+  ],
+  [
+    "Скоро",
+    "Скоро"
+  ],
+  [
+    "Wrong username or password",
+    "Неверное имя пользователя или пароль"
+  ],
+  [
+    "Username and password required",
+    "Введите имя пользователя и пароль"
+  ],
+  [
+    "Username already taken",
+    "Это имя уже занято"
+  ],
+  [
+    "Enter a phone number in international format, e.g. +79991234567",
+    "Введите номер в международном формате, например +79991234567"
   ]
 ];
 
