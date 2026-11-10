@@ -11,6 +11,7 @@
 
 const http = require('http');
 const crypto = require('crypto');
+const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
 const { DatabaseSync } = require('node:sqlite');
@@ -18,6 +19,11 @@ const { DatabaseSync } = require('node:sqlite');
 const PORT = process.env.SLEEPHY_PORT ? Number(process.env.SLEEPHY_PORT) : 8787;
 const DB_PATH = process.env.SLEEPHY_DB || path.join(__dirname, 'sleephy.db');
 const TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+
+// The download page and the built installer, when they sit next to the relay.
+// Only these names are ever served, so the relay cannot be walked for files.
+const DOWNLOAD_DIR = process.env.SLEEPHY_DOWNLOADS || path.join(__dirname, '..', 'dist');
+const DOWNLOAD_NAME = /^(index\.html|SleePhy-Setup-[\w.-]+\.exe)$/;
 
 // The first admin. Listed by name, never by password: the server only ever holds
 // a verifier, so there is no way to hand out an account and no way to recover one.
@@ -2088,6 +2094,20 @@ const server = http.createServer((req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true, service: 'sleephy-relay' }));
+    return;
+  }
+  // Serve the download page and the installer, if they were shipped alongside.
+  const name = req.url === '/' ? 'index.html' : req.url.slice(1);
+  if (DOWNLOAD_NAME.test(name)) {
+    const file = path.join(DOWNLOAD_DIR, name);
+    fs.readFile(file, (err, data) => {
+      if (err) { res.writeHead(404); res.end(); return; }
+      const type = name.endsWith('.html') ? 'text/html; charset=utf-8' : 'application/octet-stream';
+      const headers = { 'content-type': type, 'content-length': data.length };
+      if (name.endsWith('.exe')) headers['content-disposition'] = `attachment; filename="${name}"`;
+      res.writeHead(200, headers);
+      res.end(data);
+    });
     return;
   }
   res.writeHead(404);

@@ -23,6 +23,7 @@ node test/accounts.js # sign-out, account switching, dropping an account
 node test/session.js  # token persistence, relay restart, unlock, avatar images
 node test/peer-badges.js # a peer's checkmark and picture survive re-entry
 node test/streaks.js  # the "огонёк": days active in a row, extend, reset, rename
+node test/downloads.js # the relay serves the download page and the installer
 xvfb-run -a node test/ui.js            # UI tests driving the real Electron app
 xvfb-run -a node test/ui-features.js   # the newer UI features, clicked for real
 xvfb-run -a node test/ui-drawer.js     # drawer, settings, contacts, groups, accounts
@@ -106,6 +107,10 @@ requests.
   reports "cannot create an account", check the address first.
 - **`server-default.json` is bundled at build time** so an installer can ship with
   a working address. `SLEEPHY_SERVER` overrides it at runtime.
+- **The relay also serves the download page and the installer** from `dist/`
+  (`SLEEPHY_DOWNLOADS` overrides the directory). Only `index.html` and
+  `SleePhy-Setup-*.exe` are ever read from disk — everything else is a 404 — so the
+  host people reach the relay on is also where they download the app.
 - **Changing the server address must tear down the old socket.** `connect()`
   compares the new address with the current one and only reuses a live socket when
   they match; otherwise requests silently go to the previous server.
