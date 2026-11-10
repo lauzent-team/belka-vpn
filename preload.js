@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('sleephy', {
   searchUsers: (query) => invoke('sleephy:searchUsers', query),
   listChats: () => invoke('sleephy:listChats'),
   chatSettings: (payload) => invoke('sleephy:chatSettings', payload),
+  chatTtl: (payload) => invoke('sleephy:chatTtl', payload),
   markRead: (peer) => invoke('sleephy:markRead', peer),
   clearChat: (peer) => invoke('sleephy:clearChat', peer),
   deleteChat: (peer) => invoke('sleephy:deleteChat', peer),

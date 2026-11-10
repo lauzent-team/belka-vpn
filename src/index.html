@@ -14,6 +14,7 @@
     <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6.5 10a5.5 5.5 0 0 1 11 0c0 4 1.5 5.5 1.5 5.5H5S6.5 14 6.5 10z"/><path d="M10.2 19a2 2 0 0 0 3.6 0"/></symbol>
     <symbol id="i-bell-off" viewBox="0 0 24 24"><path d="M6.5 10a5.5 5.5 0 0 1 8.9-4.5M17.5 10c0 4 1.5 5.5 1.5 5.5H8"/><path d="M10.2 19a2 2 0 0 0 3.6 0M4 4l16 16"/></symbol>
     <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2.4"/><path d="M8.2 10.5V7.8a3.8 3.8 0 0 1 7.6 0v2.7"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7.6V12l3 1.8"/></symbol>
     <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 12.4c0 3.9-3.6 7-8 7a9 9 0 0 1-2.6-.4L5 20.5l1.3-3.4A6.8 6.8 0 0 1 4 12.4c0-3.9 3.6-7 8-7s8 3.1 8 7z"/></symbol>
     <symbol id="i-tools" viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h9M17 18h3"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="15" cy="18" r="2"/></symbol>
     <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.2"/><path d="M3.8 12h16.4M12 3.8c2.2 2.4 3.3 5.1 3.3 8.2S14.2 17.8 12 20.2c-2.2-2.4-3.3-5.1-3.3-8.2S9.8 6.2 12 3.8z"/></symbol>
@@ -299,6 +300,10 @@
                   </span>
                 </span>
                 <span class="chat-head-sub" id="peer-sub">end-to-end encrypted</span>
+                <span class="ttl-chip" id="peer-ttl" hidden title="Автоудаление сообщений">
+                  <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-clock"></use></svg>
+                  <span id="peer-ttl-label"></span>
+                </span>
               </div>
             </button>
             <div class="chat-head-actions">
@@ -1015,12 +1020,27 @@
           <button class="menu-item" data-action="pin"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-pin"></use></svg></span><span id="menu-pin-label">Pin</span></button>
           <button class="menu-item" data-action="mute"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-bell"></use></svg></span><span id="menu-mute-label">Mute</span></button>
           <button class="menu-item" data-action="archive"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-archive"></use></svg></span><span id="menu-archive-label">Archive</span></button>
+          <button class="menu-item" data-action="ttl" id="menu-ttl"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-clock"></use></svg></span><span id="menu-ttl-label">Автоудаление</span></button>
           <button class="menu-item" data-action="read"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-check"></use></svg></span><span>Mark as read</span></button>
           <button class="menu-item" data-action="clear"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-broom"></use></svg></span><span>Clear history</span></button>
           <button class="menu-item" data-action="channel-settings" id="menu-channel-settings" hidden><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-gear"></use></svg></span><span>Настройки канала</span></button>
           <button class="menu-item" data-action="channel-link" id="menu-channel-link" hidden><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-copy"></use></svg></span><span>Скопировать @адрес</span></button>
           <button class="menu-item" data-action="leave" id="menu-leave"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"></use></svg></span><span id="menu-leave-label">Покинуть канал</span></button>
           <button class="menu-item danger" data-action="delete" id="menu-delete"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"></use></svg></span><span>Delete chat</span></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======================= AUTO-DELETE TIMER ======================= -->
+    <div class="modal-backdrop" id="ttl-backdrop" hidden>
+      <div class="modal modal-ttl">
+        <header class="modal-head">
+          <h3 id="ttl-title">Автоудаление сообщений</h3>
+          <button class="icon-btn" id="btn-ttl-close" title="Close"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"></use></svg></button>
+        </header>
+        <div class="modal-body">
+          <p class="setting-note" id="ttl-note">Все новые сообщения в этом диалоге будут исчезать у обоих собеседников по истечении таймера.</p>
+          <div class="ttl-options" id="ttl-options"></div>
         </div>
       </div>
     </div>

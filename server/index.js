@@ -259,7 +259,13 @@ for (const sql of [
   'ALTER TABLE users ADD COLUMN socials TEXT',
   // Extra display names ("никнеймы"), a JSON array of strings. Only the owner
   // account may have more than a handful, and only it may edit anyone's.
-  'ALTER TABLE users ADD COLUMN nicknames TEXT'
+  'ALTER TABLE users ADD COLUMN nicknames TEXT',
+  // Self-destructing messages. `expires_at` is the ms timestamp at which the
+  // relay wipes the ciphertext; NULL means the message never expires.
+  'ALTER TABLE messages ADD COLUMN expires_at INTEGER',
+  // The auto-delete timer both sides agreed on for this conversation (ms), or
+  // NULL for "off". Stored per owner so each device can show and change it.
+  'ALTER TABLE chats ADD COLUMN ttl INTEGER'
 ]) {
   try { db.exec(sql); } catch { /* column already present */ }
 }
@@ -315,8 +321,8 @@ const q = {
       WHERE username LIKE ? OR display_name LIKE ? ORDER BY username ASC LIMIT 20`
   ),
   insertMessage: db.prepare(
-    `INSERT INTO messages (sender, recipient, box, nonce, ts, delivered, reply_to, kind, attachment)
-     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`
+    `INSERT INTO messages (sender, recipient, box, nonce, ts, delivered, reply_to, kind, attachment, expires_at)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`
   ),
   getMessage: db.prepare('SELECT * FROM messages WHERE id = ?'),
   markDelivered: db.prepare('UPDATE messages SET delivered = 1 WHERE id = ?'),
@@ -353,6 +359,23 @@ const q = {
   setClearedAt: db.prepare('UPDATE chats SET cleared_at = ? WHERE owner = ? AND peer = ?'),
   deleteChat: db.prepare('DELETE FROM chats WHERE owner = ? AND peer = ?'),
   listChats: db.prepare('SELECT * FROM chats WHERE owner = ?'),
+  // The auto-delete timer is a property of the conversation, not of one device,
+  // so setting it writes the same value to both owners' rows. A missing row for
+  // the peer is created on the fly; flags are left at their defaults.
+  setTtlBoth: db.prepare(
+    `INSERT INTO chats (owner, peer, pinned, muted, archived, last_read, cleared_at, ttl)
+     VALUES (?, ?, 0, 0, 0, 0, 0, ?)
+     ON CONFLICT(owner, peer) DO UPDATE SET ttl = excluded.ttl`
+  ),
+  // Ciphertext whose timer has run out: these rows are wiped by the sweeper.
+  expired: db.prepare(
+    'SELECT id, sender, recipient FROM messages WHERE expires_at IS NOT NULL AND expires_at <= ?'
+  ),
+  // Wiping keeps the row so both sides can still show "message deleted", but
+  // clears everything the relay ever held and drops the pin and the timer.
+  expireMessage: db.prepare(
+    "UPDATE messages SET deleted = 1, box = '', nonce = '', attachment = NULL, pinned = 0, expires_at = NULL WHERE id = ?"
+  ),
   // Every peer this user has a conversation with, either from messages or from
   // an explicit chat-settings row. Saved Messages (peer = self) is included.
   allPeers: db.prepare(
@@ -1440,6 +1463,10 @@ function handleUserSearch(ws, msg, rid) {
 
 const ATTACHMENT_KINDS = new Set(['image', 'file', 'voice']);
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+// Self-destructing messages. The relay clamps a client-supplied timer into this
+// range so a bad value can neither expire instantly nor pin ciphertext forever.
+const MIN_TTL_MS = 1000;
+const MAX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // The client caps the file the user picks; the ciphertext it sends is that file
 // plus the 16-byte box MAC and base64 padding. The stored blob is checked
 // against the file limit with this slack, so a file exactly at the limit is
@@ -1539,8 +1566,16 @@ function handleSend(ws, msg, rid) {
   const safeBox = typeof box === 'string' ? box : '';
   const safeNonce = typeof nonce === 'string' ? nonce : '';
   const kind = parsed.kind;
+  // A self-destructing message carries the shared timer in effect at send time.
+  // The relay never reads the text; it only counts down the clock on the
+  // ciphertext it already holds. The client sends the timer so the two devices
+  // agree even if one changed it while the other was offline.
+  const ttl = Number.isFinite(msg.ttl) && msg.ttl > 0
+    ? Math.min(Math.max(Math.floor(msg.ttl), MIN_TTL_MS), MAX_TTL_MS)
+    : 0;
+  const expiresAt = ttl ? ts + ttl : null;
   const info = q.insertMessage.run(
-    ws.username, to, safeBox, safeNonce, ts, replyTo, kind, parsed.attachment
+    ws.username, to, safeBox, safeNonce, ts, replyTo, kind, parsed.attachment, expiresAt
   );
   const id = Number(info.lastInsertRowid);
   touchStreak(ws.username);
@@ -1564,10 +1599,10 @@ function handleSend(ws, msg, rid) {
     }
   }
 
-  reply(ws, rid, { t: 'sent', id, ts, to, replyTo, kind, attachment: parsed.attachment, streak: flame });
+  reply(ws, rid, { t: 'sent', id, ts, to, replyTo, kind, attachment: parsed.attachment, streak: flame, expiresAt });
   const delivered = deliverToUser(to, {
     t: 'message', id, from: ws.username, box: safeBox, nonce: safeNonce, ts, replyTo,
-    kind, attachment: parsed.attachment
+    kind, attachment: parsed.attachment, expiresAt
   });
   if (delivered) q.markDelivered.run(id);
   if (note) {
@@ -1598,12 +1633,14 @@ function handleHistory(ws, msg, rid) {
   reply(ws, rid, {
     t: 'history',
     with: other,
+    ttl: chat && chat.ttl ? chat.ttl : 0,
     streak: dialogStreakView(ws.username, other),
     items: rows.map((r) => ({
       id: r.id, from: r.sender, to: r.recipient,
       box: r.box, nonce: r.nonce, ts: r.ts,
       replyTo: r.reply_to, editedAt: r.edited_at, deleted: !!r.deleted,
       kind: r.kind || null, attachment: r.attachment || null, pinned: !!r.pinned,
+      expiresAt: r.expires_at || null,
       reactions: reactionsOf(r.id)
     }))
   });
@@ -1679,7 +1716,7 @@ function handleChatsList(ws, msg, rid) {
   for (const row of rows) seen.add(row.peer);
   for (const p of q.allPeers.all(ws.username, ws.username, ws.username, ws.username)) {
     if (!seen.has(p.peer)) {
-      rows.push({ peer: p.peer, pinned: 0, muted: 0, archived: 0, last_read: 0, cleared_at: 0 });
+      rows.push({ peer: p.peer, pinned: 0, muted: 0, archived: 0, last_read: 0, cleared_at: 0, ttl: null });
     }
   }
 
@@ -1698,10 +1735,12 @@ function handleChatsList(ws, msg, rid) {
       archived: !!chat.archived,
       unread,
       lastRead: chat.last_read,
+      ttl: chat.ttl || 0,
       streak: dialogStreakView(ws.username, chat.peer),
       last: last ? {
         id: last.id, from: last.sender, to: last.recipient, box: last.box,
-        nonce: last.nonce, ts: last.ts, editedAt: last.edited_at, deleted: !!last.deleted
+        nonce: last.nonce, ts: last.ts, editedAt: last.edited_at, deleted: !!last.deleted,
+        expiresAt: last.expires_at || null
       } : null
     });
   }
@@ -1719,6 +1758,25 @@ function handleChatSettings(ws, msg, rid) {
 
   q.setChatFlags.run(ws.username, peer, pinned ? 1 : 0, muted ? 1 : 0, archived ? 1 : 0);
   reply(ws, rid, { t: 'chat.settings', peer, pinned, muted, archived });
+}
+
+/**
+ * Set the conversation's auto-delete timer. It belongs to the pair, so both
+ * owners' rows are written and both are told, which is what keeps the two
+ * devices showing the same clock. A timer of 0 turns it off. Only the future is
+ * affected: messages already sent keep the countdown they were given.
+ */
+function handleChatTtl(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const peer = msg.peer;
+  if (typeof peer !== 'string' || !peer) return bad(ws, rid, 'Bad request');
+  const ttl = Number.isFinite(msg.ttl) && msg.ttl > 0
+    ? Math.min(Math.max(Math.floor(msg.ttl), MIN_TTL_MS), MAX_TTL_MS)
+    : 0;
+  q.setTtlBoth.run(ws.username, peer, ttl);
+  q.setTtlBoth.run(peer, ws.username, ttl);
+  reply(ws, rid, { t: 'chat.ttl', peer, ttl });
+  deliverToUser(peer, { t: 'chat.ttl', from: ws.username, peer: ws.username, ttl });
 }
 
 function handleChatRead(ws, msg, rid) {
@@ -2795,6 +2853,7 @@ const handlers = {
   typing: handleTyping,
   'chats.list': handleChatsList,
   'chat.settings': handleChatSettings,
+  'chat.ttl': handleChatTtl,
   'chat.read': handleChatRead,
   'chat.clear': handleChatClear,
   'chat.delete': handleChatDelete,
@@ -2892,6 +2951,29 @@ const heartbeat = setInterval(() => {
   }
 }, 30000);
 wss.on('close', () => clearInterval(heartbeat));
+
+/**
+ * Self-destructing messages. The relay holds only ciphertext, so the clock it
+ * enforces is on the ciphertext alone: when `expires_at` passes, the row's box,
+ * nonce and attachment are wiped in place, leaving a "deleted" marker. Both
+ * sides are told so an open chat drops the bubble without waiting for a reload.
+ * Running on a timer (not per message) keeps it correct for a device that was
+ * offline when the timer ran out.
+ */
+const sweeper = setInterval(() => {
+  let rows;
+  try { rows = q.expired.all(Date.now()); } catch { return; }
+  if (!rows.length) return;
+  for (const row of rows) {
+    try {
+      q.expireMessage.run(row.id);
+      const payload = { t: 'expired', id: row.id };
+      deliverToUser(row.sender, { ...payload, from: row.recipient });
+      if (row.recipient !== row.sender) deliverToUser(row.recipient, { ...payload, from: row.sender });
+    } catch { /* keep sweeping the rest */ }
+  }
+}, 5000);
+wss.on('close', () => clearInterval(sweeper));
 
 // One bad connection must not take the relay down for everyone. Log and keep
 // serving: a relay that stays up is worth more than a crash that loses it.

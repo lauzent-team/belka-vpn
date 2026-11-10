@@ -361,6 +361,14 @@ class SleePhyClient {
       this.emit({ type: 'deleted', id: msg.id, from: msg.from || this.username });
       return;
     }
+    if (msg.t === 'expired') {
+      this.emit({ type: 'expired', id: msg.id, from: msg.from || this.username });
+      return;
+    }
+    if (msg.t === 'chat.ttl') {
+      this.emit({ type: 'chat.ttl', peer: msg.peer, ttl: msg.ttl || 0 });
+      return;
+    }
     if (msg.t === 'reactions') {
       this.emit({ type: 'reactions', id: msg.id, reactions: msg.reactions || [] });
       return;
@@ -644,7 +652,7 @@ class SleePhyClient {
     return res.publicKey;
   }
 
-  async sendMessage({ to, text, replyTo, attachment }) {
+  async sendMessage({ to, text, replyTo, attachment, ttl }) {
     if (!this.secretKey) throw new Error('Vault is locked');
     to = bareUsername(to);
     const peerKey = await this.ensurePeerKey(to);
@@ -671,14 +679,15 @@ class SleePhyClient {
     }
 
     const res = await this.request({
-      t: 'send', to, box, nonce, replyTo: replyTo || undefined, attachment: encAttachment || undefined
+      t: 'send', to, box, nonce, replyTo: replyTo || undefined,
+      attachment: encAttachment || undefined, ttl: ttl || undefined
     });
     // The relay reports the pair's flame on every send, so the sender's header
     // updates without a second round trip.
     if (res.streak) this.emit({ type: 'dialog.streak', peer: to, from: this.username, count: res.streak.count, active: !!res.streak.active });
     return {
       id: res.id, ts: res.ts, to, text: caption, replyTo: res.replyTo || null,
-      mine: true, kind: res.kind || null,
+      mine: true, kind: res.kind || null, expiresAt: res.expiresAt || null,
       attachment: encAttachment ? { ...encAttachment, dataUrl: null } : null
     };
   }
@@ -727,7 +736,7 @@ class SleePhyClient {
     }
     this.emit({
       type: 'message', id: msg.id, from: msg.from, text, ts: msg.ts, replyTo: msg.replyTo || null,
-      kind: msg.kind || null, attachment: msg.attachment || null
+      kind: msg.kind || null, attachment: msg.attachment || null, expiresAt: msg.expiresAt || null
     });
   }
 
@@ -750,6 +759,7 @@ class SleePhyClient {
         mine: m.from === this.username, replyTo: m.replyTo || null,
         editedAt: m.editedAt || null, deleted: !!m.deleted,
         kind: m.kind || null, attachment: m.attachment || null, pinned: !!m.pinned,
+        expiresAt: m.expiresAt || null,
         reactions: m.reactions || []
       });
     }
@@ -757,6 +767,7 @@ class SleePhyClient {
     // than returned alongside it so every existing caller that just iterates the
     // messages keeps working unchanged.
     items.streak = res.streak || null;
+    items.ttl = res.ttl || 0;
     return items;
   }
 
@@ -1389,6 +1400,12 @@ class SleePhyClient {
   async setChatSettings({ peer, pinned, muted, archived }) {
     const res = await this.request({ t: 'chat.settings', peer, pinned, muted, archived });
     return { peer: res.peer, pinned: res.pinned, muted: res.muted, archived: res.archived };
+  }
+
+  /** Set the conversation's auto-delete timer (ms; 0 turns it off). */
+  async setChatTtl({ peer, ttl }) {
+    const res = await this.request({ t: 'chat.ttl', peer, ttl });
+    return { peer: res.peer, ttl: res.ttl };
   }
 
   async markRead(peer) {

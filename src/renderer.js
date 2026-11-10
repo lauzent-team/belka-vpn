@@ -942,6 +942,8 @@ const els = {
   peerName: $('peer-name'),
   peerAvatar: $('peer-avatar'),
   peerSub: $('peer-sub'),
+  peerTtl: $('peer-ttl'),
+  peerTtlLabel: $('peer-ttl-label'),
   btnChatMenu: $('btn-chat-menu'),
   messages: $('messages'),
   composer: $('composer'),
@@ -1013,9 +1015,14 @@ const els = {
   chatmenuTitle: $('chatmenu-title'),
   chatmenuBody: $('chatmenu-body'),
   btnChatmenuClose: $('btn-chatmenu-close'),
+  ttlBackdrop: $('ttl-backdrop'),
+  ttlOptions: $('ttl-options'),
+  btnTtlClose: $('btn-ttl-close'),
   menuPinLabel: $('menu-pin-label'),
   menuMuteLabel: $('menu-mute-label'),
   menuArchiveLabel: $('menu-archive-label'),
+  menuTtl: $('menu-ttl'),
+  menuTtlLabel: $('menu-ttl-label'),
   menuLeave: $('menu-leave'),
   menuLeaveLabel: $('menu-leave-label'),
   menuDelete: $('menu-delete'),
@@ -1263,13 +1270,37 @@ function dayLabel(ts) {
   return d.toLocaleDateString([], { day: 'numeric', month: 'short' });
 }
 
-/** Russian plural form: 1 участник, 2 участника, 5 участников. */
-function plural(n, one, few, many) {
+/** 0 for "one", 1 for "few", 2 for "many" — a Russian-style plural index. */
+function pluralIndex(n) {
   const m10 = n % 10;
   const m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
-  return many;
+  if (m10 === 1 && m100 !== 11) return 0;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return 1;
+  return 2;
+}
+
+/** Russian plural form: 1 участник, 2 участника, 5 участников. */
+function plural(n, one, few, many) {
+  return [one, few, many][pluralIndex(n)];
+}
+
+/**
+ * Story counts that agree with the language. English has no distinct plural
+ * for the "new" adjective here, so its three forms collapse to one word.
+ */
+const STORY_WORDS = {
+  ru: { unseen: ['новая', 'новые', 'новых'], views: ['просмотр', 'просмотра', 'просмотров'] },
+  en: { unseen: ['new', 'new', 'new'], views: ['view', 'views', 'views'] }
+};
+
+function storyWord(kind, n) {
+  const table = STORY_WORDS[i18n.getLang()] || STORY_WORDS.ru;
+  return table[kind][pluralIndex(n)];
+}
+
+/** "N new" for a story ring, in the active language. */
+function newCount(n) {
+  return `${n} ${storyWord('unseen', n)}`;
 }
 
 /** "был(а) в сети …" text for a last-seen timestamp, or null when unknown. */
@@ -1683,6 +1714,7 @@ async function loadChats() {
       chat.muted = row.muted;
       chat.archived = row.archived;
       chat.unread = row.unread;
+      if (!isMultiKey(key)) chat.ttl = row.ttl || 0;
       chat.lastTs = row.last ? row.last.ts : 0;
       chat.last = row.last
         ? (row.last.deleted ? 'Message deleted' : 'Encrypted message')
@@ -1911,7 +1943,7 @@ function ensureChat(key) {
   if (!state.chats.has(key)) {
     state.chats.set(key, {
       key, pinned: false, muted: false, archived: false, unread: 0,
-      last: '', lastTs: 0, messages: [], loaded: false
+      last: '', lastTs: 0, messages: [], loaded: false, ttl: 0
     });
   }
   return state.chats.get(key);
@@ -2136,6 +2168,9 @@ function messageEl(m) {
   const meta = [escapeHtml(timeLabel(m.ts))];
   if (m.editedAt) meta.push('<span class="edited">edited</span>');
   if (m.pinned) meta.push(`<span class="pinned-mark" title="Pinned">${icon('i-pin')}</span>`);
+  if (m.expiresAt && !m.deleted) {
+    meta.push(`<span class="ttl-mark" data-exp="${m.expiresAt}" title="${escapeHtml(i18n.t('Исчезнет через'))}">${icon('i-clock')}<span class="ttl-remain"></span></span>`);
+  }
   const hasMedia = !!(m.kind && m.attachment);
   el.innerHTML = `
     <div class="bubble${hasMedia ? ' has-media' : ''}">${quoteHtml(m)}${renderMessageBody(m)}</div>
@@ -2248,6 +2283,7 @@ async function openChat(key) {
   paintAvatar(els.peerAvatar, key);
   updatePeerSub();
   updateComposerForChannel(key);
+  renderTtlChip();
   // Restore the draft left in this chat, unless the composer is read-only.
   els.composerInput.value = els.composerInput.disabled ? '' : draftFor(key);
   renderChatList();
@@ -2269,8 +2305,12 @@ async function openChat(key) {
           : await api.history({ with: peerUsername(key), limit: 200 });
       chat.messages = resolveQuotes(items);
       chat.loaded = true;
-      if (!isMultiKey(key) && items.streak) setDialogStreak(peerUsername(key), items.streak);
+      if (!isMultiKey(key)) {
+        if (items.streak) setDialogStreak(peerUsername(key), items.streak);
+        chat.ttl = items.ttl || 0;
+      }
       renderMessages();
+      renderTtlChip();
       const last = lastRealMessage(items);
       if (last) { chat.last = previewOf(last); chat.lastTs = last.ts; }
     } catch (err) {
@@ -2331,6 +2371,7 @@ function renderMessagesNow() {
   }
   els.messages.appendChild(frag);
   renderGameBoardInto(chat);
+  tickTtlMarks();
   if (atBottom || state.forceScrollBottom) els.messages.scrollTop = els.messages.scrollHeight;
   state.forceScrollBottom = false;
 }
@@ -2387,7 +2428,25 @@ function appendMessageEl(m) {
   if (board && board !== els.messages.lastElementChild) els.messages.appendChild(board);
   if (atBottom || state.forceScrollBottom) els.messages.scrollTop = els.messages.scrollHeight;
   state.forceScrollBottom = false;
+  tickTtlMarks();
   return true;
+}
+
+/** Count the remaining seconds on every self-destructing bubble on screen. */
+function tickTtlMarks() {
+  const marks = els.messages.querySelectorAll('.ttl-mark');
+  const now = Date.now();
+  for (const mark of marks) {
+    const left = Number(mark.dataset.exp) - now;
+    const span = mark.querySelector('.ttl-remain');
+    if (!span) continue;
+    if (left <= 0) { span.textContent = i18n.t('сейчас'); continue; }
+    const secs = Math.ceil(left / 1000);
+    if (secs < 60) span.textContent = `${secs}${i18n.t('сек')}`;
+    else if (secs < 3600) span.textContent = `${Math.ceil(secs / 60)}${i18n.t('мин')}`;
+    else if (secs < 86400) span.textContent = `${Math.ceil(secs / 3600)}${i18n.t('ч')}`;
+    else span.textContent = `${Math.ceil(secs / 86400)}${i18n.t('дн.')}`;
+  }
 }
 
 function updatePeerSub() {
@@ -2593,7 +2652,10 @@ async function sendCurrentMessage(text) {
     id: 'tmp-' + Date.now(), text, ts: Date.now(), mine: true,
     replyTo: replyTo ? replyTo.id : null,
     quote: replyTo ? { from: replyTo.from, text: replyTo.text, mine: replyTo.mine } : null,
-    pending: true, reactions: []
+    pending: true, reactions: [],
+    // Seed the countdown from the chat's timer so the bubble shows it at once;
+    // the relay's `expiresAt` replaces this the moment the send is confirmed.
+    expiresAt: chat.ttl ? Date.now() + chat.ttl : null
   };
   chat.messages.push(optimistic);
   chat.last = text;
@@ -2619,11 +2681,16 @@ async function sendCurrentMessage(text) {
       });
       optimistic.id = res.id;
     } else {
-      const res = await api.send({ to: peerUsername(key), text, replyTo: replyTo ? replyTo.id : undefined });
+      const res = await api.send({
+        to: peerUsername(key), text, replyTo: replyTo ? replyTo.id : undefined,
+        ttl: chat.ttl || undefined
+      });
       optimistic.id = res.id;
+      if (res.expiresAt) optimistic.expiresAt = res.expiresAt;
     }
     noteLocalSend();
     optimistic.pending = false;
+    renderMessages();
     const el = els.messages.querySelector(`.msg[data-id="${optimistic.id}"]`);
     if (el) el.classList.remove('pending');
   } catch (err) {
@@ -2885,6 +2952,14 @@ function openChatMenu() {
   els.menuPinLabel.textContent = chat.pinned ? 'Unpin' : 'Pin';
   els.menuMuteLabel.textContent = chat.muted ? 'Unmute' : 'Mute';
   els.menuArchiveLabel.textContent = chat.archived ? 'Unarchive' : 'Archive';
+  // Auto-delete is a 1:1 feature; hide the entry for Saved, groups and channels.
+  const ttlEligible = !isMultiKey(state.activePeer) && state.activePeer !== SAVED;
+  els.menuTtl.hidden = !ttlEligible;
+  if (ttlEligible) {
+    els.menuTtlLabel.textContent = chat.ttl
+      ? `${i18n.t('Автоудаление')}: ${ttlLabel(chat.ttl)}`
+      : i18n.t('Автоудаление');
+  }
   els.chatmenuBody.querySelectorAll('[data-action="delete"]').forEach((b) => { b.hidden = isSaved; });
   // Leaving applies to channels only, and never to the channel's own owner.
   els.menuLeave.hidden = !channel || channel.isOwner;
@@ -2927,6 +3002,9 @@ els.chatmenuBody.addEventListener('click', async (e) => {
       chat.archived = res.archived;
       renderChatList();
       toast(res.archived ? 'Archived' : 'Unarchived');
+    } else if (action === 'ttl') {
+      openTtlPicker(key);
+      return;
     } else if (action === 'read') {
       chat.unread = 0;
       await api.markRead(peer);
@@ -3001,6 +3079,56 @@ els.btnArchivedToggle.addEventListener('click', () => {
   const open = els.archivedList.hidden;
   els.archivedList.hidden = !open;
   els.btnArchivedToggle.classList.toggle('open', open);
+});
+
+/* --------------------------- auto-delete timer --------------------------- */
+
+/** The offered timers, in ms. 0 turns auto-delete off. */
+const TTL_CHOICES = [0, 1000, 5000, 10000, 30000, 60000, 5 * 60000, 3600000, 86400000, 7 * 86400000];
+
+/** A short, human label for a timer, e.g. "5 сек" or "1 день". */
+function ttlLabel(ms) {
+  if (!ms) return i18n.t('Выключено');
+  if (ms < 60000) return `${Math.round(ms / 1000)} ${i18n.t('сек')}`;
+  if (ms < 3600000) return `${Math.round(ms / 60000)} ${i18n.t('мин')}`;
+  if (ms < 86400000) return `${Math.round(ms / 3600000)} ${i18n.t('ч')}`;
+  return `${Math.round(ms / 86400000)} ${i18n.t('дн.')}`;
+}
+
+function renderTtlChip() {
+  const chat = activeChat();
+  const on = !!(chat && chat.ttl);
+  els.peerTtl.hidden = !on;
+  if (on) els.peerTtlLabel.textContent = ttlLabel(chat.ttl);
+}
+
+function openTtlPicker(key) {
+  const chat = ensureChat(key);
+  els.ttlOptions.innerHTML = '';
+  for (const ms of TTL_CHOICES) {
+    const b = document.createElement('button');
+    b.className = 'menu-item' + (ms === chat.ttl ? ' active' : '');
+    b.innerHTML = `<span>${escapeHtml(ttlLabel(ms))}</span>`
+      + (ms === chat.ttl ? `<span class="ttl-check">${icon('i-check')}</span>` : '');
+    b.addEventListener('click', async () => {
+      els.ttlBackdrop.hidden = true;
+      try {
+        const res = await api.chatTtl({ peer: peerUsername(key), ttl: ms });
+        chat.ttl = res.ttl;
+        renderTtlChip();
+        toast(ms ? `${i18n.t('Автоудаление')}: ${ttlLabel(ms)}` : i18n.t('Автоудаление выключено'));
+      } catch (err) {
+        toast(err.message || 'Не удалось изменить таймер');
+      }
+    });
+    els.ttlOptions.appendChild(b);
+  }
+  els.ttlBackdrop.hidden = false;
+}
+
+els.btnTtlClose.addEventListener('click', () => { els.ttlBackdrop.hidden = true; });
+els.ttlBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.ttlBackdrop) els.ttlBackdrop.hidden = true;
 });
 
 /* ------------------------------- profile ------------------------------- */
@@ -4744,7 +4872,8 @@ api.onEvent((evt) => {
       const m = {
         id: evt.id, text: evt.text, ts: evt.ts, mine: evt.kind === 'system:series' ? false : evt.from === state.username, from: evt.from,
         replyTo: evt.replyTo || null, reactions: [],
-        kind: evt.kind || null, attachment: evt.attachment || null
+        kind: evt.kind || null, attachment: evt.attachment || null,
+        expiresAt: evt.expiresAt || null
       };
       if (m.replyTo) {
         const orig = findMessage(m.replyTo);
@@ -4797,10 +4926,35 @@ api.onEvent((evt) => {
       break;
     }
 
+    case 'chat.ttl': {
+      // The peer changed the conversation's auto-delete timer. `peer` is the
+      // other person from this device's point of view.
+      const key = chatKey(evt.peer);
+      const chat = state.chats.get(key);
+      if (chat) chat.ttl = evt.ttl || 0;
+      if (state.activePeer === key) renderTtlChip();
+      break;
+    }
+
+    case 'expired': {
+      // A self-destructing message reached the end of its timer on the relay.
+      for (const [key, chat] of state.chats) {
+        const m = chat.messages.find((x) => x.id === evt.id);
+        if (m) {
+          m.deleted = true; m.text = ''; m.reactions = []; m.expiresAt = null;
+          m.attachment = null; m.kind = null;
+          if (state.activePeer === key) renderMessages();
+          break;
+        }
+      }
+      renderChatList();
+      break;
+    }
+
     case 'deleted': {
       for (const [key, chat] of state.chats) {
         const m = chat.messages.find((x) => x.id === evt.id);
-        if (m) { m.deleted = true; m.text = ''; m.reactions = []; if (state.activePeer === key) renderMessages(); break; }
+        if (m) { m.deleted = true; m.text = ''; m.reactions = []; m.expiresAt = null; if (state.activePeer === key) renderMessages(); break; }
       }
       renderChatList();
       break;
@@ -5095,7 +5249,8 @@ async function sendWithAttachment(att) {
     pending: true, reactions: [],
     kind: att.kind,
     attachment: { kind: att.kind, name: att.name, mime: att.mime, size: att.bytes.length, duration: att.duration },
-    previewUrl: att.preview || null
+    previewUrl: att.preview || null,
+    expiresAt: chat.ttl ? Date.now() + chat.ttl : null
   };
   chat.messages.push(optimistic);
   chat.last = att.kind === 'image' ? 'Photo' : (att.kind === 'voice' ? 'Voice message' : att.name);
@@ -5119,9 +5274,11 @@ async function sendWithAttachment(att) {
           })
         : await api.send({
             to: peerUsername(key), text: caption, replyTo: replyTo ? replyTo.id : undefined,
-            attachment: { kind: att.kind, bytes: att.bytes, name: att.name, mime: att.mime, duration: att.duration }
+            attachment: { kind: att.kind, bytes: att.bytes, name: att.name, mime: att.mime, duration: att.duration },
+            ttl: chat.ttl || undefined
           });
     optimistic.id = res.id;
+    if (res.expiresAt) optimistic.expiresAt = res.expiresAt;
     noteLocalSend();
     optimistic.pending = false;
     optimistic.attachment = res.attachment || optimistic.attachment;
@@ -6862,8 +7019,8 @@ function renderStoriesBar() {
   const mineUnseen = STORIES.unseenCount(mine, state.storiesSeen);
   els.storyAdd.classList.toggle('has-stories', mine.length > 0);
   els.storyAdd.title = mine.length
-    ? (mineUnseen ? `Моя история · ${mineUnseen} новых` : 'Моя история')
-    : 'Добавить историю';
+    ? (mineUnseen ? `${i18n.t('My story')} · ${newCount(mineUnseen)}` : i18n.t('My story'))
+    : i18n.t('Add story');
 
   els.storyRingList.innerHTML = '';
   for (const author of order) {
@@ -6875,7 +7032,7 @@ function renderStoriesBar() {
     li.className = 'story-ring ' + (unseen ? 'unseen' : 'seen');
     const ring = document.createElement('button');
     ring.className = 'story-ring-btn';
-    ring.title = displayNameFor(author) + (unseen ? ` · ${unseen} новых` : '');
+    ring.title = displayNameFor(author) + (unseen ? ` · ${newCount(unseen)}` : '');
     ring.innerHTML = `
       <span class="avatar story-ring-avatar" data-color="${escapeHtml(avatarColorFor(author))}">${avatarInnerHtml(author)}</span>
       <span class="story-name">${escapeHtml(displayNameFor(author))}</span>`;
@@ -6945,10 +7102,10 @@ async function updateStoryAudienceNote() {
   try {
     const audience = await api.storyAudience();
     els.storyAudienceNote.textContent = audience.length
-      ? `Увидят ${audience.length} ${plural(audience.length, 'контакт', 'контакта', 'контактов')}.`
-      : 'Пока некому показать — напишите кому-нибудь, и он появится здесь.';
+      ? `${i18n.t('Seen by')} ${audience.length} ${plural(audience.length, 'контакт', 'контакта', 'контактов')}.`
+      : i18n.t('No one to show yet — message someone and they will appear here.');
   } catch {
-    els.storyAudienceNote.textContent = 'Увидят ваши контакты.';
+    els.storyAudienceNote.textContent = i18n.t('Seen by your contacts.');
   }
 }
 
@@ -6965,7 +7122,7 @@ els.btnStoryPhoto.addEventListener('click', async () => {
   const file = await pickFile('image/*');
   if (!file) return;
   if (file.size > MAX_ATTACHMENT_BYTES) {
-    els.storyError.textContent = `Слишком большой файл — лимит ${humanSize(MAX_ATTACHMENT_BYTES)}`;
+    els.storyError.textContent = i18n.t("Too large — the limit is {size}", { size: humanSize(MAX_ATTACHMENT_BYTES) });
     els.storyError.hidden = false;
     return;
   }
@@ -6978,7 +7135,7 @@ els.btnStoryPhoto.addEventListener('click', async () => {
     };
     paintStoryPreview();
   } catch (err) {
-    els.storyError.textContent = err.message || 'Не удалось прочитать файл';
+    els.storyError.textContent = err.message || i18n.t('Could not read the file');
     els.storyError.hidden = false;
   }
 });
@@ -6988,7 +7145,7 @@ async function publishStory() {
   if (!draft) return;
   const hasImage = !!(draft.attachment && draft.attachment.bytes);
   if (!draft.cap.trim() && !hasImage) {
-    els.storyError.textContent = 'Добавьте текст или фото';
+    els.storyError.textContent = i18n.t('Add a caption or a photo');
     els.storyError.hidden = false;
     return;
   }
@@ -7004,7 +7161,7 @@ async function publishStory() {
     });
     els.storyBackdrop.hidden = true;
     state.storyDraft = null;
-    toast('История опубликована на 24 часа');
+    toast(i18n.t('Story published for 24 hours'));
     await loadStories();
     if (res && res.id) openStoryViewer(state.username);
   } catch (err) {
@@ -7111,8 +7268,8 @@ function paintStoryViews() {
   if (!story) return;
   if (story.author === state.username) {
     els.storyViewerViews.textContent = story.views
-      ? `${story.views} ${plural(story.views, 'просмотр', 'просмотра', 'просмотров')}`
-      : 'Просмотров пока нет';
+      ? `${story.views} ${storyWord('views', story.views)}`
+      : i18n.t('No views yet');
   } else {
     els.storyViewerViews.textContent = '';
   }
@@ -7170,7 +7327,7 @@ els.btnStoryDelete.addEventListener('click', async () => {
     await api.deleteStory({ id: story.id });
     handleStoryDeleted(story.id);
   } catch (err) {
-    toast(err.message || 'Не удалось удалить историю');
+    toast(err.message || i18n.t('Could not delete the story'));
   }
 });
 
@@ -7187,6 +7344,9 @@ document.addEventListener('keydown', (e) => {
   buildEmojiPanel();
   buildStickerPanel();
   loadAppearance();
+  // A single low-frequency ticker repaints the countdown on self-destructing
+  // bubbles; the relay still decides when they actually vanish.
+  setInterval(tickTtlMarks, 1000);
   // Wait for the connection (and the session resume it triggers) before reading
   // status, or a returning device is read as signed out and lands on the sign-in
   // screen for a moment. A failure just falls through to the auth screen.

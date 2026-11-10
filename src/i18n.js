@@ -1278,6 +1278,154 @@ const PAIRS = [
   [
     "Badge image must be a string",
     "Значок должен быть строкой"
+  ],
+  [
+    "Stories",
+    "Истории"
+  ],
+  [
+    "My story",
+    "Моя история"
+  ],
+  [
+    "Add story",
+    "Добавить историю"
+  ],
+  [
+    "New story",
+    "Новая история"
+  ],
+  [
+    "Story text…",
+    "Текст истории…"
+  ],
+  [
+    "What's new?",
+    "Что нового?"
+  ],
+  [
+    "Expires in",
+    "Исчезнет через"
+  ],
+  [
+    "1 hour",
+    "1 час"
+  ],
+  [
+    "6 hours",
+    "6 часов"
+  ],
+  [
+    "12 hours",
+    "12 часов"
+  ],
+  [
+    "24 hours",
+    "24 часа"
+  ],
+  [
+    "Add photo",
+    "Добавить фото"
+  ],
+  [
+    "Seen by your contacts.",
+    "Увидят ваши контакты."
+  ],
+  [
+    "Publish",
+    "Опубликовать"
+  ],
+  [
+    "Delete",
+    "Удалить"
+  ],
+  [
+    "Back",
+    "Назад"
+  ],
+  [
+    "Next",
+    "Вперёд"
+  ],
+  [
+    "Add a caption or a photo",
+    "Добавьте текст или фото"
+  ],
+  [
+    "Story published for 24 hours",
+    "История опубликована на 24 часа"
+  ],
+  [
+    "Story deleted",
+    "История удалена"
+  ],
+  [
+    "No views yet",
+    "Просмотров пока нет"
+  ],
+  [
+    "Could not delete the story",
+    "Не удалось удалить историю"
+  ],
+  [
+    "Could not read the file",
+    "Не удалось прочитать файл"
+  ],
+  [
+    "Seen by",
+    "Увидят"
+  ],
+  [
+    "No one to show yet — message someone and they will appear here.",
+    "Пока некому показать — напишите кому-нибудь, и он появится здесь."
+  ],
+  [
+    "Too large — the limit is {size}",
+    "Слишком большой файл — лимит {size}"
+  ],
+  [
+    "Автоудаление сообщений",
+    "Auto-delete messages"
+  ],
+  [
+    "Автоудаление",
+    "Auto-delete"
+  ],
+  [
+    "Автоудаление выключено",
+    "Auto-delete turned off"
+  ],
+  [
+    "Все новые сообщения в этом диалоге будут исчезать у обоих собеседников по истечении таймера.",
+    "Every new message in this chat will vanish for both people when the timer runs out."
+  ],
+  [
+    "Исчезнет через",
+    "Disappears in"
+  ],
+  [
+    "Выключено",
+    "Off"
+  ],
+  [
+    "сек",
+    "s"
+  ],
+  [
+    "мин",
+    "min"
+  ],
+  [
+    "ч",
+    "h"
+  ],
+  [
+    "дн.",
+    "d"
+  ],
+  [
+    "сейчас",
+    "now"
   ]
 ];
 
