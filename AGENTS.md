@@ -461,12 +461,26 @@ arriving now can change a header that is already on screen.
 - **Beware shadowing the module-level `state`.** `applyPeerGame` once declared
   `let state` for the decoded position, which made `state.activePeer` undefined
   and silently skipped the repaint. Decoded positions are named `position`.
+- **The board can be got out of the way.** It is pinned under the transcript, so
+  it must not be permanent: the head's close button collapses it to a thin
+  `.game-min-bar` (`chat.gameMinimized`), which expands it again or ends the
+  match. `endGame` clears `chat.game` locally and, in a match with a real person,
+  sends `{g:'end', end:true}` so the peer's `endPeerGame` clears theirs too. That
+  notice is a control message: `gameEndOf` keeps it out of the transcript and
+  `previewOf`/`lastRealMessage` skip it, exactly like a position message.
 - **A tic-tac-toe move is a cell index and cell `0` is falsy**, so
   `gameMoveEquals` compares with `== null`, not `!a`. Any guard on a move value
   must not use truthiness.
 - **Bots are local pseudo-peers** (like Saved Messages): no relay traffic, their
   transcript lives only in `state.chats`. `botReply` answers plain text, and the
   minigames bot starts a game on its own chat.
+- **A hidden bot is summoned by a mention, not opened.** `@minigames` typed in a
+  personal chat is handled on the device (`runHiddenBotMention`) and never sent;
+  the peer sees only the invitation that follows, and the relay learns nothing.
+  Only a message that *is* the mention (`parseBotMention`, anchored `^@name…$`)
+  is intercepted, so a mention inside a sentence goes out as ordinary text. The
+  bot's note is `kind: 'system:bot'`, local, one per bot per chat, and never a
+  preview or unread.
 - **Gifts ride as ordinary encrypted messages** (`giftPayloadOf` /
   `.gift-bubble`), so the server needs no change; `previewOf` shows
   `Подарок: <name>` in the chat list.
@@ -474,7 +488,8 @@ arriving now can change a header that is already on screen.
   `xvfb-run -a node test/ui-bots-games.js`. It opens two windows and checks a
   game invite and a gift over the real relay. Electron UI tests need
   `xvfb-run`; a test that launches a window without it fails on `Missing X
-  server or $DISPLAY`.
+  server or $DISPLAY`. `test/ui-hidden-bot.js` covers the mention bot and
+  `test/ui-game-close.js` covers collapsing and ending a board.
 
 ## Polls, drafts and folders (v0.9.0)
 

@@ -274,6 +274,7 @@ async function startGameWithPeer(gameId) {
     id: gameId, state: st, seat: 0, opponent: key,
     started: Date.now(), lastMove: null, status: 'play', sel: null
   };
+  chat.gameMinimized = false;
   renderMessagesImmediate();
   renderChatList();
   const payload = JSON.stringify({ g: gameId, s: GAMES.encode(gameId, st), seat: 0, status: 'play' });
@@ -299,6 +300,7 @@ function startGameWithBot(gameId) {
     id: gameId, state: st, seat: 0, opponent: 'bot', level: 2,
     started: Date.now(), lastMove: null, status: 'play'
   };
+  chat.gameMinimized = false;
   pushBotMessage(key, `Игра: ${g.name}. Вы играете первым.`);
   renderMessagesImmediate();
   // If the bot opens (never, seat 0 opens) keep the guard anyway.
@@ -405,6 +407,9 @@ function applyPeerGame(chat, from, payload) {
     status: payload.status === 'done' ? 'done' : 'play',
     sel: null
   };
+  // A fresh position from the peer un-collapses our board, so a move is never
+  // hidden behind a bar the local player left collapsed.
+  chat.gameMinimized = false;
   chat.last = `Игра: ${g.name}`;
   chat.lastTs = Date.now();
   if (state.activePeer === chat.key) renderMessagesImmediate();
@@ -421,6 +426,15 @@ function gamePayloadOf(m) {
   return null;
 }
 
+/** The "match over" notice a peer sends when they dismiss the board. */
+function gameEndOf(m) {
+  if (!m || !m.text || m.text[0] !== '{') return false;
+  try {
+    const obj = JSON.parse(m.text);
+    return !!(obj && obj.g === 'end' && obj.end);
+  } catch { return false; }
+}
+
 function renderGameBoard(game) {
   const g = GAMES && GAMES.byId(game.id);
   if (!g) return '';
@@ -430,6 +444,15 @@ function renderGameBoard(game) {
   head.className = 'game-board-head';
   head.innerHTML = `<span class="game-board-title">${escapeHtml(g.name)}</span>
     <span class="game-board-status">${escapeHtml(gameStatusText(game))}</span>`;
+  // The board is pinned under the transcript, so it needs a way out: collapse it
+  // to a thin bar (messages then flow normally) without ending the match.
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'icon-btn game-board-close';
+  close.title = 'Свернуть игру';
+  close.innerHTML = icon('i-close');
+  close.addEventListener('click', () => minimizeGame());
+  head.appendChild(close);
   wrap.appendChild(head);
 
   const canPlay = game.status === 'play' && gameIsMyTurn(game);
@@ -441,14 +464,91 @@ function renderGameBoard(game) {
 
   const res = g.result(game.state);
   if (game.status !== 'play' || res) {
+    const actions = document.createElement('div');
+    actions.className = 'game-board-actions';
     const again = document.createElement('button');
     again.type = 'button';
     again.className = 'btn-secondary btn-compact';
     again.textContent = 'Играть снова';
     again.addEventListener('click', () => restartGame(game));
-    wrap.appendChild(again);
+    const end = document.createElement('button');
+    end.type = 'button';
+    end.className = 'btn-ghost btn-compact';
+    end.textContent = 'Завершить';
+    end.addEventListener('click', () => endGame(activeChat()));
+    actions.append(again, end);
+    wrap.appendChild(actions);
   }
   return wrap;
+}
+
+/** Collapse the board of the open chat to a thin bar; the match keeps going. */
+function minimizeGame() {
+  const chat = activeChat();
+  if (!chat || !chat.game) return;
+  chat.gameMinimized = true;
+  renderMessagesImmediate();
+}
+
+/** Expand the collapsed board again. */
+function expandGame() {
+  const chat = activeChat();
+  if (!chat || !chat.game) return;
+  chat.gameMinimized = false;
+  renderMessagesImmediate();
+}
+
+/**
+ * Drop the game from the open chat. The board disappears for good — the way out
+ * the user asked for — and, in a match with a real person, the peer is told so
+ * their board disappears too. The notice is an ordinary encrypted message, so
+ * the relay stays blind. A bot game is local and needs no notice.
+ */
+async function endGame(chat) {
+  if (!chat || !chat.game) return;
+  const opponent = chat.game.opponent;
+  chat.game = null;
+  chat.gameMinimized = false;
+  renderMessagesImmediate();
+  renderChatList();
+  if (opponent && opponent !== 'bot') {
+    try { await api.send({ to: peerUsername(chat.key), text: JSON.stringify({ g: 'end', end: true }) }); }
+    catch { /* best effort: the local board is already gone */ }
+  }
+}
+
+/** A peer ended the match, so clear our board too. */
+function endPeerGame(chat) {
+  if (!chat || !chat.game) return;
+  chat.game = null;
+  chat.gameMinimized = false;
+  if (state.activePeer === chat.key) renderMessagesImmediate();
+  renderChatList();
+}
+
+/** The thin bar the collapsed board becomes, pinned where the board was. */
+function gameMinBar(chat) {
+  const g = GAMES && GAMES.byId(chat.game.id);
+  const el = document.createElement('div');
+  el.className = 'msg game-msg game-min';
+  const bar = document.createElement('div');
+  bar.className = 'game-min-bar';
+  bar.innerHTML = `<span class="game-min-ico">${icon(GAME_ICONS[chat.game.id] || 'i-dice')}</span>
+    <span class="game-min-name">${escapeHtml(g ? g.name : 'Игра')}</span>
+    <span class="game-min-status">${escapeHtml(gameStatusText(chat.game))}</span>`;
+  const expand = document.createElement('button');
+  expand.type = 'button';
+  expand.className = 'btn-secondary btn-compact';
+  expand.textContent = 'Развернуть';
+  expand.addEventListener('click', () => expandGame());
+  const end = document.createElement('button');
+  end.type = 'button';
+  end.className = 'btn-ghost btn-compact';
+  end.textContent = 'Завершить';
+  end.addEventListener('click', () => endGame(chat));
+  bar.append(expand, end);
+  el.appendChild(bar);
+  return el;
 }
 
 function restartGame(game) {
@@ -458,6 +558,8 @@ function restartGame(game) {
   game.state = st;
   game.status = 'play';
   game.lastMove = null;
+  const chat = activeChat();
+  if (chat) chat.gameMinimized = false;
   renderMessagesImmediate();
   renderChatList();
   if (game.opponent === 'bot') maybeBotMove(game);
@@ -1566,11 +1668,14 @@ async function refreshVisibleLastMessages() {
   renderChatList();
 }
 
-/** The last real message of a transcript, ignoring the centered system notes. */
+/** The last real message of a transcript, ignoring control messages. */
 function lastRealMessage(items) {
   for (let i = items.length - 1; i >= 0; i--) {
     const m = items[i];
-    if (m && !(typeof m.kind === 'string' && m.kind.startsWith('system:'))) return m;
+    if (!m) continue;
+    if (typeof m.kind === 'string' && m.kind.startsWith('system:')) continue;
+    if (gamePayloadOf(m) || gameEndOf(m)) continue;
+    return m;
   }
   return null;
 }
@@ -2155,7 +2260,8 @@ function renderMessagesNow() {
     // Game positions are hidden from the transcript: the live board below shows
     // the position they carry, so a bubble per move would only be noise. A poll
     // vote is likewise hidden: it only moves the tally shown on the poll card.
-    if (gamePayloadOf(m) || pollVoteOf(m)) continue;
+    // The "match over" notice is a control message too, so it stays out of view.
+    if (gamePayloadOf(m) || pollVoteOf(m) || gameEndOf(m)) continue;
     const day = dayLabel(m.ts);
     if (day !== lastDay) {
       const sep = document.createElement('div');
@@ -2179,7 +2285,8 @@ function renderMessagesNow() {
  */
 function renderGameBoardInto(chat) {
   if (!chat || !chat.game || !GAMES) return;
-  els.messages.appendChild(messageEl({ __gameBoard: chat.game }));
+  if (chat.gameMinimized) els.messages.appendChild(gameMinBar(chat));
+  else els.messages.appendChild(messageEl({ __gameBoard: chat.game }));
 }
 
 /* A burst of events (a fan-out, a history load, a reaction) must not repaint the
@@ -4347,6 +4454,12 @@ api.onEvent((evt) => {
         // A game position from a peer. Adopt it, flipping the seat so their
         // side becomes the far side on this device.
         applyPeerGame(chat, evt.from, payload);
+        break;
+      }
+      if (gameEndOf({ text: evt.text })) {
+        // The peer dismissed the board; drop ours too and keep the notice out of
+        // the transcript. It is a control message, not something either said.
+        endPeerGame(chat);
         break;
       }
       const m = {

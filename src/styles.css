@@ -1130,7 +1130,27 @@ body.theme-light ::-webkit-scrollbar-thumb { background: #C4CEDA; }
 .game-board { padding: 8px 10px; border-radius: var(--radius-sm); background: var(--bg); max-width: 320px; }
 .game-board-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; }
 .game-board-title { font-size: 13px; font-weight: 600; }
-.game-board-status { font-size: 12px; color: var(--text-dim); }
+.game-board-status { font-size: 12px; color: var(--text-dim); flex: 1; }
+.game-board-close { margin-left: auto; color: var(--text-faint); }
+.game-board-close:hover { color: var(--text); }
+.game-board-actions { display: flex; gap: 8px; margin-top: 8px; }
+
+/* A collapsed board: a thin, quiet bar in place of the board, so the chat reads
+   normally while the match is still open. */
+.game-min-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-radius: 999px; background: var(--bg-3);
+  font-size: 12.5px;
+}
+.game-min-ico { display: inline-flex; color: var(--text-dim); }
+.game-min-name { font-weight: 600; }
+.game-min-status { color: var(--text-dim); margin-right: 2px; }
+/* Inside the board's own rows the buttons are small and inline, not the
+   full-width stacked buttons `.btn-ghost` is elsewhere. */
+.game-board-actions .btn-secondary, .game-board-actions .btn-ghost,
+.game-min-bar .btn-secondary, .game-min-bar .btn-ghost {
+  width: auto; margin-top: 0; padding: 5px 12px; font-size: 12px;
+}
 .game-board-hint { font-size: 12px; color: var(--text-faint); margin-top: 6px; }
 
 .ttt-grid { display: grid; grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(3, 56px); gap: 4px; }
