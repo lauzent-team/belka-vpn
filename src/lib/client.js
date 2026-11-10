@@ -404,6 +404,30 @@ class SleePhyClient {
       this.emit({ type: 'typing', from: msg.from, state: msg.state });
       return;
     }
+    if (msg.t === 'call.incoming') {
+      this.emit({ type: 'call.incoming', callId: msg.callId, from: msg.from, video: !!msg.video, groupId: msg.groupId ?? null });
+      return;
+    }
+    if (msg.t === 'call.answered') {
+      this.emit({ type: 'call.answered', callId: msg.callId, from: msg.from, video: !!msg.video });
+      return;
+    }
+    if (msg.t === 'call.signal') {
+      this.emit({ type: 'call.signal', callId: msg.callId, from: msg.from, sdp: msg.sdp || null, candidate: msg.candidate || null });
+      return;
+    }
+    if (msg.t === 'call.declined') {
+      this.emit({ type: 'call.declined', callId: msg.callId, from: msg.from });
+      return;
+    }
+    if (msg.t === 'call.ended') {
+      this.emit({ type: 'call.ended', callId: msg.callId, from: msg.from });
+      return;
+    }
+    if (msg.t === 'call.left') {
+      this.emit({ type: 'call.left', callId: msg.callId, from: msg.from });
+      return;
+    }
     if (msg.t === 'announcement') {
       this.emit({ type: 'announcement', from: msg.from, text: msg.text, ts: msg.ts });
       return;
@@ -796,6 +820,40 @@ class SleePhyClient {
 
   async typing({ to, state }) {
     try { await this.request({ t: 'typing', to, state }); } catch { /* best effort */ }
+  }
+
+  /* -------------------------------- calls -------------------------------- */
+  // Signaling only. The relay forwards these tiny frames; the media itself
+  // never passes through it. Each method returns quickly and its result is
+  // best-effort — a call that fails to set up is not an error the UI must
+  // handle, the ring simply stops.
+
+  async callInvite({ to, groupId, video }) {
+    const res = await this.request({ t: 'call.invite', to, groupId, video: !!video });
+    return {
+      callId: res.callId, video: !!res.video, groupId: res.groupId ?? null,
+      participants: Array.isArray(res.participants) ? res.participants : []
+    };
+  }
+
+  async callAnswer({ callId, video }) {
+    try {
+      const res = await this.request({ t: 'call.answer', callId, video: !!video });
+      return { participants: Array.isArray(res.participants) ? res.participants : [] };
+    } catch { return { participants: [] }; }
+  }
+
+  async callSignal({ callId, to, sdp, candidate }) {
+    try { await this.request({ t: 'call.signal', callId, to, sdp: sdp || null, candidate: candidate || null }); }
+    catch { /* a lost ICE candidate is not fatal; others will follow */ }
+  }
+
+  async callDecline({ callId }) {
+    try { await this.request({ t: 'call.decline', callId }); } catch { /* best effort */ }
+  }
+
+  async callHangup({ callId }) {
+    try { await this.request({ t: 'call.hangup', callId }); } catch { /* best effort */ }
   }
 
   async receiveMessage(msg) {

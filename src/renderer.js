@@ -21,6 +21,8 @@ const POLLS = (typeof window !== 'undefined' && window.SleePhyPolls) || null;
 const FOLDERS = (typeof window !== 'undefined' && window.SleePhyFolders) || null;
 const CHATSEARCH = (typeof window !== 'undefined' && window.SleePhyChatSearch) || null;
 const SEARCH = (typeof window !== 'undefined' && window.SleePhyGlobalSearch) || null;
+const CALLS = (typeof window !== 'undefined' && window.SleePhyCalls) || null;
+const FM = (typeof window !== 'undefined' && window.SleePhyFM) || null;
 const STREAK = (typeof window !== 'undefined' && window.SleePhyStreak) || null;
 const STORIES = (typeof window !== 'undefined' && window.SleePhyStories) || null;
 
@@ -810,6 +812,43 @@ const els = {
   drawerArchivedCount: $('drawer-archived-count'),
   drawerVer: $('drawer-ver'),
   footVer: $('foot-ver'),
+  // Calls
+  btnCallAudio: $('btn-call-audio'),
+  btnCallVideo: $('btn-call-video'),
+  callOverlay: $('call-overlay'),
+  callVideos: $('call-videos'),
+  callAvatar: $('call-avatar'),
+  callTitle: $('call-title'),
+  callSub: $('call-sub'),
+  callTimer: $('call-timer'),
+  btnCallMic: $('btn-call-mic'),
+  btnCallCam: $('btn-call-cam'),
+  btnCallScreen: $('btn-call-screen'),
+  btnCallEnd: $('btn-call-end'),
+  callRing: $('call-ring'),
+  ringAvatar: $('ring-avatar'),
+  ringTitle: $('ring-title'),
+  ringSub: $('ring-sub'),
+  btnRingAccept: $('btn-ring-accept'),
+  btnRingDecline: $('btn-ring-decline'),
+  // Бурмалда FM
+  fmOverlay: $('fm-overlay'),
+  fmTagline: $('fm-tagline'),
+  fmArt: $('fm-art'),
+  fmNowTitle: $('fm-now-title'),
+  fmNowSub: $('fm-now-sub'),
+  fmTime: $('fm-time'),
+  fmDur: $('fm-dur'),
+  fmSeek: $('fm-seek'),
+  fmList: $('fm-list'),
+  fmListCount: $('fm-list-count'),
+  fmEmpty: $('fm-empty'),
+  btnFmClose: $('btn-fm-close'),
+  btnFmPlay: $('btn-fm-play'),
+  btnFmPrev: $('btn-fm-prev'),
+  btnFmNext: $('btn-fm-next'),
+  btnFmShuffle: $('btn-fm-shuffle'),
+  btnFmRepeat: $('btn-fm-repeat'),
   accountsBackdrop: $('accounts-backdrop'),
   accountsList: $('accounts-list'),
   btnAccountsClose: $('btn-accounts-close'),
@@ -1017,6 +1056,7 @@ const els = {
   setConnDot: $('set-conn-dot'),
   setServer: $('set-server'),
   btnApplyServer: $('btn-apply-server'),
+  setIce: $('set-ice'),
   setPubkey: $('set-pubkey'),
   btnLogout: $('btn-logout'),
 
@@ -1226,7 +1266,12 @@ const state = {
   storyOrder: [], // authors in bar order, for prev/next across authors
   storyIndex: 0, // index into the current author's story list
   storyDraft: null, // { cap, kind, bg, ttl, attachment } while composing
-  storyTimer: null // autoplay timer for the viewer
+  storyTimer: null, // autoplay timer for the viewer
+  // Live call. Only one at a time; `pc` holds one RTCPeerConnection per remote
+  // peer (a group call is a mesh, so one leg each).
+  call: null, // { callId, key, video, role, peers:Map, localStream, startedAt, timer }
+  // Бурмалда FM: the station, its playlist and the element that plays it.
+  fm: { playlist: [], index: -1, mode: 'all', shuffle: false, playing: false, audio: null, dir: null }
 };
 
 
@@ -2308,6 +2353,7 @@ async function openChat(key) {
   paintAvatar(els.peerAvatar, key);
   updatePeerSub();
   updateComposerForChannel(key);
+  updateCallButtons(key);
   renderTtlChip();
   // Restore the draft left in this chat, unless the composer is read-only.
   els.composerInput.value = els.composerInput.disabled ? '' : draftFor(key);
@@ -2472,6 +2518,12 @@ function tickTtlMarks() {
     else if (secs < 86400) span.textContent = `${Math.ceil(secs / 3600)}${i18n.t('ч')}`;
     else span.textContent = `${Math.ceil(secs / 86400)}${i18n.t('дн.')}`;
   }
+}
+
+function updateCallButtons(key) {
+  const ok = !!key && !!CALLS && CALLS.supportsCalls(key);
+  els.btnCallAudio.hidden = !ok;
+  els.btnCallVideo.hidden = !ok;
 }
 
 function updatePeerSub() {
@@ -3999,6 +4051,7 @@ function syncSettingsUI() {
   els.setReduceMotion.checked = s.reduceMotion === true;
   els.setEscClose.checked = s.escClose !== false;
   els.setPlainPaste.checked = s.plainPaste === true;
+  els.setIce.value = Array.isArray(s.iceServers) ? s.iceServers.join(', ') : '';
   const blocked = Array.isArray(s.blocked) ? s.blocked : [];
   els.setBlockedSub.textContent = blocked.length ? `${blocked.length} blocked` : 'Никто не заблокирован';
   updateStorageLabel();
@@ -4942,6 +4995,12 @@ els.btnApplyServer.addEventListener('click', async () => {
   }
 });
 
+els.setIce.addEventListener('change', async () => {
+  const servers = els.setIce.value.split(',').map((s) => s.trim()).filter(Boolean);
+  await persistSettings({ iceServers: servers });
+  toast(servers.length ? 'Серверы ICE сохранены' : 'Серверы ICE очищены');
+});
+
 els.btnLogout.addEventListener('click', async () => {
   els.settingsBackdrop.hidden = true;
   await api.logout();
@@ -5118,6 +5177,512 @@ async function refreshStatus() {
   updateConnIndicators(s.online);
 }
 
+/* ================================ CALLS ================================ */
+// WebRTC signaling lives here; the media flows peer-to-peer and the relay only
+// forwards the handshake. A direct call is one RTCPeerConnection; a group call
+// is a mesh, one connection per remote peer, addressed by username in every
+// signal frame. The UI is a single overlay so a call survives whatever screen
+// is open behind it.
+
+let ringtoneAudio = null;
+let ringtoneManifest = null; // loaded once, then reused for every call
+
+/** Load the ringtone manifest once; absence is normal. */
+async function loadRingtoneManifest() {
+  if (ringtoneManifest !== null) return ringtoneManifest;
+  try {
+    const res = await api.readMediaManifest('ringtones');
+    ringtoneManifest = { ...(res && res.manifest), dir: res && res.dir };
+  } catch { ringtoneManifest = {}; }
+  return ringtoneManifest;
+}
+
+/** Turn a folder path from the main process into a URL the page can load. */
+function mediaUrl(dir, name) {
+  if (!dir) return `assets/ringtones/${name}`;
+  return 'file:///' + encodeURI(String(dir).replace(/\\/g, '/').replace(/^\/+/, '')) + '/' + name;
+}
+
+/** Play the configured ringtone, else a short synthesized chime. */
+function startRing(kind) {
+  stopRing();
+  loadRingtoneManifest().then((manifest) => {
+    const rel = CALLS ? CALLS.ringtoneFile(kind, manifest) : null;
+    if (!rel) { startRingToneFallback(kind); return; }
+    const name = rel.replace(/^assets\/ringtones\//, '');
+    const el = new Audio(mediaUrl(manifest.dir, name));
+    el.loop = true;
+    el.volume = 0.5;
+    el.onerror = () => startRingToneFallback(kind);
+    el.play().then(() => { ringtoneAudio = el; }).catch(() => startRingToneFallback(kind));
+  });
+}
+
+function stopRing() {
+  if (ringtoneAudio) { try { ringtoneAudio.pause(); } catch { /* gone */ } ringtoneAudio = null; }
+  if (ringFallbackTimer) { clearInterval(ringFallbackTimer); ringFallbackTimer = null; }
+  if (ringFallbackCtx) { try { ringFallbackCtx.close(); } catch { /* gone */ } ringFallbackCtx = null; }
+}
+
+let ringFallbackTimer = null;
+let ringFallbackCtx = null;
+/** A two-note chime, repeated, when no ringtone file ships with the build. */
+function startRingToneFallback(kind) {
+  if (kind === 'ended') return;
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    ringFallbackCtx = ctx;
+    const beep = (freq, at) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.exponentialRampToValueAtTime(0.12, at + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.32);
+      osc.start(at); osc.stop(at + 0.34);
+    };
+    const ring = () => {
+      if (!ringFallbackCtx) return;
+      const t = ctx.currentTime;
+      beep(660, t); beep(520, t + 0.4);
+    };
+    ring();
+    ringFallbackTimer = setInterval(ring, 1800);
+  } catch { /* no audio in this environment */ }
+}
+
+function callKeyOf(from, groupId) {
+  return groupId != null ? groupKey(groupId) : chatKey(from);
+}
+
+/** Paint the overlay for whichever call is live. */
+function renderCall() {
+  const call = state.call;
+  if (!call) { els.callOverlay.hidden = true; return; }
+  els.callOverlay.hidden = false;
+  const key = call.key;
+  els.callTitle.textContent = displayNameFor(key);
+  paintAvatar(els.callAvatar, peerUsername(key));
+  els.btnCallCam.hidden = !call.video;
+  els.btnCallMic.classList.toggle('off', !!call.micOff);
+  els.btnCallCam.classList.toggle('off', !!call.camOff);
+
+  if (call.status === 'active') {
+    els.callTimer.hidden = false;
+    els.callSub.textContent = CALLS ? CALLS.describeParticipants(call.names, state.username) : '';
+  } else {
+    els.callTimer.hidden = true;
+    els.callSub.textContent = CALLS ? (CALLS.callStatusLabel(call.status, call.video) || '') : '';
+  }
+}
+
+/** One video tile per remote peer; audio-only peers get an avatar tile. */
+function addVideoTile(peer, stream) {
+  let tile = els.callVideos.querySelector(`[data-peer="${CSS.escape(peer)}"]`);
+  if (!tile) {
+    tile = document.createElement('div');
+    tile.className = 'call-tile';
+    tile.dataset.peer = peer;
+    const label = document.createElement('div');
+    label.className = 'call-tile-name';
+    label.textContent = displayNameFor(peer);
+    const video = document.createElement('video');
+    video.autoplay = true; video.playsInline = true;
+    tile.append(video, label);
+    els.callVideos.append(tile);
+  }
+  const video = tile.querySelector('video');
+  if (video.srcObject !== stream) video.srcObject = stream;
+  if (!stream || stream.getVideoTracks().length === 0) tile.classList.add('audio-only');
+  else tile.classList.remove('audio-only');
+}
+
+function removeVideoTile(peer) {
+  const tile = els.callVideos.querySelector(`[data-peer="${CSS.escape(peer)}"]`);
+  if (tile) tile.remove();
+}
+
+/** Tear down every leg, stop the ring and hide the overlay. */
+function endCallLocal(reason) {
+  const call = state.call;
+  if (!call) return;
+  if (call.timer) clearInterval(call.timer);
+  for (const [, leg] of call.peers) { try { leg.pc.close(); } catch { /* gone */ } }
+  if (call.localStream) for (const t of call.localStream.getTracks()) { try { t.stop(); } catch { /* gone */ } }
+  state.call = null;
+  els.callVideos.replaceChildren();
+  stopRing();
+  els.callOverlay.hidden = true;
+  els.callRing.hidden = true;
+  if (reason) toast(reason);
+}
+
+function iceServers() {
+  const extra = Array.isArray(state.settings.iceServers) ? state.settings.iceServers : [];
+  const base = CALLS ? CALLS.DEFAULT_ICE : [];
+  return [...base, ...extra];
+}
+
+/**
+ * Build (or reuse) the peer connection for one remote peer. The offerer is the
+ * side that adds its tracks and creates the offer; the answerer only answers,
+ * so a leg is negotiated exactly once.
+ */
+function peerConnectionFor(peer, { initiator }) {
+  const call = state.call;
+  if (!call) return null;
+  let leg = call.peers.get(peer);
+  if (leg) return leg.pc;
+
+  const pc = new RTCPeerConnection({ iceServers: iceServers() });
+  leg = { pc, remoteSet: false };
+  call.peers.set(peer, leg);
+
+  if (call.localStream) {
+    for (const track of call.localStream.getTracks()) pc.addTrack(track, call.localStream);
+  }
+  pc.onicecandidate = (e) => {
+    if (e.candidate) {
+      api.callSignal({ callId: call.callId, to: peer, candidate: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate }).catch(() => {});
+    }
+  };
+  pc.ontrack = (e) => { addVideoTile(peer, e.streams[0]); };
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'connected' && call.status !== 'active') markCallActive();
+    if (pc.connectionState === 'failed') { toast(`Соединение с ${displayNameFor(peer)} прервано`); }
+  };
+
+  if (initiator) {
+    pc.onnegotiationneeded = async () => {
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await api.callSignal({ callId: call.callId, to: peer, sdp: pc.localDescription.sdp });
+      } catch { /* the call may have ended */ }
+    };
+  }
+  return pc;
+}
+
+function markCallActive() {
+  const call = state.call;
+  if (!call || call.status === 'active') return;
+  call.status = 'active';
+  call.startedAt = Date.now();
+  stopRing();
+  call.timer = setInterval(() => {
+    if (!state.call) return;
+    els.callTimer.textContent = CALLS ? CALLS.formatDuration(Date.now() - state.call.startedAt) : '00:00';
+  }, 500);
+  els.callTimer.textContent = '00:00';
+  renderCall();
+}
+
+/** Capture the microphone (and camera for a video call). */
+async function acquireLocalMedia(video) {
+  const constraints = { audio: true, video: video ? { width: 1280, height: 720 } : false };
+  const stream = await navigator.mediaDevices.getUserMedia(constraints);
+  return stream;
+}
+
+async function startCall(key, video) {
+  if (state.call) { toast('Уже идёт звонок'); return; }
+  if (CALLS && !CALLS.supportsCalls(key)) { toast('В этот чат нельзя позвонить'); return; }
+  let stream;
+  try {
+    stream = await acquireLocalMedia(video);
+  } catch {
+    toast('Нет доступа к микрофону' + (video ? ' или камере' : ''));
+    return;
+  }
+  const group = isGroupKey(key);
+  const target = group ? { groupId: groupIdOf(key) } : { to: peerUsername(key) };
+  let res;
+  try {
+    res = await api.callInvite({ ...target, video });
+  } catch (err) {
+    for (const t of stream.getTracks()) { try { t.stop(); } catch { /* gone */ } }
+    toast(err.message || 'Не удалось позвонить');
+    return;
+  }
+  state.call = {
+    callId: res.callId, key, video, role: 'caller', status: 'outgoing',
+    peers: new Map(), localStream: stream, startedAt: 0, timer: null,
+    pendingSignals: [], names: [state.username, ...(res.participants || [])]
+  };
+  // Legs are built when each peer answers (see the call.answered handler), not
+  // now: an offer sent before the callee picks up would start their microphone
+  // while the phone is still ringing.
+  startRing('outgoing');
+  renderCall();
+}
+
+/** Accept an incoming ring: build the mesh and answer. */
+async function acceptIncoming() {
+  const pending = state.call;
+  if (!pending || pending.status !== 'incoming') return;
+  let stream;
+  try {
+    stream = await acquireLocalMedia(pending.video);
+  } catch {
+    toast('Нет доступа к микрофону' + (pending.video ? ' или камере' : ''));
+    declineCall();
+    return;
+  }
+  pending.localStream = stream;
+  pending.role = 'callee';
+  stopRing();
+  const res = await api.callAnswer({ callId: pending.callId, video: pending.video });
+  const others = (res && res.participants) || [];
+  pending.names = [state.username, ...others.filter((u) => u !== state.username)];
+  // Legs are built lazily as each offer arrives (see onCallSignal); building
+  // them now would open connections to peers who have not picked up yet.
+  pending.status = 'connecting';
+  els.callRing.hidden = true;
+  renderCall();
+}
+
+function declineCall() {
+  const call = state.call;
+  if (!call) return;
+  if (call.callId) api.callDecline({ callId: call.callId }).catch(() => {});
+  endCallLocal('Звонок отклонён');
+}
+
+function hangup() {
+  const call = state.call;
+  if (!call) return;
+  if (call.callId) api.callHangup({ callId: call.callId }).catch(() => {});
+  endCallLocal('Звонок завершён');
+}
+
+/** An incoming ring arrived: show the card and start the ringtone. */
+function onIncomingCall(evt) {
+  if (state.call) {
+    // Already busy: tell the caller no one is free to pick up.
+    api.callDecline({ callId: evt.callId }).catch(() => {});
+    return;
+  }
+  const key = callKeyOf(evt.from, evt.groupId);
+  state.call = {
+    callId: evt.callId, key, video: !!evt.video, role: 'callee', status: 'incoming',
+    peers: new Map(), localStream: null, startedAt: 0, timer: null, names: [state.username]
+  };
+  els.ringTitle.textContent = displayNameFor(key);
+  els.ringSub.textContent = CALLS ? (CALLS.callStatusLabel('incoming', evt.video) || 'Входящий звонок') : 'Входящий звонок';
+  paintAvatar(els.ringAvatar, peerUsername(key));
+  els.callRing.hidden = false;
+  startRing('incoming');
+}
+
+/** Replay any signal frames that arrived before their leg was built. */
+function flushPendingSignals(peer) {
+  const call = state.call;
+  if (!call || !call.pendingSignals) return;
+  const mine = call.pendingSignals.filter((s) => s.from === peer);
+  call.pendingSignals = call.pendingSignals.filter((s) => s.from !== peer);
+  for (const s of mine) onCallSignal(s);
+}
+
+/** A signaling frame from a peer: an SDP offer/answer or an ICE candidate. */
+async function onCallSignal(evt) {
+  const call = state.call;
+  if (!call || evt.callId !== call.callId) return;
+  const peer = evt.from;
+  // The answerer builds the leg when the first signal from that peer arrives;
+  // the caller builds it on call.answered. A frame that beats its leg is held
+  // briefly rather than dropped, because dropping an offer would dead-end the
+  // call and dropping a candidate would only slow it down.
+  if (!call.peers.has(peer)) {
+    if (call.role === 'callee') peerConnectionFor(peer, { initiator: false });
+    else { call.pendingSignals.push(evt); return; }
+  }
+  const leg = call.peers.get(peer);
+  const pc = leg && leg.pc;
+  if (!pc) return;
+  try {
+    if (evt.sdp) {
+      const desc = { type: pc.signalingState === 'have-local-offer' ? 'answer' : 'offer', sdp: evt.sdp };
+      await pc.setRemoteDescription(desc);
+      leg.remoteSet = true;
+      if (desc.type === 'offer') {
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        await api.callSignal({ callId: call.callId, to: peer, sdp: pc.localDescription.sdp });
+      }
+    } else if (evt.candidate) {
+      try { await pc.addIceCandidate(evt.candidate); } catch { /* late candidate */ }
+    }
+  } catch { /* a malformed frame must not break the call */ }
+}
+
+els.btnCallAudio.addEventListener('click', () => {
+  if (state.activePeer) startCall(state.activePeer, false);
+});
+els.btnCallVideo.addEventListener('click', () => {
+  if (state.activePeer) startCall(state.activePeer, true);
+});
+els.btnRingAccept.addEventListener('click', acceptIncoming);
+els.btnRingDecline.addEventListener('click', declineCall);
+els.btnCallEnd.addEventListener('click', hangup);
+els.btnCallMic.addEventListener('click', () => {
+  const call = state.call; if (!call || !call.localStream) return;
+  call.micOff = !call.micOff;
+  for (const t of call.localStream.getAudioTracks()) t.enabled = !call.micOff;
+  renderCall();
+});
+els.btnCallCam.addEventListener('click', () => {
+  const call = state.call; if (!call || !call.localStream) return;
+  call.camOff = !call.camOff;
+  for (const t of call.localStream.getVideoTracks()) t.enabled = !call.camOff;
+  renderCall();
+});
+els.btnCallScreen.addEventListener('click', async () => {
+  const call = state.call; if (!call) return;
+  try {
+    const display = await navigator.mediaDevices.getDisplayMedia({ video: true });
+    const track = display.getVideoTracks()[0];
+    for (const [peer, leg] of call.peers) {
+      const sender = leg.pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+      if (sender) sender.replaceTrack(track);
+    }
+    toast('Показ экрана включён');
+  } catch { /* the user dismissed the picker */ }
+});
+
+/* ============================= БУРМАЛДА FM ============================= */
+// A local station: the playlist is a JSON manifest beside the audio files, so
+// nothing has to change in code when the user adds tracks. With no manifest the
+// station is honestly empty rather than pretending to play.
+
+async function loadFmStation() {
+  const fm = state.fm;
+  let res = null;
+  try { res = await api.readMediaManifest('fm'); }
+  catch { /* no manifest yet — the station is empty */ }
+  const manifest = res && res.manifest;
+  fm.dir = (res && res.dir) || null;
+  fm.playlist = FM ? FM.buildPlaylist(manifest, 'assets/fm') : [];
+  // Point each track at the writable media folder the main process reported.
+  if (fm.dir) {
+    for (const t of fm.playlist) {
+      t.file = mediaUrl(fm.dir, t.file.replace(/^assets\/fm\//, ''));
+      if (t.cover) t.cover = mediaUrl(fm.dir, t.cover.replace(/^assets\/fm\//, ''));
+    }
+  }
+  if (fm.index >= fm.playlist.length) fm.index = fm.playlist.length ? 0 : -1;
+  renderFm();
+}
+
+function fmCurrent() {
+  const fm = state.fm;
+  return fm.index >= 0 ? fm.playlist[fm.index] : null;
+}
+
+function renderFm() {
+  const fm = state.fm;
+  const track = fmCurrent();
+  els.fmEmpty.hidden = fm.playlist.length > 0;
+  els.fmListCount.textContent = FM ? FM.trackCountLabel(fm.playlist.length) : `${fm.playlist.length}`;
+  els.btnFmPlay.querySelector('use').setAttribute('href', fm.playing ? '#i-pause' : '#i-play');
+  els.btnFmShuffle.classList.toggle('off', !fm.shuffle);
+  els.btnFmRepeat.classList.toggle('active', fm.mode !== 'off');
+  els.btnFmRepeat.dataset.mode = fm.mode;
+
+  if (track) {
+    els.fmNowTitle.textContent = track.title;
+    els.fmNowSub.textContent = track.artist;
+    if (track.cover) els.fmArt.innerHTML = `<img src="${escapeHtml(track.cover)}" alt="" />`;
+  } else {
+    els.fmNowTitle.textContent = 'Тишина в эфире';
+    els.fmNowSub.textContent = 'Добавьте треки, чтобы выйти в эфир';
+  }
+
+  els.fmList.replaceChildren();
+  fm.playlist.forEach((t, i) => {
+    const li = document.createElement('li');
+    li.className = 'fm-track' + (i === fm.index ? ' active' : '');
+    li.innerHTML = `<span class="fm-track-num">${i === fm.index && fm.playing ? icon('i-pause') : i + 1}</span>` +
+      `<span class="fm-track-meta"><span class="fm-track-title">${escapeHtml(t.title)}</span>` +
+      `<span class="fm-track-artist">${escapeHtml(t.artist)}</span></span>` +
+      (t.duration ? `<span class="fm-track-dur">${FM.formatTime(t.duration)}</span>` : '');
+    li.addEventListener('click', () => playFmIndex(i));
+    els.fmList.append(li);
+  });
+}
+
+function ensureFmAudio() {
+  const fm = state.fm;
+  if (fm.audio) return fm.audio;
+  const audio = new Audio();
+  audio.preload = 'metadata';
+  audio.addEventListener('timeupdate', () => {
+    if (!fm.audio || !fm.audio.duration) return;
+    els.fmSeek.value = String((fm.audio.currentTime / fm.audio.duration) * 100);
+    els.fmTime.textContent = FM.formatTime(fm.audio.currentTime);
+    els.fmDur.textContent = FM.formatTime(fm.audio.duration);
+  });
+  audio.addEventListener('ended', () => fmAdvance(1));
+  audio.addEventListener('error', () => { fm.playing = false; renderFm(); });
+  fm.audio = audio;
+  return audio;
+}
+
+function playFmIndex(i) {
+  const fm = state.fm;
+  if (i < 0 || i >= fm.playlist.length) return;
+  fm.index = i;
+  const track = fm.playlist[i];
+  const audio = ensureFmAudio();
+  audio.src = track.file;
+  audio.play().then(() => { fm.playing = true; renderFm(); }).catch(() => { fm.playing = false; renderFm(); });
+  renderFm();
+}
+
+function toggleFmPlay() {
+  const fm = state.fm;
+  if (!fm.playlist.length) { toast('Плейлист пуст'); return; }
+  if (fm.index < 0) { playFmIndex(0); return; }
+  const audio = ensureFmAudio();
+  if (fm.playing) { audio.pause(); fm.playing = false; }
+  else { audio.play().then(() => { fm.playing = true; }).catch(() => {}); }
+  renderFm();
+}
+
+function fmAdvance(dir) {
+  const fm = state.fm;
+  if (!fm.playlist.length) return;
+  const next = dir > 0
+    ? FM.nextIndex(fm.playlist.length, fm.index, fm.mode, fm.shuffle)
+    : FM.prevIndex(fm.playlist.length, fm.index, fm.mode, fm.shuffle);
+  if (next < 0) { fm.playing = false; renderFm(); return; }
+  playFmIndex(next);
+}
+
+function openFm() {
+  els.fmOverlay.hidden = false;
+  loadFmStation();
+}
+function closeFm() {
+  els.fmOverlay.hidden = true;
+  const fm = state.fm;
+  if (fm.audio && fm.playing) { fm.audio.pause(); fm.playing = false; }
+}
+
+els.btnFmClose.addEventListener('click', closeFm);
+els.fmOverlay.addEventListener('click', (e) => { if (e.target === els.fmOverlay) closeFm(); });
+els.btnFmPlay.addEventListener('click', toggleFmPlay);
+els.btnFmNext.addEventListener('click', () => fmAdvance(1));
+els.btnFmPrev.addEventListener('click', () => fmAdvance(-1));
+els.btnFmShuffle.addEventListener('click', () => { state.fm.shuffle = !state.fm.shuffle; renderFm(); });
+els.btnFmRepeat.addEventListener('click', () => { state.fm.mode = FM.cycleMode(state.fm.mode); renderFm(); });
+els.fmSeek.addEventListener('input', () => {
+  const fm = state.fm;
+  if (!fm.audio || !fm.audio.duration) return;
+  fm.audio.currentTime = (Number(els.fmSeek.value) / 100) * fm.audio.duration;
+});
+
 /* -------------------------------- events -------------------------------- */
 // Events that add, change or remove a message somewhere; they invalidate the
 // cached global-search history slice.
@@ -5203,6 +5768,54 @@ api.onEvent((evt) => {
         state.typing.delete(peer);
       }
       updatePeerSub();
+      break;
+    }
+
+    case 'call.incoming': {
+      onIncomingCall(evt);
+      break;
+    }
+
+    case 'call.answered': {
+      const call = state.call;
+      if (!call || evt.callId !== call.callId) break;
+      // This peer picked up: build the leg and let negotiation begin. Any
+      // signals that raced ahead of the answer are flushed now.
+      const peer = evt.from;
+      call.names = [...new Set([...call.names, peer])];
+      peerConnectionFor(peer, { initiator: true });
+      flushPendingSignals(peer);
+      renderCall();
+      break;
+    }
+
+    case 'call.signal': {
+      onCallSignal(evt);
+      break;
+    }
+
+    case 'call.declined': {
+      const call = state.call;
+      if (!call || evt.callId !== call.callId) break;
+      endCallLocal('Звонок отклонён');
+      break;
+    }
+
+    case 'call.ended': {
+      const call = state.call;
+      if (!call || evt.callId !== call.callId) break;
+      endCallLocal('Собеседник завершил звонок');
+      break;
+    }
+
+    case 'call.left': {
+      const call = state.call;
+      if (!call || evt.callId !== call.callId) break;
+      const leg = call.peers.get(evt.from);
+      if (leg) { try { leg.pc.close(); } catch { /* gone */ } call.peers.delete(evt.from); }
+      removeVideoTile(evt.from);
+      call.names = call.names.filter((n) => n !== evt.from);
+      renderCall();
       break;
     }
 
@@ -6435,6 +7048,7 @@ els.drawer.addEventListener('click', (e) => {
   else if (action === 'saved') startChatWith(state.username);
   else if (action === 'scheduled') openScheduled();
   else if (action === 'folders') openFolders();
+  else if (action === 'burmalda') openFm();
   else if (action === 'settings') els.btnSettings.click();
   else if (action === 'new-chat') { els.search.value = ''; els.btnSearchClear.hidden = true; els.search.focus(); }
   else if (action === 'archived') {

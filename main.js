@@ -1,11 +1,26 @@
 'use strict';
 
 const path = require('path');
+const fs = require('fs');
 const { app, BrowserWindow, ipcMain, shell, Menu } = require('electron');
 const { SleePhyClient } = require('./src/lib/client');
 
 let win = null;
 let client = null;
+
+// Templates seeded into the user's writable media folder on first use.
+const FM_TEMPLATE = {
+  _comment: 'Бурмалда FM плейлист. Положите аудиофайлы в эту папку и перечислите их здесь. '
+    + 'Поддерживаются mp3, ogg, wav, m4a, flac. Можно писать просто имена файлов '
+    + 'или объекты { file, title, artist, cover }.',
+  tracks: []
+};
+const RINGTONES_TEMPLATE = {
+  _comment: 'Рингтоны. Положите файлы в эту папку и укажите их здесь: incoming — входящий '
+    + 'звонок, outgoing — исходящий, default — для всего остального. '
+    + 'Если файла нет, играет встроенный сигнал.',
+  ringtones: {}
+};
 
 function newClient() {
   return new SleePhyClient({
@@ -36,6 +51,14 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, 'src', 'index.html'));
   win.once('ready-to-show', () => win.show());
+
+  // Calls need the microphone and camera. Electron denies both by default, so
+  // grant only these two to our own window and nothing else — a page that is
+  // not ours never reaches here (external links open in the system browser).
+  const ses = win.webContents.session;
+  const MEDIA = new Set(['media', 'audioCapture', 'videoCapture']);
+  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(MEDIA.has(permission)));
+  ses.setPermissionCheckHandler((_wc, permission) => MEDIA.has(permission));
 
   // Hide the menu bar. The application menu stays installed (below) so the
   // standard shortcuts keep working; nothing is drawn on screen.
@@ -142,6 +165,36 @@ app.whenReady().then(async () => {
   ipcMain.handle('sleephy:getSettings', async () => client.getSettings());
   ipcMain.handle('sleephy:saveSettings', async (_e, settings) => client.saveSettings(settings));
   ipcMain.handle('sleephy:setPrivacy', async (_e, privacy) => client.setPrivacy(privacy));
+
+  // Calls (signaling only; media flows peer-to-peer)
+  ipcMain.handle('sleephy:callInvite', async (_e, payload) => client.callInvite(payload));
+  ipcMain.handle('sleephy:callAnswer', async (_e, payload) => client.callAnswer(payload));
+  ipcMain.handle('sleephy:callSignal', async (_e, payload) => client.callSignal(payload));
+  ipcMain.handle('sleephy:callDecline', async (_e, payload) => client.callDecline(payload));
+  ipcMain.handle('sleephy:callHangup', async (_e, payload) => client.callHangup(payload));
+
+  // Local media assets: the FM playlist and the ringtone list. These live in a
+  // writable folder under userData, so a user can drop in their own music and
+  // ringtones after the app is installed; the folder is seeded from a template
+  // on first use so it is discoverable.
+  ipcMain.handle('sleephy:readMediaManifest', async (_e, kind) => {
+    const spec = kind === 'ringtones'
+      ? { dir: 'ringtones', file: 'manifest.json', template: RINGTONES_TEMPLATE }
+      : { dir: 'fm', file: 'playlist.json', template: FM_TEMPLATE };
+    const userDir = path.join(app.getPath('userData'), 'media', spec.dir);
+    const userFile = path.join(userDir, spec.file);
+    if (!fs.existsSync(userFile)) {
+      try {
+        fs.mkdirSync(userDir, { recursive: true });
+        fs.writeFileSync(userFile, JSON.stringify(spec.template, null, 2));
+      } catch { /* a read-only profile just has no media */ }
+    }
+    try {
+      return { dir: userDir, manifest: JSON.parse(fs.readFileSync(userFile, 'utf8')) };
+    } catch {
+      return { dir: userDir, manifest: null };
+    }
+  });
 
   // Groups
   ipcMain.handle('sleephy:createGroup', async (_e, payload) => client.createGroup(payload));

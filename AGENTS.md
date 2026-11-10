@@ -706,3 +706,46 @@ arriving now can change a header that is already on screen.
   cancel never delivers, "send now" and the sweep both deliver exactly once, and
   the send time is clamped. `test/ui-scheduled.js` drives the real picker, badge,
   list, send-now and cancel.
+
+## Calls and Бурмалда FM (v0.15.0)
+
+- **Calls are signaling only.** The relay (`handleCallInvite`/`Answer`/`Signal`/
+  `Decline`/`Hangup` in `server/index.js`) forwards WebRTC handshake frames and
+  never touches media, which flows peer-to-peer under DTLS-SRTP. Call state lives
+  in the in-memory `calls` Map keyed by `c<seq>`; nothing about a call is written
+  to the database. `call.participants` is a `Set` of usernames and `callFanout`
+  is the single broadcast helper (everyone on the call except the sender).
+- **A group call is a mesh, capped at `CALL_MAX_PARTICIPANTS` (6).** Each peer
+  opens one `RTCPeerConnection` per other peer; `call.signal` carries a `to` field
+  so a frame addresses one leg. The roster comes from the group's member list at
+  invite time; `call.answer` replies with the others so the answerer knows which
+  legs to build.
+- **Legs are built on answer, not on invite.** `startCall` rings first and builds
+  a leg only when a `call.answered` arrives, so an offer cannot open the callee's
+  microphone while their phone is still ringing. `acceptIncoming` builds legs
+  lazily as offers arrive. `flushPendingSignals(peer)` buffers any signal that
+  reaches a device before its leg exists.
+- **A dropped socket must not leave a phantom in a call.** `unbindSocket` removes
+  the user from every call and fans out `call.left`, or `call.ended` when they
+  were the second-to-last (mirroring `handleCallHangup`).
+- **ICE servers are user-supplied.** `CALLS.DEFAULT_ICE` is empty, so calls work
+  on one LAN with no configuration; Settings → Advanced writes `iceServers` into
+  saved settings and `iceServers()` merges them under the defaults.
+- **Бурмалда FM reads a writable folder.** `sleephy:readMediaManifest` seeds and
+  reads `userData/media/{fm,ringtones}` (templates `FM_TEMPLATE` /
+  `RINGTONES_TEMPLATE` in `main.js`) and returns `{ dir, manifest }`. This matters
+  because an installed app's own files sit in read-only `app.asar`; a user must be
+  able to drop music in after install. The renderer turns `dir` into a `file://`
+  URL via `mediaUrl(dir, name)`. `src/lib/fm.js` stays pure: `buildPlaylist(manifest,
+  base)` takes the base folder so the same code serves the app and the tests.
+- **Empty is honest.** With no manifest the station shows "тишина в эфире" and
+  calls fall back to a synthesized chime (`startRingToneFallback`), so a missing
+  folder is never an error.
+- **Port 8795 is shared by several suites** (`features`, `safety`, `accounts`,
+  `shots`, `sms-adapter`). A leftover `server/sms-adapter.js` or relay process
+  squats on it and makes those suites fail with `EADDRINUSE` / "Vault is locked";
+  kill the stray process before believing a failure. Verify any suspected
+  regression against a clean tree with `git stash -u` before calling it
+  pre-existing.
+- **`test/ui-calls.js` exercises real WebRTC** with `--use-fake-device-for-media-stream`
+  and drives the FM station against the launched profile's own `media/fm` folder.

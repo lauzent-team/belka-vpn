@@ -1066,6 +1066,18 @@ function bindSocket(username, ws) {
 
 function unbindSocket(ws) {
   if (!ws.username) return;
+  // A dropped socket must not leave a phantom in a call: drop the user from
+  // every call they were on and tell the others they left.
+  for (const [id, call] of calls) {
+    if (!call.participants.has(ws.username)) continue;
+    call.participants.delete(ws.username);
+    if (call.participants.size <= 1) {
+      callFanout(call, ws.username, { t: 'call.ended', callId: id, from: ws.username });
+      calls.delete(id);
+    } else {
+      callFanout(call, ws.username, { t: 'call.left', callId: id, from: ws.username });
+    }
+  }
   const set = sockets.get(ws.username);
   if (!set) return;
   set.delete(ws);
@@ -1864,6 +1876,130 @@ function handleTyping(ws, msg, rid) {
   deliverToUser(msg.to, {
     t: 'typing', from: ws.username, state: msg.state === 'stop' ? 'stop' : 'start'
   });
+}
+
+/* --------------------------------- calls --------------------------------- */
+// The relay is a switchboard, not a mixer: it forwards the little WebRTC
+// handshake frames (offer/answer/ICE) and never touches the audio or video,
+// which flow peer-to-peer, encrypted by DTLS-SRTP. It cannot listen in any more
+// than it can read a message. A call is kept as in-memory state only — nothing
+// about who rang whom is written to the database.
+
+/** Call state per id: { from, to, groupId, video, participants:Set, startedAt }. */
+const calls = new Map();
+let callSeq = 0;
+const CALL_MAX_PARTICIPANTS = 6; // a mesh, so each peer connects to every other
+
+function callState(callId) { return calls.get(String(callId)) || null; }
+
+/** A participant may signal on a call only if they are on it. */
+function callAllows(call, username) {
+  if (!call || !username) return false;
+  return call.participants.has(username);
+}
+
+/** Fan a signaling frame out to every participant except the sender. */
+function callFanout(call, exceptUser, payload) {
+  for (const u of call.participants) {
+    if (u !== exceptUser) deliverToUser(u, payload);
+  }
+}
+
+function handleCallInvite(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const video = !!msg.video;
+
+  // A group call rings every other member; a direct call rings one peer.
+  if (msg.groupId != null) {
+    const groupId = Number(msg.groupId);
+    if (!q.isMember.get(groupId, ws.username)) return bad(ws, rid, 'Not a member');
+    const participants = new Set(q.membersOf.all(groupId).map((m) => m.username));
+    if (participants.size > CALL_MAX_PARTICIPANTS) {
+      return bad(ws, rid, `Групповой звонок — до ${CALL_MAX_PARTICIPANTS} участников`);
+    }
+    const callId = `c${++callSeq}`;
+    calls.set(callId, { from: ws.username, to: null, groupId, video, participants, startedAt: Date.now() });
+    reply(ws, rid, { t: 'call.ringing', callId, video, groupId, participants: [...participants].filter((u) => u !== ws.username) });
+    callFanout(calls.get(callId), ws.username, {
+      t: 'call.incoming', callId, from: ws.username, video, groupId
+    });
+    return;
+  }
+
+  const to = msg.to;
+  if (typeof to !== 'string' || !q.getUser.get(to)) return bad(ws, rid, 'No such user');
+  if (to === ws.username) return bad(ws, rid, 'Cannot call yourself');
+  const callId = `c${++callSeq}`;
+  calls.set(callId, { from: ws.username, to, groupId: null, video, participants: new Set([ws.username, to]), startedAt: Date.now() });
+  reply(ws, rid, { t: 'call.ringing', callId, video, participants: [to] });
+  deliverToUser(to, { t: 'call.incoming', callId, from: ws.username, video });
+}
+
+function handleCallAnswer(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const call = callState(msg.callId);
+  if (!callAllows(call, ws.username)) return bad(ws, rid, 'No such call');
+  // Hand the answerer the roster of everyone else already on the call, so a
+  // mesh knows exactly which legs to build and does not have to guess.
+  const others = [...call.participants].filter((u) => u !== ws.username);
+  reply(ws, rid, { t: 'ok', action: 'call.answer', participants: others });
+  callFanout(call, ws.username, {
+    t: 'call.answered', callId: String(msg.callId), from: ws.username, video: call.video
+  });
+}
+
+/**
+ * WebRTC handshake traffic: the SDP offer/answer and ICE candidates. `to`
+ * names the single peer this frame is for, so a mesh call can address one leg
+ * at a time; without it the frame goes to everyone else on the call.
+ */
+function handleCallSignal(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const call = callState(msg.callId);
+  if (!callAllows(call, ws.username)) return bad(ws, rid, 'No such call');
+  const frame = {
+    t: 'call.signal', callId: String(msg.callId), from: ws.username,
+    sdp: typeof msg.sdp === 'string' ? msg.sdp : null,
+    candidate: msg.candidate || null
+  };
+  reply(ws, rid, { t: 'ok', action: 'call.signal' });
+  if (typeof msg.to === 'string' && call.participants.has(msg.to)) {
+    deliverToUser(msg.to, { ...frame, to: msg.to });
+  } else {
+    callFanout(call, ws.username, frame);
+  }
+}
+
+function handleCallDecline(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const call = callState(msg.callId);
+  if (!call) return reply(ws, rid, { t: 'ok', action: 'call.decline' });
+  reply(ws, rid, { t: 'ok', action: 'call.decline' });
+  callFanout(call, ws.username, { t: 'call.declined', callId: String(msg.callId), from: ws.username });
+  // A direct call is over once the callee declines; a group call keeps going
+  // for the others, so only the two-party case tears down the whole call.
+  if (!call.groupId) calls.delete(String(msg.callId));
+}
+
+function handleCallHangup(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const call = callState(msg.callId);
+  reply(ws, rid, { t: 'ok', action: 'call.hangup' });
+  if (!call) return;
+  const id = String(msg.callId);
+  if (call.groupId) {
+    // Leaving a group call removes just this participant; the rest carry on.
+    call.participants.delete(ws.username);
+    callFanout(call, ws.username, { t: 'call.left', callId: id, from: ws.username });
+    if (call.participants.size <= 1) {
+      // One person left: the call is over for them too, so close their panel.
+      callFanout(call, ws.username, { t: 'call.ended', callId: id, from: ws.username });
+      calls.delete(id);
+    }
+  } else {
+    calls.delete(id);
+    callFanout(call, ws.username, { t: 'call.ended', callId: id, from: ws.username });
+  }
 }
 
 function handleChatsList(ws, msg, rid) {
@@ -3057,6 +3193,11 @@ const handlers = {
   'search.global': handleSearchGlobal,
   reaction: handleReaction,
   typing: handleTyping,
+  'call.invite': handleCallInvite,
+  'call.answer': handleCallAnswer,
+  'call.signal': handleCallSignal,
+  'call.decline': handleCallDecline,
+  'call.hangup': handleCallHangup,
   'chats.list': handleChatsList,
   'chat.settings': handleChatSettings,
   'chat.ttl': handleChatTtl,

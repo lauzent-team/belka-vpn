@@ -68,6 +68,15 @@ and forwards ciphertext it cannot read.
   encrypted copy, so the relay stores only ciphertext and never learns the text,
   the picture or who watched what. The author sees a view count, not a list
 
+**Calls and music**
+- **Calls** — one-to-one and **group** audio and video calls, with a ring card,
+  mute, camera toggle, screen share and a running timer. Media flows
+  peer-to-peer (WebRTC); the relay forwards only the handshake, so it never
+  hears or sees the call. A group call is a mesh: one connection per participant
+- **Бурмалда FM** — a built-in music player. Drop your own audio files and a
+  playlist into the app's media folder and it plays them with shuffle, repeat
+  one/all, a seek bar and a track list
+
 **Search**
 - Find people and channels by username from the top box
 - **In-chat search** with filters — by sender (me / them), by type (media, photo,
@@ -157,11 +166,37 @@ overrides it.
 ## Build a Windows installer
 
 ```bash
-npm run dist:win      # -> dist/SleePhy-Setup-0.12.0.exe
+npm run dist:win      # -> dist/SleePhy-Setup-0.15.0.exe
 ```
 
 Building a Windows `.exe` from Linux/macOS uses Wine; the CI workflow does this
 on a native Windows runner instead. See `.github/workflows/build.yml`.
+
+## Your own music and ringtones
+
+The **Бурмалда FM** player and the call ringtones read from a folder beside the
+app's data, so they keep working after the app is installed (an installed app's
+own files are read-only):
+
+- Windows: `%APPDATA%\SleePhy\media\fm\` and `...\media\ringtones\`
+- Linux: `~/.config/SleePhy/media/fm/` and `.../media/ringtones/`
+
+Open Бурмалда FM once and the app creates the folder with a starter
+`playlist.json`. Drop audio files in and list them:
+
+```json
+{ "tracks": ["night-air.mp3", { "file": "dawn.ogg", "title": "Рассвет", "artist": "Бурмалда" }] }
+```
+
+For a custom ringtone, put a file in `media/ringtones/` and name it in
+`manifest.json`:
+
+```json
+{ "ringtones": { "incoming": "ring.mp3", "outgoing": "dial.mp3" } }
+```
+
+With no files the station is honestly empty ("тишина в эфире") and calls use a
+built-in chime, so nothing is broken by a missing folder.
 
 ## Tests
 
@@ -190,6 +225,10 @@ xvfb-run -a node test/ui-ttl.js           # the auto-delete timer, clicked for r
 xvfb-run -a node test/ui-scheduled.js     # "send later" picker and list, clicked for real (9 checks)
 node test/safety.js                       # safety numbers: both ends agree, per pair (8 checks)
 xvfb-run -a node test/ui-safety.js        # the safety number in the profile, clicked for real (6 checks)
+node test/calls-logic.js                  # call labels, ringtone choice, participant text (15 checks)
+node test/calls.js                        # call signaling over a real relay (13 checks)
+xvfb-run -a node test/ui-calls.js         # real calls and the FM station, clicked for real (12 checks)
+node test/fm-logic.js                     # playlist, shuffle and repeat rules (17 checks)
 ```
 
 The end-to-end suite verifies, among other things, that the plaintext never
@@ -272,8 +311,11 @@ This is an honest list. The app should not be described as more secure than it i
 - **Metadata is visible to the server** — who talks to whom, when, and message
   sizes.
 - **No multi-device support** — one key per account, tied to one device.
-- **No calls.** Voice and video calls are not implemented; messages, pictures,
-  files and voice notes are.
+- **Calls are best-effort.** One-to-one and group audio/video calls work over
+  WebRTC, but they rely on a signaling relay and, across the public internet, on
+  ICE/STUN servers. Set them in Settings → Advanced; on one local network calls
+  connect without any. Group calls are a mesh, so they get heavy past a handful
+  of people.
 - **Message history lives on the server** until you clear the chat. It is stored
   as ciphertext the server cannot read, and "Clear history" deletes it — but a
   copy exists on the relay until then.
@@ -293,6 +335,8 @@ server/index.js        WebSocket relay + accounts, profiles and chats (node:sqli
 server/sms-adapter.js  relay JSON -> provider API, with per-number throttling
 src/lib/crypto.js      libsodium + scrypt helpers (main process)
 src/lib/client.js      connection, identity, encryption (main process)
+src/lib/calls.js       call labels, ringtone choice, participant text
+src/lib/fm.js          Бурмалда FM playlist and play-order rules
 main.js                Electron main process and IPC
 preload.js             the only renderer bridge (window.sleephy)
 src/index.html|css|js  interface
