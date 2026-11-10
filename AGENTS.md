@@ -375,3 +375,24 @@ arriving now can change a header that is already on screen.
   handlers at the bottom of `server/index.js` print and return, so one bad
   connection cannot take the relay down for everyone. The async SMS `deliverCode()`
   is the known source of stray rejections; keep the guards even after it is fixed.
+- **The public link 502s whenever the relay is a child of a chat session.** Start
+  it detached: `deploy/healthcheck.sh` launches `supervise.sh` with `setsid`, so
+  the supervisor reparents to PID 1 and survives the session ending. Verify with
+  `ps -o pid,ppid,sess -p <supervisor>` — `ppid` must be `1`.
+- **After changing server code, restart the relay, not just the client.** The
+  supervisor runs the code as it was when it started; a shipped client that talks
+  to a stale relay sees `undefined` for new fields. `deploy/healthcheck.sh` only
+  starts a relay when none answers, so kill the supervisor and relay first.
+
+## Privacy and social links (v0.8.0)
+
+- **Privacy is enforced by the relay, never by the client.** `users.last_seen_hidden`
+  and `users.profile_hidden` are read in `publicProfile(user, viewer)`; a hidden
+  profile comes back as `@handle` plus the verified badge, with name, bio, picture,
+  streak and socials cleared. Every call site that hands a profile to someone else
+  must pass the viewer — presence broadcasts, `chats.list`, group members, channel
+  owners, search, directory. A new call site that forgets the viewer leaks.
+- **`socials` is a small JSON array of `{network, url}`.** `cleanSocials` checks
+  the network against `SOCIAL_NETWORKS` and requires an `http(s)` URL, so a
+  `javascript:`/`data:` link cannot be stored. The client validates again before
+  rendering, because it must not trust stored data to build an `href`.
