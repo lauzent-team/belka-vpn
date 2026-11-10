@@ -460,3 +460,37 @@ arriving now can change a header that is already on screen.
   game invite and a gift over the real relay. Electron UI tests need
   `xvfb-run`; a test that launches a window without it fails on `Missing X
   server or $DISPLAY`.
+
+## Polls, drafts and folders (v0.9.0)
+
+- **A poll is an ordinary encrypted message** (`pollPayloadOf` / `.poll-msg`),
+  encoded by `src/lib/polls.js` (`window.SleePhyPolls`) so the relay stays blind
+  and needs no poll table. The library is DOM-free and unit-tested by
+  `test/polls.js`.
+- **A vote is a second encrypted message**, not a server call: `encodeVote`
+  carries `{t:'poll-vote', pollId, options}`. Both devices recompute the tally
+  locally, which is why a vote needs no relay state and why the sender's own
+  vote shows up immediately.
+- **Tap the same option again to withdraw**, and a multiple-choice vote keeps
+  more than one option. Voting never posts a "…voted" bubble — the card updates
+  in place.
+- **The tally bar sets `style.width` from JS, never an inline `style="…"`.** The
+  CSP is `style-src 'self'` with no `unsafe-inline`, so an inline width style is
+  dropped and the bar would sit at zero.
+- **Drafts are per-account settings** (`state.drafts`, `setDraft`/`loadDrafts`/
+  `saveDrafts`), keyed by chat. `setDraft` coalesces keystrokes into one write
+  with a 600 ms timer. `resetToAuth` and `restartSession` clear them so a
+  different account never inherits another's text. `test/ui-drafts.js` proves a
+  draft survives a full app restart by reusing the same `--user-data-dir`.
+- **Folders live in `src/lib/folders.js`** (`window.SleePhyFolders`), a pure
+  library: `kindOf` classifies a chat, `normalize`/`normalizeAll` clean stored
+  data, and `filter` selects chats for a folder. Unit tests are `test/folders.js`.
+- **An exclusive folder owns its chats.** `exclusiveKeys(folders, descs)` returns
+  the chats an exclusive folder claims, and the "all" list drops them, matching
+  Telegram. A folder tab is edited by right-click; the "all" tab is built in and
+  cannot be renamed or deleted.
+- **`test/ui-folders.js` drives the real UI** — create, refuse a nameless folder,
+  switch tabs, and survive a restart. Run it with `xvfb-run`.
+- **When a UI test waits for a hidden element, use `waitForSelector(sel, {state:
+  'hidden'})`.** Playwright's default wait is for *visible*, so waiting on
+  `#folder-editor[hidden]` hangs forever even though the element is correct.

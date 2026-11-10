@@ -23,6 +23,7 @@ const invoke = (channel, ...args) =>
 contextBridge.exposeInMainWorld('sleephy', {
   connect: (url) => invoke('sleephy:connect', url),
   status: () => invoke('sleephy:status'),
+  version: () => invoke('sleephy:version'),
   register: (payload) => invoke('sleephy:register', payload),
   login: (payload) => invoke('sleephy:login', payload),
   requestCode: (phone) => invoke('sleephy:requestCode', phone),

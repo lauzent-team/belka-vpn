@@ -36,10 +36,24 @@ and forwards ciphertext it cannot read.
   content
 - Offline delivery: messages sent while you were away arrive on reconnect
 - Message history, decrypted locally, grouped by day
+- **Drafts** — what you typed but did not send is kept per chat and shown in the
+  chat list as `Черновик: …`
+
+**Groups, channels and extras**
+- **Group chats** with a member list and sender names on each bubble
+- **Channels** — one-to-many broadcasts you can discover and follow
+- **Bots** and **mini-games** (tic-tac-toe, battleship) played in a chat, one
+  move per encrypted message
+- **Gifts** — a small sticker-like present in a chat
+- **Polls** — a question with options, single- or multiple-choice, sent as an
+  ordinary encrypted message; the tally is local and updates on both devices
 
 **Chat management**
 - Pin, mute and archive conversations
 - Unread badges, with a separate section for archived chats
+- **Chat folders** ("папки") — named filters by chat type (personal, groups,
+  channels, bots, saved) with an unread-only option and an exclusive mode that
+  takes its chats out of the main list
 - Mark as read, clear history, delete a chat
 
 **Desktop**
@@ -126,7 +140,14 @@ node test/features.js                     # profiles, chats, replies (32 checks)
 node test/sms-adapter.js                  # SMS delivery against a fake provider (19 checks)
 xvfb-run -a node test/ui.js               # drives the real Electron UI (16 checks)
 xvfb-run -a node test/ui-features.js      # the new features, clicked for real (22 checks)
+xvfb-run -a node test/ui-drafts.js        # drafts survive a restart (5 checks)
+xvfb-run -a node test/ui-polls.js         # polls voted on by two devices (11 checks)
+xvfb-run -a node test/ui-folders.js       # chat folders, tabs and restart (7 checks)
+xvfb-run -a node test/ui-bots-games.js    # a game and a gift over the relay
 xvfb-run -a node test/connection.js       # connection and error handling (4 checks)
+node test/folders.js                      # folder filter rules (12 checks)
+node test/polls.js                        # poll encode, validate, tally (12 checks)
+node test/games.js                        # game rules (21 checks)
 ```
 
 The end-to-end suite verifies, among other things, that the plaintext never
@@ -207,7 +228,7 @@ This is an honest list. The app should not be described as more secure than it i
 - **Metadata is visible to the server** — who talks to whom, when, and message
   sizes.
 - **No multi-device support** — one key per account, tied to one device.
-- **No file or image attachments, no group chats, no calls.**
+- **No file or image attachments and no calls.**
 - **Message history lives on the server** until you clear the chat. It is stored
   as ciphertext the server cannot read, and "Clear history" deletes it — but a
   copy exists on the relay until then.

@@ -1418,6 +1418,11 @@ async function enterMain(username) {
   state.streak = null;
   els.meStreak.hidden = true;
   await refreshStatus();
+  api.version().then((v) => {
+    const label = `v${v}`;
+    if (els.footVer) els.footVer.textContent = label;
+    if (els.drawerVer) els.drawerVer.textContent = label;
+  }).catch(() => {});
   showScreen('main');
   await Promise.all([loadChats(), loadGroups(), loadChannels(), loadContacts(), loadStreak(), loadDrafts(), loadFolders()]);
   renderChatList();
