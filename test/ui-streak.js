@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * The "огонёк" must be visible: a chip beside your own name, and a line on a
+ * The "огонёк" must be visible: a flame in the chat header and a line on a
  * peer's profile. This drives the real app, sends a message, and reads the DOM.
  *
  * Run with: xvfb-run -a node test/ui-streak.js
@@ -60,16 +60,25 @@ async function main() {
   await signIn(B.win, URL, { username: bob });
 
   await step('a new account shows no flame yet', async () => {
-    assert.ok(await A.win.isHidden('#me-streak'), 'the chip should start hidden');
+    assert.ok(await A.win.isHidden('#peer-streak'), 'the flame should start hidden');
   });
 
-  await step('sending a message lights the flame with a count of one', async () => {
-    await A.win.evaluate(async (to) => { await window.sleephy.send({ to, text: 'привет' }); }, bob);
-    await A.win.waitForSelector('#me-streak:not([hidden])', { timeout: 8000 });
-    const count = (await A.win.textContent('#me-streak-count')).trim();
+  await step('sending a message lights the dialog flame with a count of one', async () => {
+    // Open the conversation through search, the way a person starts a chat.
+    await A.win.fill('#search', bob);
+    await A.win.press('#search', 'Enter');
+    await A.win.waitForSelector('#chat-view:not([hidden])', { timeout: 8000 });
+    await A.win.fill('#composer-input', 'привет');
+    await A.win.press('#composer-input', 'Enter');
+    await A.win.waitForSelector('#peer-streak:not([hidden])', { timeout: 8000 });
+    const count = (await A.win.textContent('#peer-streak-count')).trim();
     assert.strictEqual(count, '1');
-    const lit = await A.win.evaluate(() => document.getElementById('me-streak').classList.contains('on'));
-    assert.ok(lit, 'the chip should be lit once today counts');
+    const lit = await A.win.evaluate(() => document.getElementById('peer-streak').classList.contains('on'));
+    assert.ok(lit, 'the flame should be lit once today counts');
+  });
+
+  await step('the series started with a centered note', async () => {
+    await A.win.waitForSelector('.msg-system .series-note', { timeout: 8000 });
   });
 
   await step('the peer sees the streak on the profile', async () => {
@@ -95,8 +104,17 @@ async function main() {
   await step('the chat header shows the peer flame', async () => {
     await B.win.click('#btn-profile-close');
     await wait(300);
-    const sub = await B.win.textContent('#peer-sub');
-    assert.ok(sub.includes('🔥'), `the header should carry the flame, got "${sub}"`);
+    await B.win.waitForSelector('#peer-streak:not([hidden])', { timeout: 8000 });
+    const count = (await B.win.textContent('#peer-streak-count')).trim();
+    assert.strictEqual(count, '1', 'the header flame should read one day for the pair');
+  });
+
+  await step('the chat list row carries the flame too', async () => {
+    const chip = await B.win.evaluate((who) => {
+      const row = [...document.querySelectorAll('.chat-item')].find((el) => el.dataset.peer === who);
+      return row ? (row.querySelector('.chat-item-time .streak-chip') || {}).textContent || null : null;
+    }, alice);
+    assert.ok(chip && chip.includes('1'), `the row should carry the flame, got "${chip}"`);
   });
 
   await step('no console errors along the way', async () => {

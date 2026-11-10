@@ -20,6 +20,7 @@ const GAMES = (typeof window !== 'undefined' && window.SleePhyGames) || null;
 const POLLS = (typeof window !== 'undefined' && window.SleePhyPolls) || null;
 const FOLDERS = (typeof window !== 'undefined' && window.SleePhyFolders) || null;
 const CHATSEARCH = (typeof window !== 'undefined' && window.SleePhyChatSearch) || null;
+const STREAK = (typeof window !== 'undefined' && window.SleePhyStreak) || null;
 
 const BOT_MINIGAMES = 'minigames';
 const BOT_STICKERS = 'stickers';
@@ -605,6 +606,8 @@ const els = {
   meState: $('me-state'),
   meStreak: $('me-streak'),
   meStreakCount: $('me-streak-count'),
+  peerStreak: $('peer-streak'),
+  peerStreakCount: $('peer-streak-count'),
   search: $('search'),
   btnSearchClear: $('btn-search-clear'),
   searchPanel: $('search-panel'),
@@ -950,6 +953,9 @@ const state = {
   forceScrollBottom: false, // jump to the newest message on the next paint
   settings: { theme: 'dark', wallpaper: 'none' },
   streak: null, // { count, active } for the signed-in account, the "огонёк"
+  // Per-dialog flames, keyed by the peer's username: { count, active }. This is
+  // the flame inside a chat, separate from the account-wide one above.
+  dialogStreaks: new Map(),
   groups: new Map(), // groupId -> { id, name, owner, members: [] }
   channels: new Map(), // channelId -> { id, name, owner, subs, verified, ... }
   contacts: [], // usernames saved as contacts
@@ -1423,7 +1429,8 @@ async function enterMain(username) {
   state.groups.clear();
   state.channels.clear();
   state.streak = null;
-  els.meStreak.hidden = true;
+  state.dialogStreaks.clear();
+  if (els.meStreak) els.meStreak.hidden = true;
   await refreshStatus();
   api.version().then((v) => {
     const label = `v${v}`;
@@ -1457,6 +1464,7 @@ async function loadChats() {
         state.profiles.set(row.peer, row.profile);
         if (row.profile.lastSeen) state.lastSeen.set(row.peer, row.profile.lastSeen);
       }
+      if (row.peer && row.streak) setDialogStreak(row.peer, row.streak);
     }
     renderChatList();
     // A profile arriving now may change the header of the chat already open.
@@ -1479,11 +1487,19 @@ async function refreshVisibleLastMessages() {
         : isChannelKey(key)
           ? await api.channelHistory({ channelId: channelIdOf(key), limit: 1 })
           : await api.history({ with: peerUsername(key), limit: 1 });
-      const last = items.at(-1);
+      const last = lastRealMessage(items);
       if (last) chat.last = previewOf(last);
     } catch { /* leave the placeholder */ }
   }
   renderChatList();
+}
+
+/** The last real message of a transcript, ignoring the centered series notes. */
+function lastRealMessage(items) {
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i] && items[i].kind !== 'system:series') return items[i];
+  }
+  return null;
 }
 
 /** One-line preview for the chat list, matching the message kind. */
@@ -1682,7 +1698,7 @@ function chatRowSignature(chat) {
   const tick = isVerified(peer) ? (badgeImageFor(peer) || 'check') : '';
   return [displayNameFor(key), tick, avatarImageFor(key) || '', chat.lastTs || 0,
     chat.last || '', chat.unread || 0, chat.muted ? 1 : 0, chat.pinned ? 1 : 0,
-    state.drafts[key] || ''].join('\u0000');
+    state.drafts[key] || '', JSON.stringify(dialogStreakOf(peer))].join('\u0000');
 }
 
 function chatItemEl(key) {
@@ -1724,7 +1740,7 @@ function chatItemEl(key) {
     <div class="chat-item-body">
       <div class="chat-item-top">
         <span class="chat-item-name"><span class="chat-item-name-text">${escapeHtml(name)}</span>${tick}</span>
-        <span class="chat-item-time">${chat.lastTs ? escapeHtml(timeLabel(chat.lastTs)) : ''}</span>
+        <span class="chat-item-time">${chatStreakChip(key)}${chat.lastTs ? escapeHtml(timeLabel(chat.lastTs)) : ''}</span>
       </div>
       <div class="${lastCls}">${lastLine}</div>
     </div>
@@ -1852,6 +1868,15 @@ function messageEl(m) {
     box.dataset.id = 'game-board';
     box.appendChild(renderGameBoard(m.__gameBoard));
     return box;
+  }
+  // The centered "series started" note. It is not a bubble from anyone, so it
+  // carries no meta line and no context menu — just the flame and the words.
+  if (m && m.kind === 'system:series') {
+    const note = document.createElement('div');
+    note.className = 'msg msg-system';
+    note.dataset.id = m.id;
+    note.innerHTML = `<span class="series-note">${icon('i-fire')}<span>У вас началась серия! Огонёк зажжён</span></span>`;
+    return note;
   }
   const el = document.createElement('div');
   const hit = state.searchHits.includes(m.id);
@@ -1985,6 +2010,7 @@ async function openChat(key) {
 
   if (isBotKey(key)) {
     // A bot chat has no server history; its transcript is local. Open it as-is.
+    renderDialogStreak();
     renderMessages();
     els.composerInput.focus();
     return;
@@ -1999,8 +2025,9 @@ async function openChat(key) {
           : await api.history({ with: peerUsername(key), limit: 200 });
       chat.messages = resolveQuotes(items);
       chat.loaded = true;
+      if (!isMultiKey(key) && items.streak) setDialogStreak(peerUsername(key), items.streak);
       renderMessages();
-      const last = items.at(-1);
+      const last = lastRealMessage(items);
       if (last) { chat.last = previewOf(last); chat.lastTs = last.ts; }
     } catch (err) {
       appendMessage({ text: (err.message || 'Could not load history'), ts: Date.now(), mine: false });
@@ -2008,6 +2035,7 @@ async function openChat(key) {
   } else {
     renderMessages();
   }
+  renderDialogStreak();
   if (!isMultiKey(key)) { try { await api.markRead(peerUsername(key)); } catch { /* best effort */ } }
   updatePinnedBar();
   renderChatList();
@@ -2157,13 +2185,8 @@ function updatePeerSub() {
   }
   els.peerSub.classList.remove('typing');
   const presence = peerPresenceText(peer);
-  els.peerSub.textContent = (presence || 'end-to-end encrypted') + streakSuffix(peer);
-}
-
-/** " · 5 🔥" when a peer has a streak, so the header shows it at a glance. */
-function streakSuffix(username) {
-  const p = state.profiles.get(username);
-  return p && p.streak > 0 ? ` · ${p.streak} 🔥` : '';
+  els.peerSub.textContent = presence || 'end-to-end encrypted';
+  renderDialogStreak();
 }
 
 /* ------------------------------- searching ------------------------------- */
@@ -4043,11 +4066,12 @@ function updateConnIndicators(online) {
 }
 
 /* -------------------------------- streak -------------------------------- */
-// The "огонёк": how many days in a row the account has sent something. The
-// relay counts the days; the client only draws the flame. A streak is always at
-// least one the moment it is shown, so the chip stays hidden until it has one.
+// The account-wide "огонёк" is no longer drawn anywhere: the flame now belongs
+// to the *dialog* (see renderDialogStreak). The value is still fetched and kept
+// so a profile view and a future account screen can use it.
 function renderSelfStreak() {
   const s = state.streak;
+  if (!els.meStreak) return;
   if (!s || !s.count) { els.meStreak.hidden = true; return; }
   els.meStreak.hidden = false;
   els.meStreakCount.textContent = String(s.count);
@@ -4057,7 +4081,49 @@ function renderSelfStreak() {
     : `Огонёк: ${s.count} ${plural(s.count, 'день', 'дня', 'дней')}. Отправьте сообщение, чтобы продлить.`;
 }
 
-/** Paint the streak line of the open profile from the cached profile fields. */
+/* ----------------------------- dialog streak ----------------------------- */
+// The flame *inside a chat*: days in a row this pair has written to each other.
+// It replaces the old account-level chip in the header and, on the day it first
+// appears, leaves a centered "series started" note in the transcript.
+
+/** Remember the flame for a peer from any reply that carried it. */
+function setDialogStreak(peer, streak) {
+  if (!peer || !streak) return;
+  state.dialogStreaks.set(peer, { count: streak.count || 0, active: !!streak.active });
+}
+
+function dialogStreakOf(peer) {
+  return peer ? state.dialogStreaks.get(peer) || null : null;
+}
+
+/** Paint the flame chip in the open chat header. */
+function renderDialogStreak() {
+  if (!els.peerStreak) return;
+  const key = state.activePeer;
+  const peer = key && !isMultiKey(key) && key !== SAVED ? peerUsername(key) : null;
+  const s = dialogStreakOf(peer);
+  if (!s || !s.count) { els.peerStreak.hidden = true; return; }
+  els.peerStreak.hidden = false;
+  els.peerStreakCount.textContent = String(s.count);
+  els.peerStreak.classList.toggle('on', !!s.active);
+  const days = plural(s.count, 'день', 'дня', 'дней');
+  els.peerStreak.title = s.active
+    ? `Огонёк диалога: ${s.count} ${days} подряд`
+    : `Огонёк диалога: ${s.count} ${days}. Отправьте сообщение, чтобы продлить.`;
+}
+
+/** The little flame on a chat-list row, so the streak shows without opening it. */
+function chatStreakChip(key) {
+  const peer = key && !isMultiKey(key) && key !== SAVED ? peerUsername(key) : null;
+  const s = dialogStreakOf(peer);
+  if (!s || !s.count) return '';
+  return `<span class="streak-chip streak-chip-sm${s.active ? ' on' : ''}" title="Огонёк диалога">`
+    + icon('i-fire') + `<span>${s.count}</span></span>`;
+}
+
+/**
+ * Paint the streak line of the open profile from the cached profile fields.
+ */
 function renderProfileStreak(username) {
   const p = state.profiles.get(username);
   const count = p && p.streak ? p.streak : 0;
@@ -4078,14 +4144,18 @@ async function loadStreak() {
 }
 
 /**
- * Sending today lights the flame without waiting for a round trip. The relay
- * reconciles the count on the next open; this only makes the send feel immediate.
+ * Sending lights the *dialog* flame without waiting for a round trip. The relay
+ * reconciles the count on the next history load; this only makes the send feel
+ * immediate and lets the "series started" note appear at once.
  */
 function noteLocalSend() {
-  const s = state.streak;
-  if (!s || s.active) return;
-  state.streak = { count: (s.count || 0) + 1, active: true };
-  renderSelfStreak();
+  const key = state.activePeer;
+  if (!key || isMultiKey(key) || key === SAVED) return;
+  const peer = peerUsername(key);
+  const s = dialogStreakOf(peer);
+  if (s && s.active) return;
+  setDialogStreak(peer, { count: (s ? s.count : 0) + 1, active: true });
+  renderDialogStreak();
 }
 
 async function refreshStatus() {
@@ -4142,6 +4212,14 @@ api.onEvent((evt) => {
       toast(`${evt.from}: ${evt.text}`, 6000, 'announce');
       break;
 
+    case 'dialog.streak':
+      // The pair's flame moved. `peer` is the other person from this device's
+      // point of view, so it maps straight onto the open chat and the list.
+      setDialogStreak(evt.peer, { count: evt.count, active: evt.active });
+      renderChatList();
+      renderDialogStreak();
+      break;
+
     case 'kicked':
       handleKicked(evt.reason);
       break;
@@ -4185,7 +4263,7 @@ api.onEvent((evt) => {
         break;
       }
       const m = {
-        id: evt.id, text: evt.text, ts: evt.ts, mine: false, from: evt.from,
+        id: evt.id, text: evt.text, ts: evt.ts, mine: evt.kind === 'system:series' ? false : evt.from === state.username, from: evt.from,
         replyTo: evt.replyTo || null, reactions: [],
         kind: evt.kind || null, attachment: evt.attachment || null
       };
@@ -4194,8 +4272,12 @@ api.onEvent((evt) => {
         if (orig) m.quote = { from: orig.mine ? state.username : evt.from, text: orig.text, mine: orig.mine };
       }
       chat.messages.push(m);
-      chat.last = previewOf(m);
-      chat.lastTs = evt.ts;
+      // The series note is a marker, not a message: it must not become the chat
+      // preview or raise an unread badge.
+      if (m.kind !== 'system:series') {
+        chat.last = previewOf(m);
+        chat.lastTs = evt.ts;
+      }
       if (state.activePeer === key) {
         // A single live message lands at the end, so append it directly and
         // fall back to a rebuild only when the list is filtered. A vote is not
@@ -4204,7 +4286,7 @@ api.onEvent((evt) => {
         else if (!appendMessageEl(m)) renderMessages();
         updatePinnedBar();
         api.markRead(peerUsername(key)).catch(() => {});
-      } else {
+      } else if (m.kind !== 'system:series') {
         chat.unread += 1;
         if (!chat.muted) notifyNewMessage(evt.from, evt.text);
       }

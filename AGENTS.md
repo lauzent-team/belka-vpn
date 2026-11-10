@@ -22,7 +22,9 @@ node test/admin.js    # admin panel, verification, blocking, announcements
 node test/accounts.js # sign-out, account switching, dropping an account
 node test/session.js  # token persistence, relay restart, unlock, avatar images
 node test/peer-badges.js # a peer's checkmark and picture survive re-entry
-node test/streaks.js  # the "огонёк": days active in a row, extend, reset, rename
+node test/streaks.js  # the account "огонёк": days active in a row, extend, reset, rename
+node test/streak.js   # the shared streak rules (pure): dayKey, view, bump, mutual
+node test/dialog-streaks.js # the pair "огонёк": start, extend, reset, the centered note
 node test/downloads.js # the relay serves the download page and the installer
 node test/handles.js # @-usernames and channel @handles
 node test/nicknames.js # nicknames: owner privilege, admin edit, cap, privacy
@@ -32,7 +34,7 @@ xvfb-run -a node test/ui-drawer.js     # drawer, settings, contacts, groups, acc
 xvfb-run -a node test/ui-menu.js       # menu bar hidden, editing shortcuts intact
 xvfb-run -a node test/ui-session.js    # reopen the app: no sign-in screen, photo kept
 xvfb-run -a node test/ui-peer-badges.js # a peer's badge and picture survive a re-entry
-xvfb-run -a node test/ui-streak.js     # the flame chip and the profile streak line
+xvfb-run -a node test/ui-streak.js     # the dialog flame chip, the note, the profile streak line
 xvfb-run -a node test/ui-nicknames.js  # the profile nickname editor and the admin popup
 xvfb-run -a node test/connection.js    # connection and error handling
 xvfb-run -a node test/shots.js         # regenerate shots/*.png
@@ -86,6 +88,19 @@ xvfb-run -a node test/shots.js         # regenerate shots/*.png
   message text, and it follows a rename (`renameStmts.streaks`) and is dropped
   with the account. When it moves, the new profile is pushed to peers and back to
   the sender's own devices so every view agrees.
+- **There are two streaks, and both use `src/lib/streak.js`.** The account streak
+  above, and the *dialog* streak — days in a row one pair has written to each
+  other, which is the flame inside a chat. The dialog streak lives in
+  `dialog_streaks (a, b, day, count)`, always stored with `a < b` so one row
+  serves both people and both read the same number. It rides on `send` replies,
+  `history`, `chats.list` and the `dialog.streak` broadcast; `streak.get` with a
+  `with` returns it too. On the day a pair's flame first appears, `handleSend`
+  stores one `system:series` row so both transcripts show the centered "series
+  started" note. That note is **not a message**: `unreadCount` and `lastMessage`
+  skip `kind LIKE 'system:%'`, and the client's `lastRealMessage` ignores it in
+  previews. It is delivered with `from` set to each side's *peer*, so it files
+  under the open conversation rather than Saved Messages. The relay's `deleteUserData`
+  clears both sides of the pair.
 - **Chat settings are per-owner.** `pinned`, `muted`, `archived`, `last_read` and
   `cleared_at` belong to one side and must never be shared with the peer.
 - **Deleting a message blanks the ciphertext and leaves the row** (`deleted = 1`).

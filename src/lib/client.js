@@ -62,6 +62,11 @@ class SleePhyClient {
     // re-seals the key and removes this file.
     this.deviceKeyFile = path.join(userDataDir, 'sleephy-device.key');
     this.onEvent = onEvent;
+    // Message frames are decrypted asynchronously, but a centered series note
+    // needs no decryption. Chaining every message frame through this promise
+    // keeps them in the order the relay sent them, so a note can never overtake
+    // the real message that started the series.
+    this.incoming = Promise.resolve();
     this.ws = null;
     // The relay the accounts on this device belong to. A chosen address is
     // remembered, so reopening the app reaches the same relay instead of the
@@ -332,8 +337,20 @@ class SleePhyClient {
       return;
     }
 
+    if (msg.t === 'dialog.streak') {
+      this.emit({
+        type: 'dialog.streak', peer: msg.with, from: msg.from,
+        count: msg.count || 0, active: !!msg.active
+      });
+      return;
+    }
     if (msg.t === 'message') {
-      this.receiveMessage(msg).catch(() => {});
+      // Keep the decrypt queue in lockstep with the socket order. `receiveMessage`
+      // never rejects, but the catch is here so one bad frame cannot stall the
+      // queue for every frame behind it.
+      this.incoming = this.incoming
+        .then(() => this.receiveMessage(msg))
+        .catch(() => {});
       return;
     }
     if (msg.t === 'edited') {
@@ -641,6 +658,9 @@ class SleePhyClient {
     const res = await this.request({
       t: 'send', to, box, nonce, replyTo: replyTo || undefined, attachment: encAttachment || undefined
     });
+    // The relay reports the pair's flame on every send, so the sender's header
+    // updates without a second round trip.
+    if (res.streak) this.emit({ type: 'dialog.streak', peer: to, from: this.username, count: res.streak.count, active: !!res.streak.active });
     return {
       id: res.id, ts: res.ts, to, text: caption, replyTo: res.replyTo || null,
       mine: true, kind: res.kind || null,
@@ -671,6 +691,12 @@ class SleePhyClient {
   }
 
   async receiveMessage(msg) {
+    // The centered "series started" note is written by the relay, carries no
+    // ciphertext, and must not be run through the decryptor.
+    if (msg.kind === 'system:series') {
+      this.emit({ type: 'message', id: msg.id, from: msg.from, text: '', ts: msg.ts, kind: 'system:series' });
+      return;
+    }
     if (!this.secretKey) {
       this.emit({ type: 'queued', from: msg.from, id: msg.id });
       return;
@@ -712,6 +738,10 @@ class SleePhyClient {
         reactions: m.reactions || []
       });
     }
+    // The dialog flame travels with the history. It is hung on the array rather
+    // than returned alongside it so every existing caller that just iterates the
+    // messages keeps working unchanged.
+    items.streak = res.streak || null;
     return items;
   }
 
@@ -1171,6 +1201,12 @@ class SleePhyClient {
   async getStreak() {
     const res = await this.request({ t: 'streak.get' });
     return { count: res.count || 0, active: !!res.active };
+  }
+
+  /** The dialog flame for a peer: consecutive days the two have written. */
+  async dialogStreak(withUser) {
+    const res = await this.request({ t: 'streak.get', with: bareUsername(withUser) });
+    return { count: res.dialog ? res.dialog.count : 0, active: res.dialog ? !!res.dialog.active : false };
   }
 
   async saveProfile({ displayName, bio, avatarColor, avatarImage, socials, nicknames }) {

@@ -554,6 +554,21 @@ input, textarea { user-select: text; }
   border-radius: 999px; padding: 3px 12px;
 }
 
+/* The centered "series started" note. It is not a bubble from either person but
+   a quiet marker in the middle of the chat, the way a date separator reads. */
+.msg-system { align-self: center; max-width: 82%; margin: 12px 0 6px; }
+.msg-system .series-note {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 13px; border-radius: 999px;
+  background: color-mix(in srgb, var(--swatch-amber) 22%, var(--bg-3));
+  color: var(--text); font-size: 12.5px; font-weight: 600;
+}
+.msg-system .series-note .ico { font-size: 15px; color: var(--swatch-amber); }
+
+/* The dialog flame on a chat-list row is the same chip, only smaller. */
+.streak-chip-sm { padding: 1px 6px; font-size: 11px; gap: 2px; }
+.streak-chip-sm .ico { font-size: 12px; }
+
 .quote {
   display: flex; flex-direction: column; gap: 1px;
   border-left: 3px solid var(--accent);

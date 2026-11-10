@@ -223,10 +223,6 @@
               </span>
               <span class="me-status"><i class="dot"></i><span id="me-state">offline</span></span>
             </div>
-            <span class="streak-chip" id="me-streak" hidden title="Огонёк: дни подряд">
-              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-fire"></use></svg>
-              <span id="me-streak-count">0</span>
-            </span>
           </button>
           <button class="icon-btn" id="btn-settings" title="Settings"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-gear"></use></svg></button>
         </header>
@@ -287,6 +283,10 @@
                 <span class="name-row">
                   <span class="chat-head-name" id="peer-name">—</span>
                   <span class="verified-badge" id="peer-badge" hidden title="Проверенный аккаунт"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-check"></use></svg></span>
+                  <span class="streak-chip peer-streak" id="peer-streak" hidden title="Огонёк диалога">
+                    <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-fire"></use></svg>
+                    <span id="peer-streak-count">0</span>
+                  </span>
                 </span>
                 <span class="chat-head-sub" id="peer-sub">end-to-end encrypted</span>
               </div>
@@ -1396,6 +1396,7 @@
   <script src="lib/games.js"></script>
   <script src="lib/polls.js"></script>
   <script src="lib/folders.js"></script>
+  <script src="lib/streak.js"></script>
   <script src="lib/chatsearch.js"></script>
   <script src="renderer.js"></script>
 </body>

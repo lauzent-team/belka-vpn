@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
 const { DatabaseSync } = require('node:sqlite');
+const STREAK = require('../src/lib/streak');
 
 const PORT = process.env.SLEEPHY_PORT ? Number(process.env.SLEEPHY_PORT) : 8787;
 const DB_PATH = process.env.SLEEPHY_DB || path.join(__dirname, 'sleephy.db');
@@ -168,6 +169,16 @@ db.exec(`
     day      TEXT NOT NULL,
     count    INTEGER NOT NULL DEFAULT 0
   );
+  -- The dialog "огонёк": days in a row *this pair* has written to each other.
+  -- The pair is stored in a fixed order (a sorts before b) so there is exactly
+  -- one row per conversation no matter who sends first.
+  CREATE TABLE IF NOT EXISTS dialog_streaks (
+    a     TEXT NOT NULL,
+    b     TEXT NOT NULL,
+    day   TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (a, b)
+  );
 `);
 
 // Columns added after the first release. Existing databases are upgraded in
@@ -306,13 +317,16 @@ const q = {
   ),
   peersOf: db.prepare('SELECT peer FROM chats WHERE owner = ?'),
   // Unread = incoming messages newer than the last time the owner opened the chat.
+  // The centered "series started" note is not a message, so it never counts.
   unreadCount: db.prepare(
     `SELECT COUNT(*) AS c FROM messages
-      WHERE sender = ? AND recipient = ? AND deleted = 0 AND ts > ?`
+      WHERE sender = ? AND recipient = ? AND deleted = 0 AND ts > ?
+        AND (kind IS NULL OR kind NOT LIKE 'system:%')`
   ),
   lastMessage: db.prepare(
     `SELECT * FROM messages
-      WHERE (sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?)
+      WHERE ((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?))
+        AND (kind IS NULL OR kind NOT LIKE 'system:%')
       ORDER BY id DESC LIMIT 1`
   ),
   setReaction: db.prepare(
@@ -456,7 +470,17 @@ const q = {
     `INSERT INTO streaks (username, day, count) VALUES (?, ?, ?)
      ON CONFLICT(username) DO UPDATE SET day = excluded.day, count = excluded.count`
   ),
-  deleteUserStreak: db.prepare('DELETE FROM streaks WHERE username = ?')
+  deleteUserStreak: db.prepare('DELETE FROM streaks WHERE username = ?'),
+
+  getDialogStreak: db.prepare('SELECT * FROM dialog_streaks WHERE a = ? AND b = ?'),
+  setDialogStreak: db.prepare(
+    `INSERT INTO dialog_streaks (a, b, day, count) VALUES (?, ?, ?, ?)
+     ON CONFLICT(a, b) DO UPDATE SET day = excluded.day, count = excluded.count`
+  ),
+  deleteUserDialogStreaks: db.prepare('DELETE FROM dialog_streaks WHERE a = ? OR b = ?'),
+  deleteDialogStreak: db.prepare('DELETE FROM dialog_streaks WHERE a = ? AND b = ?'),
+  // Every dialog flame this account is part of, so the chat list can show them.
+  dialogStreaksFor: db.prepare('SELECT * FROM dialog_streaks WHERE a = ? OR b = ?')
 };
 
 /* Statements used only by the username rename, which rewrites every reference. */
@@ -710,7 +734,7 @@ function cleanText(value, max) {
 
 /** The UTC day of a timestamp, as YYYY-MM-DD. The relay has no timezone. */
 function dayKey(ts) {
-  return new Date(ts).toISOString().slice(0, 10);
+  return STREAK.dayKey(ts);
 }
 
 /**
@@ -719,23 +743,56 @@ function dayKey(ts) {
  * missed a whole day reads as 0, so it visibly breaks the way it should.
  */
 function streakView(username) {
-  const row = q.getStreak.get(username);
-  if (!row || !row.count) return { count: 0, active: false };
-  const today = dayKey(Date.now());
-  if (row.day === today) return { count: row.count, active: true };
-  const yesterday = dayKey(Date.now() - 86400000);
-  if (row.day === yesterday) return { count: row.count, active: false };
-  return { count: 0, active: false };
+  return STREAK.view(q.getStreak.get(username), Date.now());
 }
 
 /** Extend the streak when the account sends something today. */
 function bumpStreak(username, ts) {
-  const today = dayKey(ts);
-  const row = q.getStreak.get(username);
-  if (row && row.day === today) return;
-  const yesterday = dayKey(ts - 86400000);
-  const count = row && row.day === yesterday ? row.count + 1 : 1;
-  q.setStreak.run(username, today, count);
+  const next = STREAK.bump(q.getStreak.get(username), ts);
+  q.setStreak.run(username, next.day, next.count);
+}
+
+/* --------------------------- dialog streaks --------------------------- */
+// The flame *inside a chat*: days in a row this pair has written to each other.
+// It is the pair's streak, not either account's, so both people see the same
+// number and the same "series started" note.
+
+/** The two accounts of a dialog in a fixed order, so one row serves both. */
+function dialogPair(x, y) {
+  return x < y ? [x, y] : [y, x];
+}
+
+function dialogStreakView(x, y) {
+  const [a, b] = dialogPair(x, y);
+  return STREAK.view(q.getDialogStreak.get(a, b), Date.now());
+}
+
+/**
+ * Record a message between two people and return how the dialog flame moved.
+ * `started` is true on the day the flame first appears for this pair, which is
+ * exactly when the chat should show the centered "series started" note.
+ */
+function touchDialogStreak(from, to) {
+  const [a, b] = dialogPair(from, to);
+  const before = STREAK.view(q.getDialogStreak.get(a, b), Date.now());
+  const next = STREAK.bump(q.getDialogStreak.get(a, b), Date.now());
+  q.setDialogStreak.run(a, b, next.day, next.count);
+  const after = STREAK.view({ day: next.day, count: next.count }, Date.now());
+  return {
+    count: after.count,
+    active: after.active,
+    started: after.count === 1 && before.count === 0
+  };
+}
+
+/**
+ * Tell both people in a dialog the flame's new value. The client draws it in the
+ * header and in the chat list; nothing here reveals a message.
+ */
+function broadcastDialogStreak(from, to, view) {
+  const payload = { t: 'dialog.streak', with: null, from, to, count: view.count, active: view.active };
+  deliverToUser(from, { ...payload, with: to });
+  deliverToUser(to, { ...payload, with: from });
 }
 
 /**
@@ -1142,7 +1199,10 @@ function handleProfileGet(ws, msg, rid) {
 
 function handleStreakGet(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
-  reply(ws, rid, { t: 'streak', ...streakView(ws.username) });
+  const base = { t: 'streak', ...streakView(ws.username) };
+  // A `with` asks for the dialog flame instead, so one request type serves both.
+  if (typeof msg.with === 'string') base.dialog = dialogStreakView(ws.username, msg.with);
+  reply(ws, rid, base);
 }
 
 /**
@@ -1233,6 +1293,14 @@ function handleUsernameSet(ws, msg, rid) {
     renameStmts.channelsOwner.run(next, prev);
     renameStmts.sessions.run(next, prev);
     renameStmts.streaks.run(next, prev);
+    // The pair must stay sorted (`a` < `b`). Renaming can flip that, so rebuild
+    // each affected row in place instead of patching one column.
+    for (const row of q.dialogStreaksFor.all(prev, prev)) {
+      const other = row.a === prev ? row.b : row.a;
+      q.deleteDialogStreak.run(row.a, row.b);
+      const [a, b] = dialogPair(next, other);
+      q.setDialogStreak.run(a, b, row.day, row.count);
+    }
     db.exec('COMMIT');
   } catch {
     try { db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
@@ -1369,12 +1437,44 @@ function handleSend(ws, msg, rid) {
   const id = Number(info.lastInsertRowid);
   touchStreak(ws.username);
 
-  reply(ws, rid, { t: 'sent', id, ts, to, replyTo, kind, attachment: parsed.attachment });
+  // The dialog flame moves only between two real accounts; Saved Messages and
+  // group/channel posts have no pair and are skipped.
+  let note = null;
+  let flame = null;
+  if (to !== ws.username && q.getUser.get(to)) {
+    flame = touchDialogStreak(ws.username, to);
+    broadcastDialogStreak(ws.username, to, flame);
+    if (flame.started) {
+      // One centered note for the pair. Stored once, with a real sender and
+      // recipient, so it lands in both people's history (the history query is
+      // symmetric) yet is never mistaken for a message in previews or unread.
+      const noteId = Number(
+        q.insertMessage.run(ws.username, to, '', '', ts, null, 'system:series', null).lastInsertRowid
+      );
+      q.markDelivered.run(noteId);
+      note = { id: noteId, ts };
+    }
+  }
+
+  reply(ws, rid, { t: 'sent', id, ts, to, replyTo, kind, attachment: parsed.attachment, streak: flame });
   const delivered = deliverToUser(to, {
     t: 'message', id, from: ws.username, box: safeBox, nonce: safeNonce, ts, replyTo,
     kind, attachment: parsed.attachment
   });
   if (delivered) q.markDelivered.run(id);
+  if (note) {
+    // Each side must receive the note with `from` set to *their peer*, so the
+    // client files it under the same conversation they are looking at. A single
+    // shared frame would land in the sender's Saved Messages instead.
+    deliverToUser(to, {
+      t: 'message', id: note.id, from: ws.username, box: '', nonce: '',
+      ts: note.ts, kind: 'system:series'
+    });
+    deliverToUser(ws.username, {
+      t: 'message', id: note.id, from: to, box: '', nonce: '',
+      ts: note.ts, kind: 'system:series'
+    });
+  }
 }
 
 function handleHistory(ws, msg, rid) {
@@ -1390,6 +1490,7 @@ function handleHistory(ws, msg, rid) {
   reply(ws, rid, {
     t: 'history',
     with: other,
+    streak: dialogStreakView(ws.username, other),
     items: rows.map((r) => ({
       id: r.id, from: r.sender, to: r.recipient,
       box: r.box, nonce: r.nonce, ts: r.ts,
@@ -1489,6 +1590,7 @@ function handleChatsList(ws, msg, rid) {
       archived: !!chat.archived,
       unread,
       lastRead: chat.last_read,
+      streak: dialogStreakView(ws.username, chat.peer),
       last: last ? {
         id: last.id, from: last.sender, to: last.recipient, box: last.box,
         nonce: last.nonce, ts: last.ts, editedAt: last.edited_at, deleted: !!last.deleted
@@ -2320,6 +2422,7 @@ function deleteUserData(username) {
     q.deleteUserSettings.run(username);
     q.deleteUserSessions.run(username);
     q.deleteUserStreak.run(username);
+    q.deleteUserDialogStreaks.run(username, username);
     q.deleteUser.run(username);
     db.exec('COMMIT');
   } catch {
