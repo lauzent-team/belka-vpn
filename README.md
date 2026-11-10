@@ -31,9 +31,15 @@ and forwards ciphertext it cannot read.
 - **Edit and delete** your own messages
 - **Reactions** (👍 ❤️ 😂 🔥 😮 😢)
 - **Typing indicators** and **online presence**
-- **Огонёк** — a streak of the days in a row you have been active, shown beside
-  your name and on your profile. The relay counts the days; it stores no message
-  content
+- **Огонёк** — a flame inside each chat: the days in a row the two of you have
+  written to each other, shown in the chat header and on the row in the chat
+  list. On the day a series starts, a centered note appears in the transcript.
+  The relay counts the days; it stores no message content
+- **Self-destructing messages** — set a timer on a one-to-one chat and every new
+  message vanishes for both people when it runs out. Each bubble shows a live
+  countdown. The relay holds only ciphertext, so the clock it enforces wipes the
+  stored ciphertext (and any attachment) in place, then tells both devices to
+  drop the bubble; an offline device learns on its next history read
 - Offline delivery: messages sent while you were away arrive on reconnect
 - Message history, decrypted locally, grouped by day
 - **Drafts** — what you typed but did not send is kept per chat and shown in the
@@ -136,7 +142,7 @@ overrides it.
 ## Build a Windows installer
 
 ```bash
-npm run dist:win      # -> dist/SleePhy-Setup-0.10.0.exe
+npm run dist:win      # -> dist/SleePhy-Setup-0.11.0.exe
 ```
 
 Building a Windows `.exe` from Linux/macOS uses Wine; the CI workflow does this
@@ -160,6 +166,8 @@ node test/folders.js                      # folder filter rules (12 checks)
 node test/polls.js                        # poll encode, validate, tally (12 checks)
 node test/games.js                        # game rules (21 checks)
 node test/chatsearch.js                   # in-chat search filter rules (18 checks)
+node test/ttl.js                          # self-destructing messages over the relay (8 checks)
+xvfb-run -a node test/ui-ttl.js           # the auto-delete timer, clicked for real (8 checks)
 ```
 
 The end-to-end suite verifies, among other things, that the plaintext never

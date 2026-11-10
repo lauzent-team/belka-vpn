@@ -30,6 +30,7 @@ node test/handles.js # @-usernames and channel @handles
 node test/nicknames.js # nicknames: owner privilege, admin edit, cap, privacy
 node test/story.js     # the story rules (pure): defaults, TTL clamp, encode/decode, ordering
 node test/story-relay.js # stories against a real relay: publish, per-viewer crypto, expiry, views
+node test/ttl.js       # self-destructing messages over the relay: TTL, sweep, notify
 xvfb-run -a node test/ui.js            # UI tests driving the real Electron app
 xvfb-run -a node test/ui-features.js   # the newer UI features, clicked for real
 xvfb-run -a node test/ui-drawer.js     # drawer, settings, contacts, groups, accounts
@@ -39,6 +40,7 @@ xvfb-run -a node test/ui-peer-badges.js # a peer's badge and picture survive a r
 xvfb-run -a node test/ui-streak.js     # the dialog flame chip, the note, the profile streak line
 xvfb-run -a node test/ui-nicknames.js  # the profile nickname editor and the admin popup
 xvfb-run -a node test/ui-stories.js    # the stories bar, composer and viewer, clicked for real
+xvfb-run -a node test/ui-ttl.js        # the auto-delete timer: picker, chip, countdown
 xvfb-run -a node test/connection.js    # connection and error handling
 xvfb-run -a node test/shots.js         # regenerate shots/*.png
 ```
@@ -585,3 +587,31 @@ arriving now can change a header that is already on screen.
 - **`test/ui-stories.js` drives the real UI** — publish, see the ring, open it,
   watch the ring go from unseen to seen, and read the author's view count. Run it
   with `xvfb-run`.
+
+## Self-destructing messages (v0.11.0)
+
+- **The timer belongs to the pair, not the message.** `chats.ttl` (seconds, 0 =
+  off) is written for both owners in one `handleChatTtl`, and each side is told
+  with `chat.ttl`, so both devices show the same clock. Only future messages are
+  affected; a message already sent keeps the countdown it was given.
+- **The relay enforces the clock on the ciphertext alone.** On send, `expires_at`
+  is stamped as `ts + ttl`, clamped to `[MIN_TTL_MS, MAX_TTL_MS]`
+  (`1s … 7 days`). The relay never reads the body, so a timer can only mean "wipe
+  this row", not "read then wipe".
+- **The sweeper wipes in place, then tells both sides.** A 5-second interval
+  (`q.expired` → `q.expireMessage`) clears `box`, `nonce` and `attachment` on
+  rows past `expires_at`, leaving a `deleted` marker, then pushes `expired` to
+  the sender and the recipient. Running on a timer (not per message) is what
+  makes it correct for a device that was offline when the clock ran out; that
+  device learns on its next history read, where the row already reads as deleted.
+- **The optimistic bubble seeds its own countdown.** `send()` paints the bubble
+  before the relay replies, so it sets `expiresAt = Date.now() + chat.ttl` and
+  the relay's confirmed value replaces it on `sent`. The renderer repaints after
+  confirmation (`renderMessages`) so a clamped value still shows.
+- **The countdown ticks on the client.** `messageEl` draws a `.ttl-mark` with a
+  `.ttl-remain` and a `data-exp`; `tickTtlMarks()` refreshes the text on a 1s
+  interval and right after every render, so a fresh bubble is never blank for a
+  second. `test/ui-ttl.js` caught exactly that blank.
+- **`test/ttl.js` asserts the sweep on the raw database**, not just the protocol:
+  after expiry the row's `box`/`nonce` are empty and a history read returns it as
+  deleted. No plaintext ever reaches the relay.
