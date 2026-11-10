@@ -146,6 +146,17 @@ db.exec(`
     text     TEXT NOT NULL,
     ts       INTEGER NOT NULL
   );
+  -- Every administrative action, so the panel can show what was done and by
+  -- whom. The relay stores no message content, so a row is only ever a target,
+  -- an action name and a short free-text detail.
+  CREATE TABLE IF NOT EXISTS admin_log (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor  TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target TEXT,
+    detail TEXT,
+    ts     INTEGER NOT NULL
+  );
   -- One-time codes for phone sign-in. The relay only ever stores the code, its
   -- expiry and an attempt counter; the phone number itself lives on the users row.
   CREATE TABLE IF NOT EXISTS phone_codes (
@@ -256,6 +267,13 @@ const q = {
   deletePhoneCode: db.prepare('DELETE FROM phone_codes WHERE phone = ?'),
   setProfile: db.prepare(
     'UPDATE users SET display_name = ?, bio = ?, avatar_color = ?, updated_at = ? WHERE username = ?'
+  ),
+  // Wipe the public-facing profile fields, leaving the account, its keys and its
+  // messages alone. Used by an administrator to moderate an abusive profile.
+  resetProfile: db.prepare(
+    `UPDATE users SET display_name = NULL, bio = NULL, avatar_color = NULL,
+            avatar_image = NULL, socials = NULL, nicknames = NULL, updated_at = ?
+      WHERE username = ?`
   ),
   setAvatarImage: db.prepare('UPDATE users SET avatar_image = ?, updated_at = ? WHERE username = ?'),
   setSocials: db.prepare('UPDATE users SET socials = ?, updated_at = ? WHERE username = ?'),
@@ -397,6 +415,7 @@ const q = {
   getChannelByHandle: db.prepare('SELECT * FROM channels WHERE handle = ?'),
   renameChannel: db.prepare('UPDATE channels SET name = ?, description = ?, handle = ? WHERE id = ?'),
   setChannelVerified: db.prepare('UPDATE channels SET verified = ? WHERE id = ?'),
+  clearChannelVerified: db.prepare('UPDATE channels SET verified = 0 WHERE verified = 1'),
   deleteChannel: db.prepare('DELETE FROM channels WHERE id = ?'),
   deleteChannelPosts: db.prepare('DELETE FROM channel_messages WHERE channel_id = ?'),
   deleteChannelSubs: db.prepare('DELETE FROM channel_subs WHERE channel_id = ?'),
@@ -427,6 +446,7 @@ const q = {
     "UPDATE channel_messages SET deleted = 1, envelope = '', attachment = NULL WHERE id = ?"
   ),
   countChannels: db.prepare('SELECT COUNT(*) AS c FROM channels'),
+  countChannelPosts: db.prepare('SELECT COUNT(*) AS c FROM channel_messages WHERE channel_id = ?'),
   deleteUserSubs: db.prepare('DELETE FROM channel_subs WHERE username = ?'),
   renameChannelMessages: db.prepare('UPDATE channel_messages SET sender = ? WHERE sender = ?'),
   renameChannelSubs: db.prepare('UPDATE channel_subs SET username = ? WHERE username = ?'),
@@ -446,15 +466,29 @@ const q = {
   deleteUserMemberships: db.prepare('DELETE FROM group_members WHERE username = ?'),
   adminListUsers: db.prepare(
     `SELECT u.username, u.display_name, u.bio, u.avatar_color, u.avatar_image, u.created_at,
-            u.is_admin, u.verified, u.banned, u.badge_image, u.nicknames,
-            (SELECT COUNT(*) FROM messages m WHERE m.sender = u.username) AS sent
+            u.is_admin, u.verified, u.banned, u.badge_image, u.nicknames, u.last_seen,
+            u.has_password, u.phone, u.profile_hidden, u.last_seen_hidden,
+            (SELECT COUNT(*) FROM messages m WHERE m.sender = u.username) AS sent,
+            (SELECT COUNT(*) FROM messages m WHERE m.recipient = u.username) AS received,
+            (SELECT COUNT(*) FROM group_members gm WHERE gm.username = u.username) AS groups,
+            (SELECT COUNT(*) FROM channel_subs cs WHERE cs.username = u.username) AS subs
        FROM users u ORDER BY u.created_at ASC`
   ),
   countUsers: db.prepare('SELECT COUNT(*) AS c FROM users'),
   countMessages: db.prepare('SELECT COUNT(*) AS c FROM messages'),
   countGroups: db.prepare('SELECT COUNT(*) AS c FROM groups'),
+  countAnnouncements: db.prepare('SELECT COUNT(*) AS c FROM announcements'),
+  countSessions: db.prepare('SELECT COUNT(*) AS c FROM sessions'),
+  countBanned: db.prepare('SELECT COUNT(*) AS c FROM users WHERE banned = 1'),
+  countVerified: db.prepare('SELECT COUNT(*) AS c FROM users WHERE verified = 1'),
+  countAdmins: db.prepare('SELECT COUNT(*) AS c FROM users WHERE is_admin = 1'),
+  countDialogStreaks: db.prepare('SELECT COUNT(*) AS c FROM dialog_streaks WHERE count > 0'),
   insertAnnouncement: db.prepare('INSERT INTO announcements (sender, text, ts) VALUES (?, ?, ?)'),
   recentAnnouncements: db.prepare('SELECT * FROM announcements ORDER BY id DESC LIMIT 20'),
+  insertAdminLog: db.prepare(
+    'INSERT INTO admin_log (actor, action, target, detail, ts) VALUES (?, ?, ?, ?, ?)'
+  ),
+  recentAdminLog: db.prepare('SELECT * FROM admin_log ORDER BY id DESC LIMIT 100'),
 
   /* ------------------------------ sessions ------------------------------ */
   insertSession: db.prepare('INSERT OR REPLACE INTO sessions (token, username, exp) VALUES (?, ?, ?)'),
@@ -2225,14 +2259,24 @@ function handleAdminOverview(ws, msg, rid) {
     t: 'admin.overview',
     stats: {
       users: q.countUsers.get().c,
+      online: sockets.size,
       messages: q.countMessages.get().c,
       groups: q.countGroups.get().c,
       channels: q.countChannels.get().c,
-      online: sockets.size
+      banned: q.countBanned.get().c,
+      verified: q.countVerified.get().c,
+      admins: q.countAdmins.get().c,
+      announcements: q.countAnnouncements.get().c,
+      sessions: q.countSessions.get().c,
+      flames: q.countDialogStreaks.get().c
     },
     isAdmin: true,
     announcements: q.recentAnnouncements.all().map((a) => ({
       id: a.id, sender: a.sender, text: a.text, ts: a.ts
+    })),
+    log: q.recentAdminLog.all().map((r) => ({
+      id: r.id, actor: r.actor, action: r.action, target: r.target,
+      detail: r.detail || '', ts: r.ts
     }))
   });
 }
@@ -2249,8 +2293,17 @@ function handleAdminUsers(ws, msg, rid) {
       avatarColor: r.avatar_color || 'mint',
       avatarImage: r.avatar_image || null,
       createdAt: r.created_at,
+      lastSeen: r.last_seen || null,
       sent: r.sent,
+      received: r.received,
+      groups: r.groups,
+      subs: r.subs,
+      hasPassword: !!r.has_password,
+      hasPhone: !!r.phone,
+      profileHidden: !!r.profile_hidden,
+      lastSeenHidden: !!r.last_seen_hidden,
       admin: !!r.is_admin || ADMINS.has(r.username),
+      adminByConfig: ADMINS.has(r.username),
       verified: !!r.verified,
       badgeImage: r.badge_image || null,
       nicknames: parseNicknames(r.nicknames),
@@ -2265,13 +2318,21 @@ function handleAdminChannels(ws, msg, rid) {
   const items = q.allChannels.all().map((c) => ({
     id: c.id,
     name: c.name,
+    handle: c.handle || null,
     description: c.description || '',
     owner: c.owner,
     verified: !!c.verified,
     subs: q.countSubs.get(c.id).c,
+    posts: q.countChannelPosts.get(c.id).c,
     createdAt: c.created_at
   }));
   reply(ws, rid, { t: 'admin.channels', items });
+}
+
+/** Record one administrative action so the panel can show a history. */
+function logAdmin(actor, action, target, detail) {
+  try { q.insertAdminLog.run(actor, action, target || null, detail || null, Date.now()); }
+  catch { /* the log is best-effort: it must never fail the action itself */ }
 }
 
 function handleAdminAction(ws, msg, rid) {
@@ -2284,11 +2345,19 @@ function handleAdminAction(ws, msg, rid) {
     if (!text) return bad(ws, rid, 'Announcement text is required');
     q.insertAnnouncement.run(actor, text, Date.now());
     broadcastAll({ t: 'announcement', from: actor, text, ts: Date.now() });
+    logAdmin(actor, 'announce', null, text);
     return reply(ws, rid, { t: 'admin.ok', action: 'announce' });
   }
 
   // Channel moderation targets a channel id, not a username.
-  if (msg.action === 'channelVerify' || msg.action === 'channelDelete') {
+  if (msg.action === 'channelVerify' || msg.action === 'channelDelete' ||
+      msg.action === 'channelUnverifyAll') {
+    if (msg.action === 'channelUnverifyAll') {
+      const n = q.clearChannelVerified.run();
+      for (const c of q.allChannels.all()) broadcastChannelUpdate(c.id);
+      logAdmin(actor, 'channelUnverifyAll', null, `${n.changes || 0}`);
+      return reply(ws, rid, { t: 'admin.ok', action: 'channelUnverifyAll' });
+    }
     const channelId = Number(msg.channelId);
     const ch = q.getChannel.get(channelId);
     if (!ch) return bad(ws, rid, 'No such channel');
@@ -2296,6 +2365,7 @@ function handleAdminAction(ws, msg, rid) {
       q.setChannelVerified.run(ch.verified ? 0 : 1, channelId);
       const view = channelView(channelId, actor);
       broadcastChannelUpdate(channelId);
+      logAdmin(actor, 'channelVerify', null, `${ch.name} -> ${ch.verified ? 0 : 1}`);
       return reply(ws, rid, { t: 'admin.ok', action: 'channelVerify', channelId, channel: view });
     }
     deliverToChannel(channelId, { t: 'channel.deleted', channelId });
@@ -2309,6 +2379,7 @@ function handleAdminAction(ws, msg, rid) {
       try { db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
       return bad(ws, rid, 'Could not delete the channel');
     }
+    logAdmin(actor, 'channelDelete', null, ch.name);
     return reply(ws, rid, { t: 'admin.ok', action: 'channelDelete', channelId });
   }
 
@@ -2378,10 +2449,28 @@ function handleAdminAction(ws, msg, rid) {
       q.setBanned.run(user.banned ? 0 : 1, now, target);
       if (!user.banned) kickUser(target, 'You were blocked by an administrator');
       break;
+    case 'forceLogout':
+      // Drop every device of the account without blocking it, so the owner can
+      // simply sign in again. Useful after a suspected key theft.
+      if (target === actor) return bad(ws, rid, 'You cannot sign yourself out here');
+      kickUser(target, 'Signed out by an administrator');
+      break;
+    case 'resetProfile':
+      // Wipe the public-facing profile fields; the account, its keys and its
+      // messages are untouched. A moderation tool for an abusive profile.
+      q.resetProfile.run(now, target);
+      break;
+    case 'clearMessages':
+      // Delete the relay's copies of every message this account sent or
+      // received. The relay only ever held ciphertext, so nothing readable is
+      // lost; both sides simply stop seeing the history.
+      q.deleteUserMessages.run(target, target);
+      break;
     case 'delete':
       if (target === actor) return bad(ws, rid, 'You cannot delete your own account');
       if (ADMINS.has(target)) return bad(ws, rid, 'That account is protected');
       deleteUserData(target);
+      logAdmin(actor, 'delete', target, user.display_name || target);
       return reply(ws, rid, { t: 'admin.ok', action: 'delete', username: target });
     default:
       return bad(ws, rid, 'Unknown admin action');
@@ -2393,6 +2482,7 @@ function handleAdminAction(ws, msg, rid) {
     broadcastProfile(target, profile);
     deliverToUser(target, { t: 'profile', username: target, profile });
   }
+  logAdmin(actor, msg.action, target, user.display_name || target);
   reply(ws, rid, { t: 'admin.ok', action: msg.action, username: target });
 }
 

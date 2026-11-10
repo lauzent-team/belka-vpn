@@ -1089,7 +1089,18 @@ const els = {
   adminChannelsEmpty: $('admin-channels-empty'),
   adminChannelsCount: $('admin-channels-count'),
   adminChannelsSearch: $('admin-channels-search'),
+  btnAdminUnverifyAll: $('btn-admin-unverify-all'),
   btnAdminRefresh: $('btn-admin-refresh'),
+  btnAdminExport: $('btn-admin-export'),
+  adminTabs: $('admin-tabs'),
+  adminTabPanes: document.querySelectorAll('.admin-tabpane'),
+  adminFilters: $('admin-filters'),
+  adminLog: $('admin-log'),
+  adminLogEmpty: $('admin-log-empty'),
+  adminLogCount: $('admin-log-count'),
+  adminAnnouncements: $('admin-announcements'),
+  adminAnnouncementsEmpty: $('admin-announcements-empty'),
+  adminAnnounceCount: $('admin-announce-count'),
   adminAnnounceInput: $('admin-announce-input'),
   btnAdminAnnounce: $('btn-admin-announce'),
 
@@ -1139,6 +1150,10 @@ const state = {
   isAdmin: false, // whether the signed-in account may open the admin panel
   adminUsers: [], // last admin user list, filtered client-side by the search box
   adminChannels: [], // last admin channel list, filtered client-side
+  adminLog: [], // last admin action log, newest first
+  adminAnnouncements: [], // last announcements, newest first
+  adminFilter: 'all', // active filter chip in the users tab
+  adminTab: 'users', // active admin tab
   adminAnnounceCount: 0,
   settingsPane: 'account', // active settings section
   drafts: {}, // peerKey -> unsent composer text, mirrored into account settings
@@ -3496,33 +3511,120 @@ els.settingsNav.addEventListener('click', (e) => {
   if (btn) selectSettingsPane(btn.dataset.pane);
 });
 
-/** Render the admin summary and user table from the relay. */
+/** Render the admin summary and every tab from the relay. */
 async function loadAdminPanel() {
   if (!state.isAdmin) return;
   els.adminUsers.innerHTML = '<p class="panel-empty">Загрузка…</p>';
   els.adminUsersEmpty.hidden = true;
   try {
-    const [{ stats, announcements }, users, channels] = await Promise.all([
+    const [{ stats, announcements, log }, users, channels] = await Promise.all([
       api.adminOverview(),
       api.adminUsers(),
       api.adminChannels().catch(() => [])
     ]);
-    els.adminStats.innerHTML = `
-      <div class="admin-stat"><span class="admin-stat-num">${stats.users}</span><span class="admin-stat-label">Пользователей</span></div>
-      <div class="admin-stat"><span class="admin-stat-num">${stats.online}</span><span class="admin-stat-label">Онлайн</span></div>
-      <div class="admin-stat"><span class="admin-stat-num">${stats.messages}</span><span class="admin-stat-label">Сообщений</span></div>
-      <div class="admin-stat"><span class="admin-stat-num">${stats.groups}</span><span class="admin-stat-label">Групп</span></div>
-      <div class="admin-stat"><span class="admin-stat-num">${stats.channels || 0}</span><span class="admin-stat-label">Каналов</span></div>
-    `;
+    els.adminStats.innerHTML = adminStatCard(stats.users, 'Пользователей') +
+      adminStatCard(stats.online, 'Онлайн') +
+      adminStatCard(stats.messages, 'Сообщений') +
+      adminStatCard(stats.groups, 'Групп') +
+      adminStatCard(stats.channels, 'Каналов') +
+      adminStatCard(stats.verified, 'Проверено') +
+      adminStatCard(stats.admins, 'Админов') +
+      adminStatCard(stats.banned, 'Заблокировано') +
+      adminStatCard(stats.flames, 'Огоньков') +
+      adminStatCard(stats.sessions, 'Сессий');
     state.adminUsers = users;
     state.adminChannels = channels;
+    state.adminLog = log || [];
+    state.adminAnnouncements = announcements;
     state.adminAnnounceCount = announcements.length;
     renderAdminUsers();
     renderAdminChannels();
+    renderAdminLog();
+    renderAdminAnnouncements();
   } catch (err) {
     els.adminUsers.innerHTML = '';
     els.adminUsersEmpty.hidden = false;
     els.adminUsersEmpty.textContent = err.message || 'Не удалось загрузить панель';
+  }
+}
+
+function adminStatCard(value, label) {
+  const n = value == null ? 0 : value;
+  return `<div class="admin-stat"><span class="admin-stat-num">${n}</span><span class="admin-stat-label">${escapeHtml(label)}</span></div>`;
+}
+
+/** Switch the visible admin tab. */
+function selectAdminTab(name) {
+  state.adminTab = name;
+  els.adminTabs.querySelectorAll('.admin-tab').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tab === name);
+  });
+  els.adminTabPanes.forEach((p) => p.classList.toggle('active', p.dataset.tab === name));
+}
+
+/** Human labels for the admin log's action names. */
+const ADMIN_ACTION_LABELS = {
+  announce: 'Объявление',
+  channelVerify: 'Галочка канала',
+  channelDelete: 'Удаление канала',
+  channelUnverifyAll: 'Снятие галочек каналов',
+  verify: 'Галочка',
+  badge: 'Значок',
+  grantAdmin: 'Права админа',
+  nicknameAdd: 'Никнейм добавлен',
+  nicknameRemove: 'Никнейм убран',
+  nicknameSet: 'Никнейм изменён',
+  ban: 'Блокировка',
+  forceLogout: 'Принудительный выход',
+  resetProfile: 'Профиль очищен',
+  clearMessages: 'История очищена',
+  delete: 'Аккаунт удалён'
+};
+
+function fmtDateTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Draw the action log, newest first. */
+function renderAdminLog() {
+  const rows = state.adminLog || [];
+  els.adminLog.innerHTML = '';
+  els.adminLogCount.textContent = String(rows.length);
+  els.adminLogEmpty.hidden = rows.length > 0;
+  for (const r of rows) {
+    const row = document.createElement('div');
+    row.className = 'admin-log-row';
+    const label = ADMIN_ACTION_LABELS[r.action] || r.action;
+    const target = r.target ? ` <b>@${escapeHtml(r.target)}</b>` : '';
+    row.innerHTML = `
+      <span class="admin-log-dot" data-act="${escapeHtml(r.action)}"></span>
+      <div class="admin-log-body">
+        <div class="admin-log-line">${escapeHtml(label)}${target}</div>
+        <div class="admin-log-sub">${escapeHtml(r.actor)} · ${fmtDateTime(r.ts)}${r.detail ? ' · ' + escapeHtml(r.detail) : ''}</div>
+      </div>`;
+    els.adminLog.appendChild(row);
+  }
+}
+
+/** Draw the past announcements, newest first. */
+function renderAdminAnnouncements() {
+  const rows = state.adminAnnouncements || [];
+  els.adminAnnouncements.innerHTML = '';
+  els.adminAnnounceCount.textContent = String(rows.length);
+  els.adminAnnouncementsEmpty.hidden = rows.length > 0;
+  for (const a of rows) {
+    const row = document.createElement('div');
+    row.className = 'admin-log-row';
+    row.innerHTML = `
+      <span class="admin-log-dot" data-act="announce"></span>
+      <div class="admin-log-body">
+        <div class="admin-log-line">${escapeHtml(a.text)}</div>
+        <div class="admin-log-sub">${escapeHtml(a.sender)} · ${fmtDateTime(a.ts)}</div>
+      </div>`;
+    els.adminAnnouncements.appendChild(row);
   }
 }
 
@@ -3535,18 +3637,29 @@ function nicknameSummary(nicknames) {
   return ` · <span class="admin-nick-summary">${escapeHtml(shown + more)}</span>`;
 }
 
-/** Draw the user list, honouring the search box. */
+/** Does a user row pass the active filter chip? */
+function adminUserMatchesFilter(u, filter) {
+  if (filter === 'online') return !!u.online;
+  if (filter === 'verified') return !!u.verified;
+  if (filter === 'admins') return !!u.admin;
+  if (filter === 'banned') return !!u.banned;
+  return true;
+}
+
+/** Draw the user list, honouring the search box and the filter chips. */
 function renderAdminUsers() {
   const query = (els.adminUsersSearch.value || '').trim().toLowerCase();
-  const users = (state.adminUsers || []).filter((u) =>
-    !query || u.username.toLowerCase().includes(query) ||
-    (u.displayName || '').toLowerCase().includes(query)
-  );
+  const filter = state.adminFilter || 'all';
+  const users = (state.adminUsers || []).filter((u) => {
+    if (!adminUserMatchesFilter(u, filter)) return false;
+    return !query || u.username.toLowerCase().includes(query) ||
+      (u.displayName || '').toLowerCase().includes(query);
+  });
   els.adminUsers.innerHTML = '';
   els.adminUsersCount.textContent = String((state.adminUsers || []).length);
   els.adminUsersEmpty.hidden = users.length > 0;
   if (!users.length) {
-    els.adminUsersEmpty.textContent = query ? 'Никого не найдено.' : 'Пользователей пока нет.';
+    els.adminUsersEmpty.textContent = (query || filter !== 'all') ? 'Никого не найдено.' : 'Пользователей пока нет.';
     return;
   }
   for (const u of users) {
@@ -3555,22 +3668,26 @@ function renderAdminUsers() {
     if (u.banned) row.classList.add('is-banned');
     const flags = [
       u.admin ? '<span class="admin-tag admin">админ</span>' : '',
+      u.adminByConfig ? '<span class="admin-tag admin">по конфигу</span>' : '',
       u.verified ? '<span class="admin-tag verified">проверен</span>' : '',
       u.banned ? '<span class="admin-tag banned">заблокирован</span>' : '',
-      u.online ? '<span class="admin-tag online">онлайн</span>' : ''
+      u.online ? '<span class="admin-tag online">онлайн</span>' : '',
+      u.profileHidden ? '<span class="admin-tag">скрытый профиль</span>' : ''
     ].filter(Boolean).join(' ');
+    const lastSeen = u.online ? 'сейчас' : (u.lastSeen ? fmtDateTime(u.lastSeen) : 'не заходил');
     row.innerHTML = `
       <div class="avatar small" data-color="${escapeHtml(u.avatarColor || 'mint')}">${avatarInnerHtml(u.username, u)}</div>
       <div class="admin-user-body">
         <div class="admin-user-name">${escapeHtml(u.displayName || u.username)} ${flags}</div>
-        <div class="admin-user-sub"><span class="admin-at" data-user="${escapeHtml(u.username)}" title="Наведите, чтобы менять никнеймы">@${escapeHtml(u.username)}</span> · ${u.sent} сообщ.${nicknameSummary(u.nicknames)}</div>
+        <div class="admin-user-sub"><span class="admin-at" data-user="${escapeHtml(u.username)}" title="Наведите, чтобы менять никнеймы">@${escapeHtml(u.username)}</span>${nicknameSummary(u.nicknames)}</div>
+        <div class="admin-user-meta">${u.sent} отпр. · ${u.received} получ. · ${u.groups} групп · ${u.subs} подписок · был(а): ${lastSeen}</div>
       </div>
       <div class="admin-user-actions">
         <button class="admin-act${u.verified ? ' on' : ''}" data-act="verify" data-user="${escapeHtml(u.username)}" title="${u.verified ? 'Снять галочку' : 'Дать галочку'}">${icon('i-check')}</button>
         <button class="admin-act${u.badgeImage ? ' on' : ''}" data-act="badge" data-user="${escapeHtml(u.username)}" title="${u.badgeImage ? 'Заменить значок' : 'Свой значок вместо галочки'}">${icon('i-image')}</button>
         <button class="admin-act${u.admin ? ' on' : ''}" data-act="grantAdmin" data-user="${escapeHtml(u.username)}" title="${u.admin ? 'Снять админа' : 'Сделать админом'}">${icon('i-shield')}</button>
         <button class="admin-act danger${u.banned ? ' on' : ''}" data-act="ban" data-user="${escapeHtml(u.username)}" title="${u.banned ? 'Разблокировать' : 'Заблокировать'}">${icon('i-ban')}</button>
-        <button class="admin-act danger" data-act="delete" data-user="${escapeHtml(u.username)}" title="Удалить">${icon('i-trash')}</button>
+        <button class="admin-act" data-act="more" data-user="${escapeHtml(u.username)}" title="Ещё действия">${icon('i-more')}</button>
       </div>
     `;
     els.adminUsers.appendChild(row);
@@ -3600,7 +3717,7 @@ function renderAdminChannels() {
       <div class="avatar small" data-color="cyan">${icon('i-globe')}</div>
       <div class="admin-user-body">
         <div class="admin-user-name">${escapeHtml(c.name)} ${flags}</div>
-        <div class="admin-user-sub">@${escapeHtml(c.owner)} · ${c.subs} подписчиков</div>
+        <div class="admin-user-sub">@${escapeHtml(c.owner)}${c.handle ? ' · ' + escapeHtml(c.handle) : ''} · ${c.subs} подписчиков · ${c.posts} постов</div>
       </div>
       <div class="admin-user-actions">
         <button class="admin-act${c.verified ? ' on' : ''}" data-act="channelVerify" data-channel="${c.id}" title="${c.verified ? 'Снять галочку канала' : 'Дать каналу галочку'}">${icon('i-check')}</button>
@@ -3634,6 +3751,21 @@ els.adminChannels.addEventListener('click', async (e) => {
   }
 });
 els.adminChannelsSearch.addEventListener('input', renderAdminChannels);
+els.btnAdminUnverifyAll.addEventListener('click', async () => {
+  const ok = await confirmDialog({
+    title: 'Снять галочки со всех каналов?',
+    text: 'Все каналы потеряют значок «проверен». Отменить это действие нельзя.',
+    confirmLabel: 'Снять'
+  });
+  if (!ok) return;
+  try {
+    await api.adminAction({ action: 'channelUnverifyAll' });
+    toast('Готово');
+    loadAdminPanel();
+  } catch (err) {
+    toast(err.message || 'Не удалось выполнить действие');
+  }
+});
 
 /* --------------------------- badge image dialog --------------------------- */
 // An admin can give an account its own round picture in place of the checkmark.
@@ -3780,21 +3912,58 @@ els.badgeBackdrop.addEventListener('click', (e) => {
   if (e.target === els.badgeBackdrop) badgeDialogClose();
 });
 
-els.adminUsers.addEventListener('click', async (e) => {
-  const btn = e.target.closest('.admin-act');
-  if (!btn) return;
-  const { act, user } = btn.dataset;
-  if (act === 'badge') {
-    const row = (state.adminUsers || []).find((u) => u.username === user);
-    badgeDialogOpen(user, row && row.badgeImage);
-    return;
+/** A small popup of the less common per-account actions. */
+let adminMorePop = null;
+
+function closeAdminMorePop() {
+  if (adminMorePop) { adminMorePop.remove(); adminMorePop = null; }
+}
+
+function openAdminMorePop(anchor, user) {
+  closeAdminMorePop();
+  const row = (state.adminUsers || []).find((u) => u.username === user) || {};
+  const pop = document.createElement('div');
+  pop.className = 'admin-more-pop';
+  const items = [
+    { act: 'forceLogout', label: 'Выйти на всех устройствах', danger: false },
+    { act: 'resetProfile', label: 'Очистить профиль', danger: false },
+    { act: 'clearMessages', label: 'Удалить переписку', danger: true },
+    { act: 'delete', label: 'Удалить аккаунт', danger: true }
+  ];
+  for (const it of items) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'admin-more-item' + (it.danger ? ' danger' : '');
+    b.textContent = it.label;
+    b.addEventListener('click', () => { closeAdminMorePop(); runAdminAction(it.act, user, row); });
+    pop.appendChild(b);
   }
-  if (act === 'delete') {
-    const ok = await confirmDialog({
-      title: 'Удалить аккаунт?',
-      text: `Аккаунт @${user} и все его сообщения будут удалены безвозвратно.`,
-      confirmLabel: 'Удалить'
-    });
+  document.body.appendChild(pop);
+  adminMorePop = pop;
+  const r = anchor.getBoundingClientRect();
+  const left = Math.min(r.left, window.innerWidth - 240);
+  const top = Math.min(r.bottom + 6, window.innerHeight - pop.offsetHeight - 8);
+  pop.style.left = Math.max(8, left) + 'px';
+  pop.style.top = Math.max(8, top) + 'px';
+}
+
+document.addEventListener('click', (e) => {
+  if (adminMorePop && !e.target.closest('.admin-more-pop') && !e.target.closest('[data-act="more"]')) {
+    closeAdminMorePop();
+  }
+});
+
+/** Run one admin action, with the confirmation its risk warrants. */
+async function runAdminAction(act, user, row) {
+  const confirmations = {
+    delete: { title: 'Удалить аккаунт?', text: `Аккаунт @${user} и все его сообщения будут удалены безвозвратно.`, confirmLabel: 'Удалить' },
+    clearMessages: { title: 'Удалить переписку?', text: `Все сообщения @${user} будут удалены с ретранслятора у обоих собеседников.`, confirmLabel: 'Удалить' },
+    forceLogout: { title: 'Выйти на всех устройствах?', text: `@${user} будет отключён на всех устройствах. Войти снова можно с тем же паролем.`, confirmLabel: 'Выйти' },
+    resetProfile: { title: 'Очистить профиль?', text: `Имя, описание, аватар, соцсети и никнеймы @${user} будут стёрты. Сообщения не тронуты.`, confirmLabel: 'Очистить' }
+  };
+  const c = confirmations[act];
+  if (c) {
+    const ok = await confirmDialog(c);
     if (!ok) return;
   }
   try {
@@ -3809,10 +3978,76 @@ els.adminUsers.addEventListener('click', async (e) => {
   } catch (err) {
     toast(err.message || 'Не удалось выполнить действие');
   }
+}
+
+els.adminUsers.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.admin-act');
+  if (!btn) return;
+  const { act, user } = btn.dataset;
+  if (act === 'badge') {
+    const row = (state.adminUsers || []).find((u) => u.username === user);
+    badgeDialogOpen(user, row && row.badgeImage);
+    return;
+  }
+  if (act === 'more') {
+    openAdminMorePop(btn, user);
+    return;
+  }
+  await runAdminAction(act, user, (state.adminUsers || []).find((u) => u.username === user));
 });
 
 els.adminUsersSearch.addEventListener('input', renderAdminUsers);
 els.btnAdminRefresh.addEventListener('click', () => loadAdminPanel());
+
+els.adminTabs.addEventListener('click', (e) => {
+  const tab = e.target.closest('.admin-tab');
+  if (tab) selectAdminTab(tab.dataset.tab);
+});
+
+els.adminFilters.addEventListener('click', (e) => {
+  const chip = e.target.closest('.admin-filter');
+  if (!chip) return;
+  state.adminFilter = chip.dataset.filter;
+  els.adminFilters.querySelectorAll('.admin-filter').forEach((c) => {
+    c.classList.toggle('active', c.dataset.filter === state.adminFilter);
+  });
+  renderAdminUsers();
+});
+
+/** Write a plain-text moderation report and hand it to the user to save. */
+function exportAdminReport() {
+  const lines = [];
+  const when = new Date().toLocaleString();
+  lines.push(`SleePhy — отчёт админ-панели (${when})`, '');
+  lines.push(`Пользователей: ${(state.adminUsers || []).length}`);
+  lines.push(`Каналов: ${(state.adminChannels || []).length}`);
+  lines.push(`Объявлений: ${(state.adminAnnouncements || []).length}`, '');
+  lines.push('== Пользователи ==');
+  for (const u of state.adminUsers || []) {
+    const tags = [u.admin ? 'админ' : '', u.verified ? 'проверен' : '', u.banned ? 'заблокирован' : '', u.online ? 'онлайн' : '']
+      .filter(Boolean).join(', ');
+    lines.push(`@${u.username}\t${u.displayName || ''}\t${tags}\tотпр:${u.sent}\tполуч:${u.received}`);
+  }
+  lines.push('', '== Каналы ==');
+  for (const c of state.adminChannels || []) {
+    lines.push(`${c.name}\t@${c.owner}\t${c.verified ? 'проверен' : ''}\tподписчиков:${c.subs}`);
+  }
+  lines.push('', '== Журнал ==');
+  for (const r of state.adminLog || []) {
+    lines.push(`${fmtDateTime(r.ts)}\t${r.actor}\t${ADMIN_ACTION_LABELS[r.action] || r.action}\t${r.target || ''}`);
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `sleephy-admin-${Date.now()}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  toast('Отчёт сохранён');
+}
+
+els.btnAdminExport.addEventListener('click', exportAdminReport);
 
 /* ------------------- admin: nickname editor popup ------------------- */
 // Hovering an @handle in the admin list opens a small popup where an admin can
@@ -3984,6 +4219,8 @@ els.btnAdminAnnounce.addEventListener('click', async () => {
     await api.adminAction({ action: 'announce', text });
     els.adminAnnounceInput.value = '';
     toast('Объявление отправлено');
+    // Refresh so the sent announcement appears in the history and the log.
+    loadAdminPanel();
   } catch (err) {
     toast(err.message || 'Не удалось отправить объявление');
   }

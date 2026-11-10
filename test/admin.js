@@ -295,6 +295,125 @@ async function main() {
     protectedAdmin.client.disconnect();
   });
 
+  /* ---------------------- the expanded admin panel ---------------------- */
+
+  await step('the overview reports the fuller set of counters', async () => {
+    const { stats } = await admin.client.adminOverview();
+    for (const key of ['users', 'online', 'messages', 'groups', 'channels',
+      'banned', 'verified', 'admins', 'announcements', 'sessions', 'flames']) {
+      assert.ok(typeof stats[key] === 'number', `stats.${key} should be a number`);
+    }
+    assert.strictEqual(stats.announcements, 1, 'the earlier announcement is counted');
+    assert.ok(stats.verified >= 1, 'victim_user is still verified');
+  });
+
+  await step('the user list carries the richer per-account detail', async () => {
+    const items = await admin.client.adminUsers();
+    const victim = items.find((i) => i.username === 'victim_user');
+    for (const key of ['received', 'groups', 'subs', 'lastSeen', 'hasPassword',
+      'hasPhone', 'profileHidden', 'lastSeenHidden', 'adminByConfig']) {
+      assert.ok(key in victim, `user row should expose ${key}`);
+    }
+    assert.strictEqual(victim.verified, true, 'verified flag still present');
+  });
+
+  await step('an announcement is written to the action log', async () => {
+    const { log } = await admin.client.adminOverview();
+    const entry = log.find((r) => r.action === 'announce');
+    assert.ok(entry, 'the announcement should appear in the log');
+    assert.strictEqual(entry.actor, ADMIN, 'and name the admin who sent it');
+  });
+
+  await step('forcing a sign-out drops the device without blocking the account', async () => {
+    const u = makeClient('logoutme');
+    await u.client.connect(URL);
+    await u.client.register({ username: 'logout_target', password: 'logout-pass-1' });
+    await admin.client.adminAction({ action: 'forceLogout', username: 'logout_target' });
+    const evt = await waitFor(u.events, (e) => e.type === 'kicked', 5000);
+    assert.ok(/signed out/i.test(evt.reason), `expected a sign-out reason, got ${evt.reason}`);
+    // Not blocked: the same account can sign straight back in.
+    const back = makeClientFrom(u.dir, 'logoutback');
+    await back.client.connect(URL);
+    await back.client.login({ username: 'logout_target', password: 'logout-pass-1' });
+    assert.strictEqual(back.client.username, 'logout_target');
+    back.client.disconnect();
+  });
+
+  await step('resetting a profile wipes its fields but keeps the account', async () => {
+    // Give the account a profile through its own device, then reset it.
+    const u = makeClient('profreset');
+    await u.client.connect(URL);
+    await u.client.register({ username: 'profile_target', password: 'profile-pass-1' });
+    await u.client.saveProfile({ displayName: 'Big Name', bio: 'hello', avatarColor: 'rose' });
+    let profile = await admin.client.adminUsers();
+    assert.strictEqual(profile.find((x) => x.username === 'profile_target').displayName, 'Big Name');
+
+    await admin.client.adminAction({ action: 'resetProfile', username: 'profile_target' });
+    const after = await admin.client.adminUsers();
+    const row = after.find((x) => x.username === 'profile_target');
+    assert.strictEqual(row.displayName, 'profile_target', 'the name falls back to the handle');
+    assert.strictEqual(row.bio, '', 'the bio is cleared');
+    assert.ok(row, 'the account is not deleted');
+    u.client.disconnect();
+  });
+
+  await step('clearing messages erases the relay copies for both sides', async () => {
+    const a = makeClient('clear_a');
+    const b = makeClient('clear_b');
+    await a.client.connect(URL);
+    await b.client.connect(URL);
+    await a.client.register({ username: 'clear_a', password: 'clear-a-pass-1' });
+    await b.client.register({ username: 'clear_b', password: 'clear-b-pass-1' });
+    await a.client.sendMessage({ to: 'clear_b', text: 'secret one' });
+    await a.client.sendMessage({ to: 'clear_b', text: 'secret two' });
+
+    let db = new DatabaseSync(DB, { readOnly: true });
+    let count = db.prepare(
+      'SELECT COUNT(*) AS c FROM messages WHERE sender = ? OR recipient = ?'
+    ).get('clear_a', 'clear_a');
+    db.close();
+    assert.ok(count.c >= 2, 'the messages are stored before clearing');
+
+    await admin.client.adminAction({ action: 'clearMessages', username: 'clear_a' });
+    db = new DatabaseSync(DB, { readOnly: true });
+    count = db.prepare(
+      'SELECT COUNT(*) AS c FROM messages WHERE sender = ? OR recipient = ?'
+    ).get('clear_a', 'clear_a');
+    const stillThere = db.prepare('SELECT COUNT(*) AS c FROM users WHERE username = ?').get('clear_a');
+    db.close();
+    assert.strictEqual(count.c, 0, 'the relay copies are gone');
+    assert.strictEqual(stillThere.c, 1, 'but the account survives');
+    a.client.disconnect();
+    b.client.disconnect();
+  });
+
+  await step('clearing all channel checkmarks clears them', async () => {
+    const owner = makeClient('chanowner');
+    await owner.client.connect(URL);
+    await owner.client.register({ username: 'chan_owner', password: 'chan-pass-1' });
+    await owner.client.createChannel({ name: 'Test Channel', description: 'x' });
+    const channels = await admin.client.adminChannels();
+    const ch = channels.find((c) => c.owner === 'chan_owner');
+    assert.ok(ch, 'the channel exists');
+    await admin.client.adminAction({ action: 'channelVerify', channelId: ch.id });
+    let list = await admin.client.adminChannels();
+    assert.strictEqual(list.find((c) => c.id === ch.id).verified, true);
+
+    await admin.client.adminAction({ action: 'channelUnverifyAll' });
+    list = await admin.client.adminChannels();
+    assert.ok(list.every((c) => !c.verified), 'no channel should stay verified');
+    owner.client.disconnect();
+  });
+
+  await step('a non-admin is refused the new actions too', async () => {
+    for (const action of ['forceLogout', 'resetProfile', 'clearMessages', 'channelUnverifyAll']) {
+      let threw = false;
+      try { await user.client.adminAction({ action, username: 'victim_user' }); }
+      catch { threw = true; }
+      assert.ok(threw, `a non-admin must be refused ${action}`);
+    }
+  });
+
   admin.client.disconnect();
   user.client.disconnect();
   victim.client.disconnect();

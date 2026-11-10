@@ -1099,6 +1099,59 @@ body.theme-light ::-webkit-scrollbar-thumb { background: #C4CEDA; }
 .admin-tag.banned { background: rgba(224, 82, 78, 0.18); color: #F0918E; }
 .admin-tag.online { background: rgba(79, 190, 139, 0.18); color: #6FD3A6; }
 
+/* Admin tabs: one pane visible at a time, like the settings sections. */
+.admin-tabs { display: flex; gap: 4px; background: var(--bg-2); border-radius: var(--radius-sm); padding: 3px; }
+.admin-tab {
+  flex: 1; border: 0; background: none; color: var(--text-dim); cursor: pointer;
+  font-size: 12.5px; font-weight: 600; padding: 7px 6px; border-radius: 8px;
+  transition: background 0.14s var(--ease), color 0.14s var(--ease);
+}
+.admin-tab:hover { color: var(--text); }
+.admin-tab.active { background: var(--bg-4); color: var(--text); }
+.admin-tabpane { display: none; flex-direction: column; gap: 10px; }
+.admin-tabpane.active { display: flex; }
+
+.admin-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.admin-filter {
+  border: 0; background: var(--bg-3); color: var(--text-dim); cursor: pointer;
+  font-size: 11.5px; font-weight: 600; padding: 5px 11px; border-radius: 999px;
+  transition: background 0.14s var(--ease), color 0.14s var(--ease);
+}
+.admin-filter:hover { background: var(--bg-4); color: var(--text); }
+.admin-filter.active { background: rgba(82, 136, 193, 0.18); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+
+.admin-user-meta { font-size: 11px; color: var(--text-faint); margin-top: 1px; }
+
+.admin-log { display: flex; flex-direction: column; gap: 2px; }
+.admin-log-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border-radius: var(--radius-sm); }
+.admin-log-row:hover { background: var(--bg-3); }
+.admin-log-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 5px; flex: none; background: var(--text-faint); }
+.admin-log-dot[data-act="delete"], .admin-log-dot[data-act="ban"],
+.admin-log-dot[data-act="clearMessages"], .admin-log-dot[data-act="channelDelete"] { background: var(--danger); }
+.admin-log-dot[data-act="verify"], .admin-log-dot[data-act="channelVerify"],
+.admin-log-dot[data-act="grantAdmin"] { background: var(--accent); }
+.admin-log-dot[data-act="announce"] { background: #E0A64F; }
+.admin-log-body { min-width: 0; flex: 1; }
+.admin-log-line { font-size: 13px; }
+.admin-log-line b { color: var(--accent); font-weight: 600; }
+.admin-log-sub { font-size: 11px; color: var(--text-faint); margin-top: 1px; }
+
+/* The overflow menu of less common per-account actions. */
+.admin-more-pop {
+  position: fixed; z-index: 60; min-width: 220px;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px;
+  padding: 5px; box-shadow: 0 12px 34px rgba(0, 0, 0, 0.4);
+  display: flex; flex-direction: column;
+}
+.admin-more-item {
+  border: 0; background: none; color: var(--text); cursor: pointer; text-align: left;
+  font-size: 13px; padding: 8px 10px; border-radius: 8px;
+  transition: background 0.14s var(--ease), color 0.14s var(--ease);
+}
+.admin-more-item:hover { background: var(--bg-3); }
+.admin-more-item.danger { color: var(--danger); }
+.admin-more-item.danger:hover { background: rgba(224, 82, 78, 0.14); }
+
 /* ============================== emoji / stickers ============================== */
 .panel-switch { display: flex; gap: 4px; margin-bottom: 10px; }
 .panel-switch-tab {

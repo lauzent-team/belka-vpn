@@ -905,47 +905,84 @@
                 <span class="admin-head-ico" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-shield"></use></svg></span>
                 <div class="admin-head-meta">
                   <span class="admin-head-title">Админ-панель</span>
-                  <span class="admin-head-sub">Управление пользователями и объявлениями</span>
+                  <span class="admin-head-sub">Управление пользователями, каналами и объявлениями</span>
                 </div>
+                <button class="icon-btn" id="btn-admin-export" title="Выгрузить отчёт"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-file"></use></svg></button>
                 <button class="icon-btn" id="btn-admin-refresh" title="Обновить"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-refresh"></use></svg></button>
               </div>
 
               <div class="admin-stats" id="admin-stats"></div>
 
-              <div class="admin-card">
-                <span class="admin-card-title">Объявление всем</span>
-                <p class="admin-card-sub">Сообщение получат все подключённые пользователи.</p>
-                <div class="admin-announce-row">
-                  <input id="admin-announce-input" class="contact-input" type="text"
-                         spellcheck="false" maxlength="300" placeholder="Текст объявления…" />
-                  <button class="btn-primary btn-compact" id="btn-admin-announce">Отправить</button>
+              <div class="admin-tabs" id="admin-tabs">
+                <button class="admin-tab active" data-tab="users">Пользователи</button>
+                <button class="admin-tab" data-tab="channels">Каналы</button>
+                <button class="admin-tab" data-tab="log">Журнал</button>
+                <button class="admin-tab" data-tab="broadcast">Рассылка</button>
+              </div>
+
+              <div class="admin-tabpane active" data-tab="users">
+                <div class="admin-users-head">
+                  <span class="admin-card-title">Пользователи <span class="admin-count" id="admin-users-count"></span></span>
+                  <input id="admin-users-search" class="admin-search" type="text"
+                         spellcheck="false" placeholder="Поиск по нику…" />
                 </div>
+
+                <div class="admin-filters" id="admin-filters">
+                  <button class="admin-filter active" data-filter="all">Все</button>
+                  <button class="admin-filter" data-filter="online">Онлайн</button>
+                  <button class="admin-filter" data-filter="verified">Проверенные</button>
+                  <button class="admin-filter" data-filter="admins">Админы</button>
+                  <button class="admin-filter" data-filter="banned">Заблокированные</button>
+                </div>
+
+                <div class="admin-legend">
+                  <span><b><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-check"></use></svg></b> галочка</span>
+                  <span><b><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-image"></use></svg></b> значок</span>
+                  <span><b><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-shield"></use></svg></b> админ</span>
+                  <span><b><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-ban"></use></svg></b> блокировка</span>
+                  <span><b><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-more"></use></svg></b> ещё</span>
+                </div>
+
+                <div class="admin-users" id="admin-users"></div>
+                <p class="panel-empty" id="admin-users-empty" hidden>Пользователей пока нет.</p>
               </div>
 
-              <div class="admin-users-head">
-                <span class="admin-card-title">Пользователи <span class="admin-count" id="admin-users-count"></span></span>
-                <input id="admin-users-search" class="admin-search" type="text"
-                       spellcheck="false" placeholder="Поиск по нику…" />
+              <div class="admin-tabpane" data-tab="channels">
+                <div class="admin-users-head">
+                  <span class="admin-card-title">Каналы <span class="admin-count" id="admin-channels-count"></span></span>
+                  <input id="admin-channels-search" class="admin-search" type="text"
+                         spellcheck="false" placeholder="Поиск по названию…" />
+                  <button class="admin-filter" id="btn-admin-unverify-all" title="Снять галочки со всех каналов">Снять галочки</button>
+                </div>
+                <div class="admin-users" id="admin-channels"></div>
+                <p class="panel-empty" id="admin-channels-empty" hidden>Каналов пока нет.</p>
               </div>
 
-              <div class="admin-legend">
-                <span><b><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-check"></use></svg></b> галочка</span>
-                <span><b><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-image"></use></svg></b> значок</span>
-                <span><b><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-shield"></use></svg></b> админ</span>
-                <span><b><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-ban"></use></svg></b> блокировка</span>
-                <span><b><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"></use></svg></b> удалить</span>
+              <div class="admin-tabpane" data-tab="log">
+                <div class="admin-users-head">
+                  <span class="admin-card-title">Журнал действий <span class="admin-count" id="admin-log-count"></span></span>
+                </div>
+                <p class="admin-card-sub">Что делали администраторы. Текст сообщений сюда не попадает — ретранслятор его не видит.</p>
+                <div class="admin-log" id="admin-log"></div>
+                <p class="panel-empty" id="admin-log-empty" hidden>Записей пока нет.</p>
               </div>
 
-              <div class="admin-users" id="admin-users"></div>
-              <p class="panel-empty" id="admin-users-empty" hidden>Пользователей пока нет.</p>
-
-              <div class="admin-users-head">
-                <span class="admin-card-title">Каналы <span class="admin-count" id="admin-channels-count"></span></span>
-                <input id="admin-channels-search" class="admin-search" type="text"
-                       spellcheck="false" placeholder="Поиск по названию…" />
+              <div class="admin-tabpane" data-tab="broadcast">
+                <div class="admin-card">
+                  <span class="admin-card-title">Объявление всем</span>
+                  <p class="admin-card-sub">Сообщение получат все подключённые пользователи.</p>
+                  <div class="admin-announce-row">
+                    <input id="admin-announce-input" class="contact-input" type="text"
+                           spellcheck="false" maxlength="300" placeholder="Текст объявления…" />
+                    <button class="btn-primary btn-compact" id="btn-admin-announce">Отправить</button>
+                  </div>
+                </div>
+                <div class="admin-users-head">
+                  <span class="admin-card-title">Прошлые объявления <span class="admin-count" id="admin-announce-count"></span></span>
+                </div>
+                <div class="admin-log" id="admin-announcements"></div>
+                <p class="panel-empty" id="admin-announcements-empty" hidden>Объявлений пока не было.</p>
               </div>
-              <div class="admin-users" id="admin-channels"></div>
-              <p class="panel-empty" id="admin-channels-empty" hidden>Каналов пока нет.</p>
             </section>
           </div>
         </div>

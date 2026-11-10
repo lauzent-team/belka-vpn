@@ -1116,7 +1116,11 @@ class SleePhyClient {
 
   async adminOverview() {
     const res = await this.request({ t: 'admin.overview' });
-    return { stats: res.stats, announcements: res.announcements || [] };
+    return {
+      stats: res.stats,
+      announcements: res.announcements || [],
+      log: res.log || []
+    };
   }
 
   async adminUsers() {
