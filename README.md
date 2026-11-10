@@ -47,6 +47,10 @@ and forwards ciphertext it cannot read.
 - **Gifts** — a small sticker-like present in a chat
 - **Polls** — a question with options, single- or multiple-choice, sent as an
   ordinary encrypted message; the tally is local and updates on both devices
+- **Stories** — a 24-hour post (a caption, a picture, or both) shared with your
+  contacts and the people you have talked to. Each viewer gets their own
+  encrypted copy, so the relay stores only ciphertext and never learns the text,
+  the picture or who watched what. The author sees a view count, not a list
 
 **Search**
 - Find people and channels by username from the top box
