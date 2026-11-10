@@ -1016,3 +1016,13 @@ body.theme-light ::-webkit-scrollbar-thumb { background: #C4CEDA; }
   animation-iteration-count: 1 !important;
   transition-duration: 0.001ms !important;
 }
+
+/* ============================== mentions ============================== */
+.mention {
+  color: var(--accent);
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.mention:hover { text-decoration: underline; }
+.msg.out .mention { color: #A8CCF5; }

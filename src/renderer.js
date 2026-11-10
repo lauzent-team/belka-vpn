@@ -450,6 +450,27 @@ function escapeHtml(s) {
   }[c]));
 }
 
+// A username is typed and shown as `@alice`, but stored bare. This is the one
+// place that decides what a name is, so every field and validator agrees.
+const USERNAME_RE = /^[a-z0-9_]{3,32}$/;
+function bareUsername(value) {
+  return String(value == null ? '' : value).trim().replace(/^@+/, '').toLowerCase();
+}
+/** `alice` -> `@alice`, for display. */
+function atUsername(value) {
+  const bare = bareUsername(value);
+  return bare ? '@' + bare : '';
+}
+
+// `@name` inside message text, so it can be styled and clicked. Usernames are
+// 3-32 of a-z 0-9 _, so a mention ends at the first character outside that set.
+const MENTION_RE = /@([a-z0-9_]{3,32})/gi;
+/** Escape message text, then turn `@name` into a clickable mention span. */
+function messageTextHtml(text) {
+  return escapeHtml(text).replace(MENTION_RE, (whole, name) =>
+    `<span class="mention" data-username="${escapeHtml(name.toLowerCase())}">${whole}</span>`);
+}
+
 /** Reference an icon from the sprite declared at the top of index.html. */
 function icon(id, cls) {
   return `<svg class="ico${cls ? ` ${cls}` : ''}" viewBox="0 0 24 24" aria-hidden="true"><use href="#${id}"></use></svg>`;
@@ -605,11 +626,11 @@ els.tabs.forEach((tab) => tab.addEventListener('click', () => {
 els.formAuth.addEventListener('submit', async (e) => {
   e.preventDefault();
   showError(els.authError, null);
-  const username = els.authUser.value.trim().toLowerCase();
+  const username = bareUsername(els.authUser.value);
   const password = els.authPass.value;
   const confirm = els.authConfirm.value;
 
-  if (!/^[a-z0-9_]{3,32}$/.test(username)) {
+  if (!USERNAME_RE.test(username)) {
     return showError(els.authError, i18n.t('Username: 3–32 characters, a–z, 0–9 or _'));
   }
   if (password.length < 8) {
@@ -1014,10 +1035,10 @@ function paintChatSection(container, keys) {
 function renderMessageBody(m) {
   if (m.deleted) return '<span class="deleted-text">This message was deleted</span>';
   if (m.kind && m.attachment) {
-    const cap = m.text ? `<div class="caption">${escapeHtml(m.text)}</div>` : '';
+    const cap = m.text ? `<div class="caption">${messageTextHtml(m.text)}</div>` : '';
     return `<div class="att-wrap" data-kind="${escapeHtml(m.kind)}"></div>${cap}`;
   }
-  return escapeHtml(m.text);
+  return messageTextHtml(m.text);
 }
 
 function reactionsHtml(m) {
@@ -1092,6 +1113,13 @@ function messageEl(m) {
     chip.addEventListener('click', async (e) => {
       e.stopPropagation();
       await toggleReaction(m.id, chip.dataset.emoji);
+    });
+  });
+  el.querySelectorAll('.mention').forEach((span) => {
+    span.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const name = span.dataset.username;
+      if (name && name !== state.username) openProfile(name);
     });
   });
   return el;
@@ -1324,8 +1352,8 @@ els.search.addEventListener('input', () => {
 els.search.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { els.search.value = ''; els.btnSearchClear.hidden = true; closeSearchPanel(); }
   if (e.key === 'Enter') {
-    const q = els.search.value.trim().toLowerCase();
-    if (/^[a-z0-9_]{3,32}$/.test(q)) {
+    const q = bareUsername(els.search.value);
+    if (USERNAME_RE.test(q)) {
       els.search.value = '';
       els.btnSearchClear.hidden = true;
       closeSearchPanel();
@@ -1836,7 +1864,7 @@ async function showProfile(username, { self = false } = {}) {
   els.profileDisplay.textContent = p.displayName || p.username;
   els.profileHandle.textContent = '@' + p.username;
   paintBadge(els.profileBadge, p.username);
-  els.profileViewUsername.textContent = p.username;
+  els.profileViewUsername.textContent = atUsername(p.username);
   els.profileViewBio.textContent = p.bio || '—';
   const presenceText = peerPresenceText(p.username);
   els.profilePresence.textContent = isSelf ? 'Это вы' : (presenceText || 'не в сети');
@@ -2059,9 +2087,9 @@ els.profileForm.addEventListener('submit', async (e) => {
 });
 
 els.btnUsernameSave.addEventListener('click', async () => {
-  const next = els.usernameInput.value.trim().toLowerCase();
+  const next = bareUsername(els.usernameInput.value);
   showError(els.usernameError, null);
-  if (!/^[a-z0-9_]{3,32}$/.test(next)) {
+  if (!USERNAME_RE.test(next)) {
     return showError(els.usernameError, 'Username: 3–32 characters, a–z, 0–9 or _');
   }
   if (next === state.username) return showError(els.usernameError, 'That is already your username');
@@ -4058,9 +4086,9 @@ els.contactsList.addEventListener('click', async (e) => {
 });
 
 els.btnContactAdd.addEventListener('click', async () => {
-  const username = els.contactInput.value.trim().toLowerCase();
+  const username = bareUsername(els.contactInput.value);
   els.contactError.hidden = true;
-  if (!/^[a-z0-9_]{3,32}$/.test(username)) {
+  if (!USERNAME_RE.test(username)) {
     els.contactError.textContent = 'Ник: 3–32 символа a–z, 0–9, _';
     els.contactError.hidden = false;
     return;

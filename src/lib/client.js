@@ -44,6 +44,13 @@ function resolveDefaultServer() {
 
 const DEFAULT_SERVER = resolveDefaultServer();
 
+// People write usernames as `@alice`. The leading `@` is presentation, not part
+// of the name, so it is stripped wherever a name enters the client. The stored
+// form stays bare and matches the server's primary key.
+function bareUsername(value) {
+  return typeof value === 'string' ? value.trim().replace(/^@+/, '').toLowerCase() : value;
+}
+
 class SleePhyClient {
   constructor({ userDataDir, onEvent }) {
     this.file = path.join(userDataDir, 'sleephy-identity.json');
@@ -480,6 +487,7 @@ class SleePhyClient {
   }
 
   async register({ username, password }) {
+    username = bareUsername(username);
     const identity = await cryptoLib.generateIdentity();
     const salt = cryptoLib.makeSalt();
     const verifier = cryptoLib.passwordVerifier(password, salt);
@@ -505,6 +513,7 @@ class SleePhyClient {
   }
 
   async login({ username, password }) {
+    username = bareUsername(username);
     const res = await this.request({ t: 'login', username, password });
     this.applySession(res);
     this.publicKey = res.publicKey;
@@ -594,6 +603,7 @@ class SleePhyClient {
   }
 
   async ensurePeerKey(username) {
+    username = bareUsername(username);
     if (this.peerKeys.has(username)) return this.peerKeys.get(username);
     const res = await this.request({ t: 'directory', username });
     this.peerKeys.set(res.username, res.publicKey);
@@ -604,6 +614,7 @@ class SleePhyClient {
 
   async sendMessage({ to, text, replyTo, attachment }) {
     if (!this.secretKey) throw new Error('Vault is locked');
+    to = bareUsername(to);
     const peerKey = await this.ensurePeerKey(to);
 
     let box, nonce, kind = null, encAttachment = null;
@@ -902,8 +913,8 @@ class SleePhyClient {
   // A channel is one-to-many: only the owner posts. Every subscriber gets one
   // encrypted copy, exactly like a group message.
 
-  async createChannel({ name, description }) {
-    const res = await this.request({ t: 'channel.create', name, description });
+  async createChannel({ name, description, handle }) {
+    const res = await this.request({ t: 'channel.create', name, description, handle });
     return res.channel;
   }
 
@@ -917,13 +928,13 @@ class SleePhyClient {
     return res.items || [];
   }
 
-  async channelInfo({ channelId }) {
-    const res = await this.request({ t: 'channel.info', channelId });
+  async channelInfo({ channelId, handle }) {
+    const res = await this.request({ t: 'channel.info', channelId, handle });
     return res.channel;
   }
 
-  async joinChannel({ channelId }) {
-    const res = await this.request({ t: 'channel.join', channelId });
+  async joinChannel({ channelId, handle }) {
+    const res = await this.request({ t: 'channel.join', channelId, handle });
     return res.channel;
   }
 
@@ -931,8 +942,8 @@ class SleePhyClient {
     await this.request({ t: 'channel.leave', channelId });
   }
 
-  async editChannel({ channelId, name, description }) {
-    const res = await this.request({ t: 'channel.edit', channelId, name, description });
+  async editChannel({ channelId, name, description, handle }) {
+    const res = await this.request({ t: 'channel.edit', channelId, name, description, handle });
     return res.channel;
   }
 
@@ -1137,7 +1148,7 @@ class SleePhyClient {
 
   /* ------------------------------ profile ------------------------------ */
   async getProfile(username) {
-    const res = await this.request({ t: 'profile.get', username });
+    const res = await this.request({ t: 'profile.get', username: bareUsername(username) });
     if (res.profile && res.profile.username) {
       this.peerProfiles.set(res.profile.username, res.profile);
     }
@@ -1166,6 +1177,7 @@ class SleePhyClient {
   }
 
   async changeUsername(username) {
+    username = bareUsername(username);
     const res = await this.request({ t: 'profile.username', username });
     const old = this.username;
     this.username = res.username;

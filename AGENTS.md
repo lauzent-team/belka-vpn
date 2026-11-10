@@ -24,6 +24,7 @@ node test/session.js  # token persistence, relay restart, unlock, avatar images
 node test/peer-badges.js # a peer's checkmark and picture survive re-entry
 node test/streaks.js  # the "огонёк": days active in a row, extend, reset, rename
 node test/downloads.js # the relay serves the download page and the installer
+node test/handles.js # @-usernames and channel @handles
 xvfb-run -a node test/ui.js            # UI tests driving the real Electron app
 xvfb-run -a node test/ui-features.js   # the newer UI features, clicked for real
 xvfb-run -a node test/ui-drawer.js     # drawer, settings, contacts, groups, accounts

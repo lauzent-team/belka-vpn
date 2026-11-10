@@ -194,10 +194,18 @@ for (const sql of [
   // A profile picture (a small data: URL). Distinct from the admin badge.
   'ALTER TABLE users ADD COLUMN avatar_image TEXT',
   // When this account was last seen online, so peers can show "last seen".
-  'ALTER TABLE users ADD COLUMN last_seen INTEGER'
+  'ALTER TABLE users ADD COLUMN last_seen INTEGER',
+  // A public @handle for a channel, so it can be found and shared as `@name`
+  // instead of by an opaque numeric id.
+  'ALTER TABLE channels ADD COLUMN handle TEXT'
 ]) {
   try { db.exec(sql); } catch { /* column already present */ }
 }
+
+// A channel handle is unique, like a username. SQLite exempts NULLs from a
+// UNIQUE index, so legacy channels without a handle never collide.
+try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_handle ON channels(handle)'); }
+catch { /* a legacy database already holds a duplicate handle */ }
 
 // One account per phone number. Username/password accounts keep phone NULL,
 // and SQLite exempts NULLs from a UNIQUE index, so they never collide.
@@ -356,10 +364,11 @@ const q = {
 
   /* ------------------------------ channels ------------------------------ */
   insertChannel: db.prepare(
-    'INSERT INTO channels (name, owner, description, created_at) VALUES (?, ?, ?, ?)'
+    'INSERT INTO channels (name, owner, description, handle, created_at) VALUES (?, ?, ?, ?, ?)'
   ),
   getChannel: db.prepare('SELECT * FROM channels WHERE id = ?'),
-  renameChannel: db.prepare('UPDATE channels SET name = ?, description = ? WHERE id = ?'),
+  getChannelByHandle: db.prepare('SELECT * FROM channels WHERE handle = ?'),
+  renameChannel: db.prepare('UPDATE channels SET name = ?, description = ?, handle = ? WHERE id = ?'),
   setChannelVerified: db.prepare('UPDATE channels SET verified = ? WHERE id = ?'),
   deleteChannel: db.prepare('DELETE FROM channels WHERE id = ?'),
   deleteChannelPosts: db.prepare('DELETE FROM channel_messages WHERE channel_id = ?'),
@@ -499,6 +508,36 @@ function resolveToken(token) {
 
 /* ------------------------------ helpers ------------------------------ */
 const USERNAME_RE = /^[a-z0-9_]{3,32}$/;
+// A username is stored bare (`alice`); the leading `@` is how people write and
+// read it, so every entry point strips it before validating. Keeping the stored
+// form bare means it stays a clean primary key and nothing about the schema
+// changes.
+function normalizeUsername(value) {
+  if (typeof value !== 'string') return value;
+  return value.trim().replace(/^@+/, '').toLowerCase();
+}
+
+/**
+ * Turn a channel name into a candidate @handle: lowercase, ASCII letters,
+ * digits and underscores, 3-32 chars. Returns null when nothing usable remains
+ * (for example a name written only in Cyrillic), so the caller can ask for one.
+ */
+function slugHandle(name) {
+  if (typeof name !== 'string') return null;
+  const slug = name.trim().toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 32);
+  return USERNAME_RE.test(slug) ? slug : null;
+}
+
+/** A handle the caller asked for, validated; `undefined` when none was sent. */
+function cleanHandle(value) {
+  if (value === undefined) return undefined;
+  const bare = normalizeUsername(value);
+  if (!USERNAME_RE.test(bare)) return { error: 'Handle must be 3-32 chars: a-z, 0-9, _' };
+  return { value: bare };
+}
 const VALID_B64 = /^[A-Za-z0-9+/=_-]+$/;
 const AVATAR_COLORS = new Set(['mint', 'sky', 'violet', 'amber', 'rose', 'lime', 'cyan', 'coral']);
 
@@ -859,7 +898,8 @@ function handlePasswordSet(ws, msg, rid) {
 
 /* ------------------------------- handlers ------------------------------- */
 function handleRegister(ws, msg, rid) {
-  const { username, password, publicKey, salt, verifier } = msg;
+  const { password, publicKey, salt, verifier } = msg;
+  const username = normalizeUsername(msg.username);
   if (typeof username !== 'string' || !USERNAME_RE.test(username)) {
     return bad(ws, rid, 'Username must be 3-32 chars: a-z, 0-9, _');
   }
@@ -894,7 +934,8 @@ function handleRegister(ws, msg, rid) {
 }
 
 function handleLogin(ws, msg, rid) {
-  const { username, password } = msg;
+  const password = msg.password;
+  const username = normalizeUsername(msg.username);
   if (typeof username !== 'string' || typeof password !== 'string') {
     return bad(ws, rid, 'Username and password required');
   }
@@ -937,7 +978,7 @@ function handleResume(ws, msg, rid) {
 
 function handleDirectory(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
-  const user = q.getUser.get(msg.username);
+  const user = q.getUser.get(normalizeUsername(msg.username));
   if (!user) return bad(ws, rid, 'No such user');
   reply(ws, rid, {
     t: 'key', username: user.username, publicKey: user.public_key,
@@ -947,7 +988,7 @@ function handleDirectory(ws, msg, rid) {
 
 function handleProfileGet(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
-  const user = q.getUser.get(msg.username || ws.username);
+  const user = q.getUser.get(normalizeUsername(msg.username) || ws.username);
   if (!user) return bad(ws, rid, 'No such user');
   reply(ws, rid, {
     t: 'profile', profile: publicProfile(user), online: isOnline(user.username),
@@ -988,7 +1029,7 @@ function handleProfileSet(ws, msg, rid) {
 
 function handleUsernameSet(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
-  const next = msg.username;
+  const next = normalizeUsername(msg.username);
   if (typeof next !== 'string' || !USERNAME_RE.test(next)) {
     return bad(ws, rid, 'Username must be 3-32 chars: a-z, 0-9, _');
   }
@@ -1034,7 +1075,7 @@ function handleUsernameSet(ws, msg, rid) {
 
 function handleUserSearch(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
-  const query = typeof msg.query === 'string' ? msg.query.trim().toLowerCase() : '';
+  const query = typeof msg.query === 'string' ? msg.query.trim().toLowerCase().replace(/^@+/, '') : '';
   if (query.length < 1) return reply(ws, rid, { t: 'users', items: [] });
   const like = `%${query}%`;
   const rows = q.searchUsers.all(like, like);
@@ -1615,6 +1656,7 @@ function channelView(channelId, viewer) {
   return {
     id: ch.id,
     name: ch.name,
+    handle: ch.handle || null,
     description: ch.description || '',
     owner: ch.owner,
     ownerProfile: owner ? publicProfile(owner) : null,
@@ -1652,7 +1694,23 @@ function handleChannelCreate(ws, msg, rid) {
   if (!name) return bad(ws, rid, 'Channel needs a name');
   const description = cleanText(msg.description, 200) || null;
 
-  const info = q.insertChannel.run(name, ws.username, description, Date.now());
+  // The handle is how a channel is shared and found. Use the one asked for, or
+  // derive one from the name; if neither works, pick the next free `channel_N`.
+  const asked = cleanHandle(msg.handle);
+  if (asked && asked.error) return bad(ws, rid, asked.error);
+  let handle = asked ? asked.value : slugHandle(name);
+  if (handle && q.getChannelByHandle.get(handle)) {
+    if (asked) return bad(ws, rid, 'That handle is already taken');
+    handle = null;
+  }
+  if (!handle) {
+    for (let i = 1; i < 1000 && !handle; i += 1) {
+      const candidate = `channel_${i}`;
+      if (!q.getChannelByHandle.get(candidate)) handle = candidate;
+    }
+  }
+
+  const info = q.insertChannel.run(name, ws.username, description, handle, Date.now());
   const channelId = Number(info.lastInsertRowid);
   // The creator is the first subscriber, so the channel appears in their list.
   q.addSub.run(channelId, ws.username, Date.now());
@@ -1676,18 +1734,27 @@ function handleChannelDiscover(ws, msg, rid) {
   reply(ws, rid, { t: 'channels.discover', items });
 }
 
+/**
+ * Resolve a channel from a request that may carry either a numeric id or a
+ * `@handle` (the client sends `handle` when the user typed `@name`).
+ */
+function resolveChannel(msg) {
+  if (msg.handle) return q.getChannelByHandle.get(normalizeUsername(msg.handle)) || null;
+  return q.getChannel.get(Number(msg.channelId)) || null;
+}
+
 function handleChannelInfo(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
-  const channelId = Number(msg.channelId);
-  const view = channelView(channelId, ws.username);
-  if (!view) return bad(ws, rid, 'No such channel');
-  reply(ws, rid, { t: 'channel.info', channel: view });
+  const ch = resolveChannel(msg);
+  if (!ch) return bad(ws, rid, 'No such channel');
+  reply(ws, rid, { t: 'channel.info', channel: channelView(ch.id, ws.username) });
 }
 
 function handleChannelJoin(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
-  const channelId = Number(msg.channelId);
-  if (!q.getChannel.get(channelId)) return bad(ws, rid, 'No such channel');
+  const ch = resolveChannel(msg);
+  if (!ch) return bad(ws, rid, 'No such channel');
+  const channelId = ch.id;
   q.addSub.run(channelId, ws.username, Date.now());
   // Notify the rest of the channel so the owner picks up the new subscriber.
   broadcastChannelUpdate(channelId, ws.username);
@@ -1714,7 +1781,17 @@ function handleChannelEdit(ws, msg, rid) {
   if (ch.owner !== ws.username) return bad(ws, rid, 'Only the owner can edit the channel');
   const name = cleanText(msg.name, 64) || ch.name;
   const description = msg.description === undefined ? ch.description : (cleanText(msg.description, 200) || null);
-  q.renameChannel.run(name, description, channelId);
+  // The handle is optional on edit; when sent it must be free and valid.
+  let handle = ch.handle;
+  if (msg.handle !== undefined) {
+    const asked = cleanHandle(msg.handle);
+    if (asked && asked.error) return bad(ws, rid, asked.error);
+    if (asked.value !== ch.handle && q.getChannelByHandle.get(asked.value)) {
+      return bad(ws, rid, 'That handle is already taken');
+    }
+    handle = asked.value;
+  }
+  q.renameChannel.run(name, description, handle, channelId);
   const view = channelView(channelId, ws.username);
   reply(ws, rid, { t: 'channel.edited', channel: view });
   deliverToChannel(channelId, { t: 'channel.updated', channel: channelView(channelId) }, ws.username);
