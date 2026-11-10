@@ -22,12 +22,14 @@ node test/admin.js    # admin panel, verification, blocking, announcements
 node test/accounts.js # sign-out, account switching, dropping an account
 node test/session.js  # token persistence, relay restart, unlock, avatar images
 node test/peer-badges.js # a peer's checkmark and picture survive re-entry
+node test/streaks.js  # the "огонёк": days active in a row, extend, reset, rename
 xvfb-run -a node test/ui.js            # UI tests driving the real Electron app
 xvfb-run -a node test/ui-features.js   # the newer UI features, clicked for real
 xvfb-run -a node test/ui-drawer.js     # drawer, settings, contacts, groups, accounts
 xvfb-run -a node test/ui-menu.js       # menu bar hidden, editing shortcuts intact
 xvfb-run -a node test/ui-session.js    # reopen the app: no sign-in screen, photo kept
 xvfb-run -a node test/ui-peer-badges.js # a peer's badge and picture survive a re-entry
+xvfb-run -a node test/ui-streak.js     # the flame chip and the profile streak line
 xvfb-run -a node test/connection.js    # connection and error handling
 xvfb-run -a node test/shots.js         # regenerate shots/*.png
 ```
@@ -74,6 +76,12 @@ xvfb-run -a node test/shots.js         # regenerate shots/*.png
   reference in one transaction and rebinds live sockets and tokens. If you add a
   table that references usernames, add it to that transaction — see
   `renameStmts` in `server/index.js`.
+- **The streak ("огонёк") is metadata, not content.** The `streaks` table stores
+  only `(username, day, count)` — the last day the account sent something and the
+  running total. It is computed on send and read by `streak.get`; it never holds
+  message text, and it follows a rename (`renameStmts.streaks`) and is dropped
+  with the account. When it moves, the new profile is pushed to peers and back to
+  the sender's own devices so every view agrees.
 - **Chat settings are per-owner.** `pinned`, `muted`, `archived`, `last_read` and
   `cleared_at` belong to one side and must never be shared with the peer.
 - **Deleting a message blanks the ciphertext and leaves the row** (`deleted = 1`).

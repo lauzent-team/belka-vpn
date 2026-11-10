@@ -27,6 +27,9 @@ and forwards ciphertext it cannot read.
 - **Edit and delete** your own messages
 - **Reactions** (👍 ❤️ 😂 🔥 😮 😢)
 - **Typing indicators** and **online presence**
+- **Огонёк** — a streak of the days in a row you have been active, shown beside
+  your name and on your profile. The relay counts the days; it stores no message
+  content
 - Offline delivery: messages sent while you were away arrive on reconnect
 - Message history, decrypted locally, grouped by day
 
