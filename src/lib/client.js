@@ -652,6 +652,17 @@ class SleePhyClient {
     return res.publicKey;
   }
 
+  /**
+   * The safety number this account shares with a peer. Both devices derive the
+   * same value from the two public keys, so comparing it out of band catches a
+   * relay that swapped a key. Fetches the peer's key if it is not cached yet.
+   */
+  async safetyNumberWith(username) {
+    if (!this.publicKey) throw new Error('Vault is locked');
+    const peerKey = await this.ensurePeerKey(username);
+    return cryptoLib.safetyNumber(this.publicKey, peerKey);
+  }
+
   async sendMessage({ to, text, replyTo, attachment, ttl }) {
     if (!this.secretKey) throw new Error('Vault is locked');
     to = bareUsername(to);

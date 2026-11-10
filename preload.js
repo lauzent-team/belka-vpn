@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('sleephy', {
   listChats: () => invoke('sleephy:listChats'),
   chatSettings: (payload) => invoke('sleephy:chatSettings', payload),
   chatTtl: (payload) => invoke('sleephy:chatTtl', payload),
+  safetyNumber: (username) => invoke('sleephy:safetyNumber', username),
   markRead: (peer) => invoke('sleephy:markRead', peer),
   clearChat: (peer) => invoke('sleephy:clearChat', peer),
   deleteChat: (peer) => invoke('sleephy:deleteChat', peer),

@@ -104,9 +104,33 @@ async function decryptBytes(boxB64, nonceB64, senderPublicKeyB64, recipientSecre
   return plain;
 }
 
+/**
+ * A safety number for a pair of identities. Both sides compute the same value
+ * from the two public keys, so reading it aloud over another channel proves no
+ * key was substituted. The keys are sorted before hashing, so the order they
+ * are passed in never changes the result.
+ */
+async function safetyNumber(publicKeyA, publicKeyB) {
+  await ready();
+  const keys = [publicKeyA, publicKeyB]
+    .map((k) => Buffer.from(unb64(k)))
+    .sort(Buffer.compare);
+  const digest = Buffer.from(
+    sodium.crypto_generichash(64, Buffer.concat(keys))
+  );
+  const groups = [];
+  for (let i = 0; i < 12; i++) {
+    let n = 0;
+    for (const byte of digest.subarray(i * 5, i * 5 + 5)) n = (n * 256 + byte) % 100000;
+    groups.push(String(n).padStart(5, '0'));
+  }
+  return groups.join(' ');
+}
+
 module.exports = {
   ready, makeSalt, deriveKey, passwordVerifier,
   generateIdentity, sealSecret, openSecret,
   encryptMessage, decryptMessage,
-  encryptBytes, decryptBytes
+  encryptBytes, decryptBytes,
+  safetyNumber
 };

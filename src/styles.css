@@ -1002,6 +1002,19 @@ body.theme-light ::-webkit-scrollbar-thumb { background: #C4CEDA; }
 .ttl-options .menu-item.active { color: var(--accent); font-weight: 700; }
 .ttl-options .ttl-check { display: inline-flex; color: var(--accent); }
 
+/* Key verification: a monospace safety number both sides can read aloud. */
+.safety-block { margin-top: 14px; padding: 12px 14px; border-radius: 12px; background: var(--bg-3); }
+.safety-head { display: flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 12px; font-weight: 600; }
+.safety-head .ico { font-size: 14px; color: var(--accent); }
+.safety-number {
+  display: block; margin: 10px 0 6px; padding: 10px 12px; border-radius: 10px;
+  background: var(--bg-2); color: var(--text); font-size: 14px; line-height: 1.7;
+  letter-spacing: 0.5px; font-variant-numeric: tabular-nums; word-spacing: 6px;
+}
+.safety-actions { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.safety-verified { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-size: 12px; font-weight: 600; }
+.safety-verified .ico { font-size: 13px; }
+
 /* ============================== verified badge ============================== */
 .verified-badge {
   display: inline-grid; place-items: center;

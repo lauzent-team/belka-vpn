@@ -456,6 +456,22 @@
             <span class="setting-title">Public key</span>
             <code class="key-box" id="profile-pubkey">—</code>
             <p class="setting-note">Verify this with your contact in person. Your private key never leaves your device.</p>
+            <div class="safety-block" id="profile-safety" hidden>
+              <div class="safety-head">
+                <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-shield"></use></svg>
+                <span class="safety-title">Проверка шифрования</span>
+              </div>
+              <code class="safety-number" id="profile-safety-number">…</code>
+              <p class="setting-note" id="profile-safety-note">Сравните этот код с кодом собеседника — по телефону или лично. Если они совпадают, переписку не подменил никто, включая сервер.</p>
+              <div class="safety-actions">
+                <button class="btn-secondary btn-compact" id="btn-safety-copy" type="button">Скопировать код</button>
+                <button class="btn-ghost btn-compact" id="btn-safety-mark" type="button">Отметить проверенным</button>
+                <span class="safety-verified" id="profile-safety-verified" hidden>
+                  <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-check"></use></svg>
+                  <span>Проверено</span>
+                </span>
+              </div>
+            </div>
             <div class="profile-actions" id="profile-actions">
               <button class="btn-secondary" id="btn-profile-message">Send message</button>
               <button class="btn-secondary" id="btn-profile-edit">Edit profile</button>

@@ -126,6 +126,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('sleephy:listChats', async () => client.listChats());
   ipcMain.handle('sleephy:chatSettings', async (_e, payload) => client.setChatSettings(payload));
   ipcMain.handle('sleephy:chatTtl', async (_e, payload) => client.setChatTtl(payload));
+  ipcMain.handle('sleephy:safetyNumber', async (_e, username) => client.safetyNumberWith(username));
   ipcMain.handle('sleephy:markRead', async (_e, peer) => client.markRead(peer));
   ipcMain.handle('sleephy:clearChat', async (_e, peer) => client.clearChat(peer));
   ipcMain.handle('sleephy:deleteChat', async (_e, peer) => client.deleteChat(peer));

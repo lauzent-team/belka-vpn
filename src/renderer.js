@@ -969,6 +969,11 @@ const els = {
   profileViewUsername: $('profile-view-username'),
   profileViewBio: $('profile-view-bio'),
   profilePubkey: $('profile-pubkey'),
+  profileSafety: $('profile-safety'),
+  profileSafetyNumber: $('profile-safety-number'),
+  btnSafetyCopy: $('btn-safety-copy'),
+  btnSafetyMark: $('btn-safety-mark'),
+  profileSafetyVerified: $('profile-safety-verified'),
   profileActions: $('profile-actions'),
   btnProfileMessage: $('btn-profile-message'),
   btnProfileEdit: $('btn-profile-edit'),
@@ -1194,6 +1199,7 @@ const state = {
   settingsPane: 'account', // active settings section
   drafts: {}, // peerKey -> unsent composer text, mirrored into account settings
   draftSaveTimer: null, // coalesces keystrokes into one settings write
+  verifiedPeers: {}, // username -> true when the safety number was checked, mirrored into settings
   folders: [], // chat folders ("папки"), mirrored into account settings
   activeFolder: 'all', // id of the selected folder tab
   searchFilter: { query: '', from: 'any', kind: 'any', date: 'any' }, // in-chat search
@@ -1699,7 +1705,7 @@ async function enterMain(username) {
     if (els.drawerVer) els.drawerVer.textContent = label;
   }).catch(() => {});
   showScreen('main');
-  await Promise.all([loadChats(), loadGroups(), loadChannels(), loadContacts(), loadStreak(), loadDrafts(), loadFolders(), loadStories()]);
+  await Promise.all([loadChats(), loadGroups(), loadChannels(), loadContacts(), loadStreak(), loadDrafts(), loadFolders(), loadStories(), loadVerifiedPeers()]);
   renderStoriesBar();
   renderChatList();
 }
@@ -3327,6 +3333,7 @@ async function showProfile(username, { self = false } = {}) {
   avatarPending = undefined;
   paintAvatarPicker();
   renderPubkey(p.username);
+  renderSafetyNumber(p.username);
 }
 
 /** Repaint just the presence line of the open profile overlay. */
@@ -3346,6 +3353,56 @@ async function renderPubkey(username) {
     els.profilePubkey.textContent = '—';
   }
 }
+
+/**
+ * Key verification. The safety number is derived on this device from the two
+ * public keys, so it is the same on both ends and no server ever sees it. The
+ * "verified" tick is a local note that the person compared the code out of
+ * band; it is kept in the account settings so it survives a reload.
+ */
+async function renderSafetyNumber(username) {
+  const self = username === state.username;
+  els.profileSafety.hidden = self;
+  if (self) return;
+  els.profileSafetyNumber.textContent = '…';
+  els.btnSafetyMark.hidden = false;
+  paintSafetyVerified(username);
+  try {
+    els.profileSafetyNumber.textContent = await api.safetyNumber(username);
+  } catch {
+    els.profileSafetyNumber.textContent = 'Не удалось получить код';
+  }
+}
+
+function paintSafetyVerified(username) {
+  const on = !!state.verifiedPeers[username];
+  els.profileSafetyVerified.hidden = !on;
+  els.btnSafetyMark.hidden = on;
+}
+
+async function loadVerifiedPeers() {
+  try {
+    const s = await api.getSettings();
+    state.verifiedPeers = (s && s.verifiedPeers && typeof s.verifiedPeers === 'object'
+      && !Array.isArray(s.verifiedPeers)) ? { ...s.verifiedPeers } : {};
+  } catch { /* offline: keep what we have */ }
+}
+
+els.btnSafetyCopy.addEventListener('click', async () => {
+  const code = els.profileSafetyNumber.textContent;
+  if (!code || code === '…') return;
+  try { await navigator.clipboard.writeText(code); toast('Код скопирован'); }
+  catch { toast('Не удалось скопировать'); }
+});
+
+els.btnSafetyMark.addEventListener('click', async () => {
+  const username = state.profileTarget;
+  if (!username) return;
+  state.verifiedPeers[username] = true;
+  paintSafetyVerified(username);
+  try { await api.saveSettings({ verifiedPeers: state.verifiedPeers }); } catch { /* best effort */ }
+  toast('Отмечено как проверенный');
+});
 
 /* --------------------------- avatar image --------------------------- */
 // A profile picture is picked, pasted or dropped, downscaled on this device,
