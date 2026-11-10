@@ -289,8 +289,8 @@ input, textarea { user-select: text; }
 .avatar-picker-hint { font-size: 11.5px; color: var(--text-faint); }
 .avatar-picker.is-drag .avatar { outline: 2px dashed var(--accent); outline-offset: 2px; }
 
-.me-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 5px; min-width: 0; }
-.me-name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.me-meta { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.me-name { font-weight: 600; font-size: 14px; min-width: 0; overflow-wrap: anywhere; }
 .me-status { flex-basis: 100%; display: flex; align-items: center; gap: 5px; color: var(--text-dim); font-size: 11.5px; }
 
 .icon-btn {
@@ -359,7 +359,9 @@ input, textarea { user-select: text; }
 .chat-item.active .chat-item-badge { background: #fff; color: var(--accent); }
 .chat-item-body { min-width: 0; flex: 1; }
 .chat-item-top { display: flex; align-items: center; gap: 6px; }
-.chat-item-name { font-weight: 600; font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 5px; }
+.chat-item-name { font-weight: 600; font-size: 14px; min-width: 0; display: flex; align-items: center; gap: 5px; }
+/* Only the text truncates; the badge keeps its size on the same line. */
+.chat-item-name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-item-time { margin-left: auto; color: var(--text-faint); font-size: 11px; flex: none; }
 .chat-item-last { color: var(--text-dim); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
 .chat-item-badge {
@@ -420,7 +422,12 @@ input, textarea { user-select: text; }
 }
 .chat-head-main:hover { background: var(--bg-3); }
 .chat-head-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
-.chat-head-name { font-weight: 600; font-size: 14.5px; display: flex; align-items: center; gap: 5px; }
+/* The name and its badge share one line: a long name wraps to a second line
+   instead of pushing the badge underneath itself. `flex-start` keeps the badge
+   on the first line, so it never drifts down with a wrapped name. */
+.name-row { display: flex; align-items: flex-start; gap: 5px; min-width: 0; }
+.name-row .verified-badge { margin-top: 2px; }
+.chat-head-name { font-weight: 600; font-size: 14.5px; min-width: 0; overflow-wrap: anywhere; }
 .chat-head-sub { color: var(--text-dim); font-size: 12px; }
 .chat-head-sub.typing { color: var(--accent); }
 .chat-head-actions { display: flex; align-items: center; gap: 2px; flex: none; }
@@ -748,7 +755,7 @@ body.theme-light .att-dl:hover { background: rgba(0, 0, 0, 0.13); }
 .modal-profile { width: min(460px, calc(100% - 32px)); }
 .profile-hero { display: flex; align-items: center; gap: 16px; }
 .profile-hero-meta { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
-.profile-display { font-size: 18px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.profile-display { font-size: 18px; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
 .profile-handle { color: var(--text-dim); font-size: 13px; }
 .profile-presence { font-size: 12px; color: var(--text-faint); }
 .profile-presence.online { color: var(--accent); }

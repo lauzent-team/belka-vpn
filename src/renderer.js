@@ -912,7 +912,7 @@ function chatItemEl(key) {
     <div class="avatar small" data-color="${escapeHtml(avatarColorFor(key))}">${avatarInner}</div>
     <div class="chat-item-body">
       <div class="chat-item-top">
-        <span class="chat-item-name">${escapeHtml(name)}${tick}</span>
+        <span class="chat-item-name"><span class="chat-item-name-text">${escapeHtml(name)}</span>${tick}</span>
         <span class="chat-item-time">${chat.lastTs ? escapeHtml(timeLabel(chat.lastTs)) : ''}</span>
       </div>
       <div class="chat-item-last">${escapeHtml(chat.last || 'No messages yet')}</div>
