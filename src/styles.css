@@ -565,6 +565,13 @@ input, textarea { user-select: text; }
 }
 .msg-system .series-note .ico { font-size: 15px; color: var(--swatch-amber); }
 
+/* A local note from a hidden bot (`@minigames`). Same quiet shape as the series
+   note, but tinted violet so it reads as a bot, not as a streak. */
+.msg-system .bot-note {
+  background: color-mix(in srgb, var(--swatch-violet) 22%, var(--bg-3));
+}
+.msg-system .bot-note .ico { color: var(--swatch-violet); }
+
 /* The dialog flame on a chat-list row is the same chip, only smaller. */
 .streak-chip-sm { padding: 1px 6px; font-size: 11px; gap: 2px; }
 .streak-chip-sm .ico { font-size: 12px; }

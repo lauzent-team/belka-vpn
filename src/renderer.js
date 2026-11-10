@@ -50,6 +50,78 @@ function botFor(key) { return BOTS.get(botIdOf(key)) || null; }
 /** A message written by a bot shows on the left, like an incoming message. */
 function isBot(username) { return BOTS.has(username); }
 
+/* ---------------------------- hidden bots ---------------------------- */
+// A hidden bot has no chat of its own: you summon it by mentioning it in an
+// ordinary conversation, e.g. `@minigames`. The mention is handled on this
+// device and never sent, so the peer sees nothing until a real invitation
+// follows, and the relay never learns a bot was used. This keeps the bot
+// invisible in the chat list while still living inside the chat.
+//
+//   @minigames            offer the games, then invite the peer to one
+//   @minigames шахматы    invite the peer straight to that game
+//
+// The match is anchored: only a message that *is* the mention (optionally with
+// an argument) is intercepted, so "спасибо @minigames" is sent as normal text.
+
+/** Parse a whole message that is a single `@name` with optional arguments. */
+function parseBotMention(text) {
+  const m = /^@([a-z0-9_]{3,32})(?:\s+([\s\S]*))?$/i.exec(String(text).trim());
+  if (!m) return null;
+  return { name: m[1].toLowerCase(), args: (m[2] || '').trim() };
+}
+
+const HIDDEN_BOTS = new Map([
+  ['minigames', {
+    id: 'minigames',
+    title: 'Мини-игры',
+    icon: 'i-robot',
+    /**
+     * Offer the games in the open chat, or jump straight to one named in the
+     * arguments. Either way the invitation that follows is a normal encrypted
+     * message, so the peer's device adopts the board the moment it arrives.
+     */
+    run(key, args) {
+      const peer = peerUsername(key);
+      const wanted = args && GAMES
+        ? GAMES.GAMES.find((g) => g.id === args.toLowerCase() || g.name.toLowerCase() === args.toLowerCase())
+        : null;
+      postBotNote(key, this.id, wanted
+        ? `Приглашаю ${displayNameFor(peer)} в игру «${wanted.name}»…`
+        : `Выберите игру — приглашу ${displayNameFor(peer)} сыграть вместе.`);
+      if (wanted) startGameWithPeer(wanted.id);
+      else openGamesPanel();
+    }
+  }]
+]);
+
+/** Run a hidden bot named by a mention. Returns true when the text was consumed. */
+function runHiddenBotMention(key, text) {
+  const hit = parseBotMention(text);
+  if (!hit || !HIDDEN_BOTS.has(hit.name)) return false;
+  if (isMultiKey(key) || key === SAVED || isBotKey(key)) {
+    toast(`@${hit.name} работает в личном чате`);
+    return true;
+  }
+  HIDDEN_BOTS.get(hit.name).run(key, hit.args);
+  return true;
+}
+
+/**
+ * Leave a short, local note from a hidden bot in the chat. It is a marker, not
+ * a message: it is never sent, never a preview and never unread, and the relay
+ * has no idea it exists. One note per bot per chat, replaced on each mention.
+ */
+function postBotNote(key, botId, text) {
+  const chat = ensureChat(key);
+  const id = `bot-note-${botId}`;
+  const note = { id, kind: 'system:bot', text, ts: Date.now(), mine: false, local: true, reactions: [] };
+  const at = chat.messages.findIndex((m) => m.id === id);
+  if (at >= 0) chat.messages[at] = note;
+  else chat.messages.push(note);
+  if (state.activePeer === key) renderMessages();
+  renderChatList();
+}
+
 /* ---------------------------- games / bots ---------------------------- */
 // A game is stored on the chat as `chat.game`. Against a bot the whole game
 // lives here; against a person the same object is mirrored from the encrypted
@@ -1494,10 +1566,11 @@ async function refreshVisibleLastMessages() {
   renderChatList();
 }
 
-/** The last real message of a transcript, ignoring the centered series notes. */
+/** The last real message of a transcript, ignoring the centered system notes. */
 function lastRealMessage(items) {
   for (let i = items.length - 1; i >= 0; i--) {
-    if (items[i] && items[i].kind !== 'system:series') return items[i];
+    const m = items[i];
+    if (m && !(typeof m.kind === 'string' && m.kind.startsWith('system:'))) return m;
   }
   return null;
 }
@@ -1876,6 +1949,15 @@ function messageEl(m) {
     note.className = 'msg msg-system';
     note.dataset.id = m.id;
     note.innerHTML = `<span class="series-note">${icon('i-fire')}<span>У вас началась серия! Огонёк зажжён</span></span>`;
+    return note;
+  }
+  // A local note from a hidden bot, e.g. the game offer from `@minigames`. It is
+  // centered and quiet, like the series note, and never leaves this device.
+  if (m && m.kind === 'system:bot') {
+    const note = document.createElement('div');
+    note.className = 'msg msg-system';
+    note.dataset.id = m.id;
+    note.innerHTML = `<span class="series-note bot-note">${icon('i-robot')}<span>${escapeHtml(m.text)}</span></span>`;
     return note;
   }
   const el = document.createElement('div');
@@ -2320,6 +2402,11 @@ function channelSubNames(channelId) {
 async function sendCurrentMessage(text) {
   const key = state.activePeer;
   const chat = ensureChat(key);
+
+  // A hidden bot mentioned in a personal chat is handled here and never sent:
+  // the peer sees only the invitation that follows, if any, and the relay sees
+  // nothing extra. See `runHiddenBotMention`.
+  if (runHiddenBotMention(key, text)) return;
 
   // A bot chat is local: echo the message and answer on this device. Nothing
   // leaves the machine, so the relay never sees a bot conversation.
@@ -4858,6 +4945,14 @@ function setPanelMode(mode) {
   els.stickerMode.hidden = mode !== 'stickers';
   els.gamesMode.hidden = mode !== 'games';
   if (mode === 'games') buildGamePanel();
+}
+
+/** Open the game picker under the composer, the way a hidden bot offers games. */
+function openGamesPanel() {
+  els.attachBackdrop.hidden = true;
+  els.emojiPanel.hidden = false;
+  setPanelMode('games');
+  els.composerInput.focus();
 }
 
 els.panelSwitch.addEventListener('click', (e) => {
