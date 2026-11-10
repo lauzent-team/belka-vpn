@@ -111,6 +111,30 @@ async function main() {
     await wait(500);
   });
 
+  await step('a social link can be added and shows on the profile', async () => {
+    if (!(await A.win.isHidden('#settings-backdrop'))) await A.win.click('#btn-settings-close');
+    await A.win.click('#btn-menu');
+    await A.win.click('#drawer .drawer-item[data-drawer="my-profile"]');
+    await A.win.waitForSelector('#profile-backdrop:not([hidden])', { timeout: 5000 });
+    await A.win.click('#btn-profile-edit');
+    await A.win.waitForSelector('#profile-form:not([hidden])');
+    await A.win.selectOption('#profile-social-network', 'telegram');
+    await A.win.fill('#profile-social-url', 'https://t.me/sleephy_test');
+    await A.win.click('#btn-social-add');
+    await A.win.waitForSelector('#profile-social-rows .social-row');
+    const rows = await A.win.$$eval('#profile-social-rows .social-row-url', (els) => els.map((e) => e.textContent));
+    assert.deepStrictEqual(rows, ['https://t.me/sleephy_test']);
+    await A.win.click('#profile-form button[type="submit"]');
+    await wait(700);
+    const chips = await A.win.$$eval('#profile-socials .social-chip', (els) => els.map((e) => e.getAttribute('href')));
+    assert.deepStrictEqual(chips, ['https://t.me/sleephy_test'], 'the profile must show the link');
+    await A.win.click('#btn-profile-close');
+    // Reopen settings for the following steps.
+    await A.win.click('#btn-menu');
+    await A.win.click('#drawer .drawer-item[data-drawer="settings"]');
+    await A.win.waitForSelector('#settings-backdrop:not([hidden])', { timeout: 5000 });
+  });
+
   await step('a settings toggle persists to the account', async () => {
     await A.win.click('.settings-nav-item[data-pane="messages"]');
     await A.win.waitForSelector('.settings-pane[data-pane="messages"].active');

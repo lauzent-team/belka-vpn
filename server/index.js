@@ -201,7 +201,10 @@ for (const sql of [
   // Privacy switches. The relay enforces them so a hidden "last seen" or bio is
   // never sent to another account in the first place, not merely hidden in the UI.
   'ALTER TABLE users ADD COLUMN last_seen_hidden INTEGER NOT NULL DEFAULT 0',
-  'ALTER TABLE users ADD COLUMN profile_hidden INTEGER NOT NULL DEFAULT 0'
+  'ALTER TABLE users ADD COLUMN profile_hidden INTEGER NOT NULL DEFAULT 0',
+  // Social links shown on the profile (a JSON array of {network, url}). Stored as
+  // text on the relay, which never fetches them.
+  'ALTER TABLE users ADD COLUMN socials TEXT'
 ]) {
   try { db.exec(sql); } catch { /* column already present */ }
 }
@@ -241,6 +244,7 @@ const q = {
     'UPDATE users SET display_name = ?, bio = ?, avatar_color = ?, updated_at = ? WHERE username = ?'
   ),
   setAvatarImage: db.prepare('UPDATE users SET avatar_image = ?, updated_at = ? WHERE username = ?'),
+  setSocials: db.prepare('UPDATE users SET socials = ?, updated_at = ? WHERE username = ?'),
   setLastSeen: db.prepare('UPDATE users SET last_seen = ? WHERE username = ?'),
   setPrivacy: db.prepare('UPDATE users SET last_seen_hidden = ?, profile_hidden = ? WHERE username = ?'),
   searchUsers: db.prepare(
@@ -547,6 +551,49 @@ const VALID_B64 = /^[A-Za-z0-9+/=_-]+$/;
 const AVATAR_COLORS = new Set(['mint', 'sky', 'violet', 'amber', 'rose', 'lime', 'cyan', 'coral']);
 
 /**
+ * Social links on a profile: a small array of `{ network, url }`. The network
+ * is one of a fixed set (the client picks the icon from it), and the url must be
+ * http(s) so a profile can never smuggle a `javascript:` or `data:` link.
+ */
+const SOCIAL_NETWORKS = new Set([
+  'telegram', 'instagram', 'twitter', 'facebook', 'youtube', 'tiktok',
+  'github', 'linkedin', 'vk', 'website'
+]);
+const MAX_SOCIALS = 8;
+
+function cleanSocials(value) {
+  if (value === null) return { value: null };
+  if (!Array.isArray(value)) return { error: 'Socials must be a list' };
+  const out = [];
+  const seen = new Set();
+  for (const item of value) {
+    if (!item || typeof item !== 'object') return { error: 'Malformed social link' };
+    const network = typeof item.network === 'string' ? item.network.toLowerCase() : '';
+    if (!SOCIAL_NETWORKS.has(network)) return { error: 'Unknown social network' };
+    const url = typeof item.url === 'string' ? item.url.trim() : '';
+    if (url.length === 0 || url.length > 200) return { error: 'Social link is too long' };
+    let parsed;
+    try { parsed = new URL(url); } catch { return { error: 'Social link must be a full http(s) URL' }; }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return { error: 'Social link must be a full http(s) URL' };
+    }
+    if (seen.has(network)) continue;
+    seen.add(network);
+    out.push({ network, url });
+    if (out.length >= MAX_SOCIALS) break;
+  }
+  return { value: out.length ? JSON.stringify(out) : null };
+}
+
+function parseSocials(text) {
+  if (!text) return [];
+  try {
+    const arr = JSON.parse(text);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+
+/**
  * A badge picture arrives as a small data: URL from the admin's device. Only
  * raster images are accepted, and the size is capped so a single account cannot
  * bloat the database or every profile broadcast.
@@ -661,6 +708,8 @@ function publicProfile(user, viewer) {
     displayName: hidden ? user.username : (user.display_name || user.username),
     bio: hidden ? '' : (user.bio || ''),
     avatarColor: hidden ? 'mint' : (user.avatar_color || 'mint'),
+    // Social links are part of the profile, so hiding the profile hides them.
+    socials: hidden ? [] : parseSocials(user.socials),
     // A profile picture set by the user, shown instead of their initial.
     avatarImage: hidden ? null : (user.avatar_image || null),
     // When the account was last connected, for "last seen" under the name.
@@ -1070,6 +1119,11 @@ function handleProfileSet(ws, msg, rid) {
     const parsed = cleanAvatarImage(msg.avatarImage);
     if (parsed.error) return bad(ws, rid, parsed.error);
     q.setAvatarImage.run(parsed.value, Date.now(), ws.username);
+  }
+  if (msg.socials !== undefined) {
+    const parsed = cleanSocials(msg.socials);
+    if (parsed.error) return bad(ws, rid, parsed.error);
+    q.setSocials.run(parsed.value, Date.now(), ws.username);
   }
   const updated = publicProfile(q.getUser.get(ws.username));
   reply(ws, rid, { t: 'profile.saved', profile: updated });

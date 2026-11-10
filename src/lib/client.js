@@ -1171,13 +1171,14 @@ class SleePhyClient {
     return { count: res.count || 0, active: !!res.active };
   }
 
-  async saveProfile({ displayName, bio, avatarColor, avatarImage }) {
+  async saveProfile({ displayName, bio, avatarColor, avatarImage, socials }) {
     const res = await this.request({
       t: 'profile.set',
       displayName: displayName === undefined ? undefined : displayName,
       bio: bio === undefined ? undefined : bio,
       avatarColor,
-      avatarImage: avatarImage === undefined ? undefined : avatarImage
+      avatarImage: avatarImage === undefined ? undefined : avatarImage,
+      socials: socials === undefined ? undefined : socials
     });
     this.profile = res.profile;
     return res.profile;

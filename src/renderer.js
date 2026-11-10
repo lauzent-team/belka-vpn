@@ -192,6 +192,11 @@ const els = {
   profileName: $('profile-name'),
   profileBio: $('profile-bio'),
   profileColors: $('profile-colors'),
+  profileSocialRows: $('profile-social-rows'),
+  profileSocialNetwork: $('profile-social-network'),
+  profileSocialUrl: $('profile-social-url'),
+  btnSocialAdd: $('btn-social-add'),
+  profileSocials: $('profile-socials'),
   profileError: $('profile-error'),
   btnProfileCancel: $('btn-profile-cancel'),
   usernameSep: $('username-sep'),
@@ -1899,6 +1904,90 @@ function openMyProfile() {
   showProfile(state.username, { self: true });
 }
 
+/* ------------------------------ socials ------------------------------ */
+// Social links are plain URLs the user typed; the relay only stores them, so the
+// client renders them and must never trust the label to build a link.
+const SOCIAL_LABELS = {
+  telegram: 'Telegram', instagram: 'Instagram', twitter: 'Twitter / X',
+  facebook: 'Facebook', youtube: 'YouTube', tiktok: 'TikTok', github: 'GitHub',
+  linkedin: 'LinkedIn', vk: 'VK', website: 'Сайт'
+};
+let socialPending = []; // the links being edited in the profile form
+
+function socialIconId(network) {
+  return SOCIAL_LABELS[network] ? `#i-${network === 'website' ? 'globe' : network}` : '#i-globe';
+}
+
+/** Paint the chips under the profile name; hidden when there are none. */
+function renderProfileSocials(socials) {
+  const list = Array.isArray(socials) ? socials : [];
+  els.profileSocials.innerHTML = '';
+  els.profileSocials.hidden = list.length === 0;
+  for (const s of list) {
+    if (!s || typeof s.url !== 'string') continue;
+    let href;
+    try {
+      const u = new URL(s.url);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') continue;
+      href = u.href;
+    } catch { continue; }
+    const a = document.createElement('a');
+    a.className = 'social-chip';
+    a.href = href;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.title = href;
+    a.innerHTML = `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="${socialIconId(s.network)}"></use></svg><span></span>`;
+    a.querySelector('span').textContent = SOCIAL_LABELS[s.network] || s.network || 'Ссылка';
+    els.profileSocials.appendChild(a);
+  }
+}
+
+/** Redraw the rows in the edit form from `socialPending`. */
+function renderSocialEditor() {
+  els.profileSocialRows.innerHTML = '';
+  socialPending.forEach((s, i) => {
+    const row = document.createElement('div');
+    row.className = 'social-row';
+    row.innerHTML = `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="${socialIconId(s.network)}"></use></svg>
+      <span class="social-row-url"></span>
+      <button class="btn-ghost btn-compact" type="button" title="Убрать"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"></use></svg></button>`;
+    row.querySelector('.social-row-url').textContent = s.url;
+    row.querySelector('button').addEventListener('click', () => {
+      socialPending.splice(i, 1);
+      renderSocialEditor();
+    });
+    els.profileSocialRows.appendChild(row);
+  });
+}
+
+els.btnSocialAdd.addEventListener('click', () => {
+  const network = els.profileSocialNetwork.value;
+  const raw = els.profileSocialUrl.value.trim();
+  if (!raw) return;
+  let href;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('bad protocol');
+    href = u.href;
+  } catch {
+    showError(els.profileError, 'Ссылка должна начинаться с http:// или https://');
+    return;
+  }
+  showError(els.profileError, null);
+  if (socialPending.some((s) => s.network === network)) {
+    showError(els.profileError, 'Эта соцсеть уже добавлена');
+    return;
+  }
+  if (socialPending.length >= 8) {
+    showError(els.profileError, 'Можно добавить не больше 8 ссылок');
+    return;
+  }
+  socialPending.push({ network, url: href });
+  els.profileSocialUrl.value = '';
+  renderSocialEditor();
+});
+
 async function showProfile(username, { self = false } = {}) {
   state.profileTarget = username;
   state.editingProfile = false;
@@ -1931,6 +2020,7 @@ async function showProfile(username, { self = false } = {}) {
   paintBadge(els.profileBadge, p.username);
   els.profileViewUsername.textContent = atUsername(p.username);
   els.profileViewBio.textContent = p.bio || '—';
+  renderProfileSocials(p.socials);
   const presenceText = peerPresenceText(p.username);
   els.profilePresence.textContent = isSelf ? 'Это вы' : (presenceText || 'не в сети');
   els.profilePresence.classList.toggle('online', !isSelf && !!info.online);
@@ -2113,6 +2203,11 @@ els.btnProfileEdit.addEventListener('click', () => {
   els.profileForm.hidden = false;
   els.usernameBlock.hidden = true;
   els.usernameSep.hidden = true;
+  // Seed the socials editor from the live self profile.
+  socialPending = Array.isArray(state.profile && state.profile.socials)
+    ? state.profile.socials.map((s) => ({ network: s.network, url: s.url }))
+    : [];
+  renderSocialEditor();
   showError(els.profileError, null);
   els.profileName.focus();
 });
@@ -2134,7 +2229,8 @@ els.profileForm.addEventListener('submit', async (e) => {
       displayName: els.profileName.value,
       bio: els.profileBio.value,
       avatarColor: selected ? selected.dataset.color : undefined,
-      avatarImage: avatarPending === undefined ? undefined : avatarPending
+      avatarImage: avatarPending === undefined ? undefined : avatarPending,
+      socials: socialPending
     });
     state.profile = p;
     state.profiles.set(p.username, p);

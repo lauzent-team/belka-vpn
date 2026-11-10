@@ -98,6 +98,40 @@ async function main() {
     assert.strictEqual(profile.avatarColor, 'violet');
   });
 
+  await step('profile social links are stored and validated', async () => {
+    const saved = await A.client.saveProfile({
+      socials: [
+        { network: 'telegram', url: 'https://t.me/alice' },
+        { network: 'github', url: 'https://github.com/alice' }
+      ]
+    });
+    assert.deepStrictEqual(saved.socials.map((s) => s.network), ['telegram', 'github']);
+    const { profile } = await A.client.getProfile(alice);
+    assert.strictEqual(profile.socials[0].url, 'https://t.me/alice');
+
+    // A javascript: link must be rejected outright.
+    let rejected = false;
+    try { await A.client.saveProfile({ socials: [{ network: 'website', url: 'javascript:alert(1)' }] }); }
+    catch { rejected = true; }
+    assert.ok(rejected, 'a non-http social link must be rejected');
+
+    // An unknown network must be rejected too.
+    let badNetwork = false;
+    try { await A.client.saveProfile({ socials: [{ network: 'myspace', url: 'https://x.test' }] }); }
+    catch { badNetwork = true; }
+    assert.ok(badNetwork, 'an unknown network must be rejected');
+  });
+
+  await step('a hidden profile hides its social links from others', async () => {
+    await A.client.saveProfile({ socials: [{ network: 'telegram', url: 'https://t.me/alice' }] });
+    await A.client.setPrivacy({ profileHidden: true });
+    const { profile } = await B.client.getProfile(alice);
+    assert.deepStrictEqual(profile.socials, [], 'a hidden profile must not leak social links');
+    await A.client.setPrivacy({ profileHidden: false });
+    const back = await B.client.getProfile(alice);
+    assert.strictEqual(back.profile.socials.length, 1, 'the links come back when unhidden');
+  });
+
   await step('profile changes reach the other side', async () => {
     // Bob must have a chat with Alice first, then a change propagates.
     await B.client.sendMessage({ to: alice, text: 'hi' });
