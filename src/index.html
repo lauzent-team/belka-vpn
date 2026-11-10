@@ -27,6 +27,7 @@
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
     <symbol id="i-contact" viewBox="0 0 24 24"><rect x="4.5" y="4" width="15" height="16" rx="2.4"/><circle cx="10.5" cy="10" r="2.2"/><path d="M7.2 16.2a3.6 3.6 0 0 1 6.6 0M15.5 8.5h2M15.5 12h2"/></symbol>
     <symbol id="i-bookmark" viewBox="0 0 24 24"><path d="M6.5 4.5h11v15l-5.5-4-5.5 4z"/></symbol>
+    <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 5.5h16l-6.2 7.3v5.4l-3.6 1.8v-7.2z"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.6 6.4a1.9 1.9 0 0 1 1.9-1.9h3.6l2 2.4h7.4a1.9 1.9 0 0 1 1.9 1.9v9.3a1.9 1.9 0 0 1-1.9 1.9H5.5a1.9 1.9 0 0 1-1.9-1.9z"/></symbol>
     <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M12 3.5v2.2M12 18.3v2.2M20.5 12h-2.2M5.7 12H3.5M18 6l-1.6 1.6M7.6 16.4 6 18M18 18l-1.6-1.6M7.6 7.6 6 6"/></symbol>
     <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4.5 19.5l4-.9L19 8.1a2.1 2.1 0 0 0-3-3L5.4 15.5z"/><path d="M14.5 6.5l3 3"/></symbol>
@@ -315,9 +316,18 @@
           <div class="chat-search-bar" id="chat-search-bar" hidden>
             <span class="search-icon" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24"><use href="#i-search"></use></svg></span>
             <input id="chat-search-input" class="chat-search-input" type="text"
-                   placeholder="Search in this chat…" spellcheck="false" autocomplete="off" />
+                   placeholder="Поиск в этом чате…" spellcheck="false" autocomplete="off" />
             <span class="chat-search-count" id="chat-search-count"></span>
-            <button class="icon-btn" id="btn-chat-search-close" title="Close"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"></use></svg></button>
+            <button class="icon-btn" id="btn-chat-search-filter" title="Фильтры"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-filter"></use></svg></button>
+            <button class="icon-btn" id="btn-chat-search-close" title="Закрыть"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"></use></svg></button>
+          </div>
+
+          <div class="chat-search-filters" id="chat-search-filters" hidden>
+            <div class="csf-group" id="csf-kinds"></div>
+            <div class="csf-row">
+              <div class="csf-group" id="csf-from"></div>
+              <div class="csf-group" id="csf-date"></div>
+            </div>
           </div>
 
           <div class="messages" id="messages"></div>
@@ -1386,6 +1396,7 @@
   <script src="lib/games.js"></script>
   <script src="lib/polls.js"></script>
   <script src="lib/folders.js"></script>
+  <script src="lib/chatsearch.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

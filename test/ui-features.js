@@ -334,7 +334,7 @@ async function main() {
       { timeout: 8000 }
     );
     const count = await a.win.textContent('#chat-search-count');
-    assert.ok(/found/.test(count), 'the result count should be shown');
+    assert.ok(/найдено/.test(count), 'the result count should be shown');
     await a.win.click('#btn-chat-search-close');
     await a.win.waitForFunction(() => document.getElementById('chat-search-bar').hidden, { timeout: 8000 });
   });

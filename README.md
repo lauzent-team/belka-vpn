@@ -48,6 +48,12 @@ and forwards ciphertext it cannot read.
 - **Polls** — a question with options, single- or multiple-choice, sent as an
   ordinary encrypted message; the tally is local and updates on both devices
 
+**Search**
+- Find people and channels by username from the top box
+- **In-chat search** with filters — by sender (me / them), by type (media, photo,
+  voice, file, links, polls, gifts, games) and by date (today, week, month);
+  matches are highlighted and the count is shown
+
 **Chat management**
 - Pin, mute and archive conversations
 - Unread badges, with a separate section for archived chats
@@ -143,11 +149,13 @@ xvfb-run -a node test/ui-features.js      # the new features, clicked for real (
 xvfb-run -a node test/ui-drafts.js        # drafts survive a restart (5 checks)
 xvfb-run -a node test/ui-polls.js         # polls voted on by two devices (11 checks)
 xvfb-run -a node test/ui-folders.js       # chat folders, tabs and restart (7 checks)
+xvfb-run -a node test/ui-chatsearch.js    # in-chat search filters (9 checks)
 xvfb-run -a node test/ui-bots-games.js    # a game and a gift over the relay
 xvfb-run -a node test/connection.js       # connection and error handling (4 checks)
 node test/folders.js                      # folder filter rules (12 checks)
 node test/polls.js                        # poll encode, validate, tally (12 checks)
 node test/games.js                        # game rules (21 checks)
+node test/chatsearch.js                   # in-chat search filter rules (18 checks)
 ```
 
 The end-to-end suite verifies, among other things, that the plaintext never

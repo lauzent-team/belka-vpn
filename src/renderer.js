@@ -19,6 +19,7 @@ const SAVED = 'saved'; // pseudo-peer for Saved Messages (really "your own usern
 const GAMES = (typeof window !== 'undefined' && window.SleePhyGames) || null;
 const POLLS = (typeof window !== 'undefined' && window.SleePhyPolls) || null;
 const FOLDERS = (typeof window !== 'undefined' && window.SleePhyFolders) || null;
+const CHATSEARCH = (typeof window !== 'undefined' && window.SleePhyChatSearch) || null;
 
 const BOT_MINIGAMES = 'minigames';
 const BOT_STICKERS = 'stickers';
@@ -826,6 +827,11 @@ const els = {
   chatSearchBar: $('chat-search-bar'),
   chatSearchInput: $('chat-search-input'),
   chatSearchCount: $('chat-search-count'),
+  chatSearchFilters: $('chat-search-filters'),
+  btnChatSearchFilter: $('btn-chat-search-filter'),
+  csfKinds: $('csf-kinds'),
+  csfFrom: $('csf-from'),
+  csfDate: $('csf-date'),
   btnChatSearchClose: $('btn-chat-search-close'),
 
   pinnedBar: $('pinned-bar'),
@@ -959,6 +965,7 @@ const state = {
   draftSaveTimer: null, // coalesces keystrokes into one settings write
   folders: [], // chat folders ("папки"), mirrored into account settings
   activeFolder: 'all', // id of the selected folder tab
+  searchFilter: { query: '', from: 'any', kind: 'any', date: 'any' }, // in-chat search
   folderEditing: null // id of the folder open in the editor, or 'new'
 };
 
@@ -1847,7 +1854,7 @@ function messageEl(m) {
     return box;
   }
   const el = document.createElement('div');
-  const hit = state.searchQuery && state.searchHits.includes(m.id);
+  const hit = state.searchHits.includes(m.id);
   const current = hit && state.searchHits[state.searchIndex] === m.id;
   el.className = 'msg ' + (m.mine ? 'out' : 'in')
     + (m.deleted ? ' deleted' : '')
@@ -4837,6 +4844,14 @@ els.btnVoice.addEventListener('click', async () => {
 });
 
 /* =========================== in-chat search =========================== */
+/** The payload tag a message carries, for the search classifier. */
+function searchExtraOf(m) {
+  if (pollPayloadOf(m)) return 'poll';
+  if (giftPayloadOf(m)) return 'gift';
+  if (gamePayloadOf(m)) return 'game';
+  return null;
+}
+
 function openChatSearch() {
   els.chatSearchBar.hidden = false;
   els.chatSearchInput.focus();
@@ -4845,22 +4860,87 @@ function openChatSearch() {
 
 function closeChatSearch() {
   els.chatSearchBar.hidden = true;
+  els.chatSearchFilters.hidden = true;
   els.chatSearchInput.value = '';
   els.chatSearchCount.textContent = '';
   state.searchQuery = '';
   state.searchHits = [];
   state.searchIndex = -1;
-  if (state.activePeer) renderMessages();
+  state.searchFilter = { query: '', from: 'any', kind: 'any', date: 'any' };
+  renderSearchFilters();
+  // Immediate: the coalesced render waits on requestAnimationFrame, which is
+  // throttled in a background window, so the highlight would linger.
+  if (state.activePeer) renderMessagesImmediate();
+}
+
+/** The chip rows: message kind, sender, and date range. */
+function renderSearchFilters() {
+  const build = (host, options, field) => {
+    if (!host) return;
+    host.innerHTML = '';
+    for (const opt of options) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'csf-chip' + (state.searchFilter[field] === opt.value ? ' active' : '');
+      chip.dataset.value = opt.value;
+      chip.textContent = opt.label;
+      chip.addEventListener('click', () => {
+        state.searchFilter[field] = opt.value;
+        renderSearchFilters();
+        runChatSearch(els.chatSearchInput.value.trim());
+      });
+      host.appendChild(chip);
+    }
+  };
+  build(els.csfKinds, [
+    { value: 'any', label: 'Все' },
+    { value: 'media', label: 'Медиа' },
+    { value: 'photo', label: 'Фото' },
+    { value: 'voice', label: 'Голосовые' },
+    { value: 'file', label: 'Файлы' },
+    { value: 'link', label: 'Ссылки' },
+    { value: 'poll', label: 'Опросы' },
+    { value: 'gift', label: 'Подарки' },
+    { value: 'game', label: 'Игры' }
+  ], 'kind');
+  build(els.csfFrom, [
+    { value: 'any', label: 'Все' },
+    { value: 'me', label: 'Я' },
+    { value: 'them', label: 'Собеседник' }
+  ], 'from');
+  build(els.csfDate, [
+    { value: 'any', label: 'За всё время' },
+    { value: 'today', label: 'Сегодня' },
+    { value: 'week', label: 'Неделя' },
+    { value: 'month', label: 'Месяц' }
+  ], 'date');
+  if (els.btnChatSearchFilter) {
+    els.btnChatSearchFilter.classList.toggle('has-filter', activeFilterCount() > 0);
+  }
+}
+
+/** How many chips differ from the default, shown on the filter button. */
+function activeFilterCount() {
+  const f = state.searchFilter;
+  return (f.from !== 'any' ? 1 : 0) + (f.kind !== 'any' ? 1 : 0) + (f.date !== 'any' ? 1 : 0);
 }
 
 async function runChatSearch(query) {
   state.searchQuery = query;
+  state.searchFilter.query = query;
   state.searchHits = [];
   state.searchIndex = -1;
-  if (!query) { els.chatSearchCount.textContent = ''; renderMessages(); return; }
   if (!state.activePeer) return;
   const chat = activeChat();
-  const needle = query.toLowerCase();
+  // A filter with no words still searches, so "every photo" works with an
+  // empty box. Only a fully empty filter clears the highlight.
+  const filter = state.searchFilter;
+  const nothingAsked = !filter.query && filter.from === 'any' && filter.kind === 'any' && filter.date === 'any';
+  if (nothingAsked) {
+    els.chatSearchCount.textContent = '';
+    renderMessages();
+    return;
+  }
   // Search what is already loaded; pull more history so older matches appear.
   if (chat && !chat.loaded) {
     try {
@@ -4869,25 +4949,24 @@ async function runChatSearch(query) {
       chat.loaded = true;
     } catch { /* keep what we have */ }
   }
-  const hits = [];
-  for (const m of (chat ? chat.messages : [])) {
-    if (m.deleted) continue;
-    const text = (m.text || '').toLowerCase();
-    const name = m.attachment && m.attachment.name ? m.attachment.name.toLowerCase() : '';
-    if (text.includes(needle) || name.includes(needle)) hits.push(m.id);
-  }
+  const hits = CHATSEARCH.search(chat ? chat.messages : [], filter, searchExtraOf).map((m) => m.id);
   state.searchHits = hits;
   state.searchIndex = hits.length ? hits.length - 1 : -1;
-  els.chatSearchCount.textContent = hits.length ? `${hits.length} found` : 'none';
+  els.chatSearchCount.textContent = hits.length ? `${hits.length} найдено` : 'ничего';
   renderMessagesImmediate();
   if (hits.length) scrollToMessage(hits[state.searchIndex], { smooth: false });
 }
 
 let chatSearchTimer = null;
+renderSearchFilters();
 els.btnChatSearch.addEventListener('click', () => {
   if (els.chatSearchBar.hidden) openChatSearch(); else closeChatSearch();
 });
 els.btnChatSearchClose.addEventListener('click', closeChatSearch);
+els.btnChatSearchFilter.addEventListener('click', () => {
+  els.chatSearchFilters.hidden = !els.chatSearchFilters.hidden;
+  if (!els.chatSearchFilters.hidden) renderSearchFilters();
+});
 els.chatSearchInput.addEventListener('input', () => {
   clearTimeout(chatSearchTimer);
   const q = els.chatSearchInput.value.trim();

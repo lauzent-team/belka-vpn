@@ -494,3 +494,26 @@ arriving now can change a header that is already on screen.
 - **When a UI test waits for a hidden element, use `waitForSelector(sel, {state:
   'hidden'})`.** Playwright's default wait is for *visible*, so waiting on
   `#folder-editor[hidden]` hangs forever even though the element is correct.
+
+## In-chat search (v0.9.0)
+
+- **The filter rules live in `src/lib/chatsearch.js`** (`window.SleePhyChatSearch`),
+  a pure library with no DOM: `search(messages, filter, extrasOf)` returns the
+  matches, `counts` labels the chips. Unit tests are `test/chatsearch.js`.
+- **A message is classified once**, by `classify`: a poll/gift/game payload wins
+  over its carrier text, then the attachment kind, then a link, then plain text.
+  The payload checks live in other libraries, so the caller passes a per-message
+  `extra` tag ('poll' | 'gift' | 'game') rather than this module reaching for
+  them. `searchExtraOf` in the renderer builds that tag.
+- **The chip counts come from `search` itself**, not a second counting pass, so a
+  chip label can never disagree with the list the chip produces.
+- **A filter with no words still searches** — "every photo" is a valid query with
+  an empty box. Only a fully default filter (no text, from=any, kind=any,
+  date=any) clears the highlight.
+- **Highlighting keys off `state.searchHits`, not off a non-empty query**, so a
+  filter-only search shows its hits.
+- **`closeChatSearch` renders immediately** (`renderMessagesImmediate`). The
+  coalesced `renderMessages` waits on `requestAnimationFrame`, throttled in a
+  background window, so the highlight lingered in `test/ui-chatsearch.js`.
+- **The filter button shows a dot** (`.has-filter`) whenever a chip is not on its
+  default; `activeFilterCount` is the single source of that.

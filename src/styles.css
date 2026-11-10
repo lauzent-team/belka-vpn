@@ -665,6 +665,22 @@ input, textarea { user-select: text; }
 .msg.search-hit .bubble { box-shadow: 0 0 0 2px rgba(82, 136, 193, 0.5); }
 .msg.search-current .bubble { box-shadow: 0 0 0 2px var(--accent); }
 
+/* the filter button gets a dot when a chip is not on its default */
+#btn-chat-search-filter.has-filter { color: var(--accent); }
+.chat-search-filters {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 16px 10px; background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+}
+.csf-row { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.csf-group { display: flex; flex-wrap: wrap; gap: 6px; }
+.csf-chip {
+  border: 1px solid transparent; background: var(--bg-3); color: var(--text-dim);
+  font-size: 12.5px; padding: 4px 10px; border-radius: 999px; cursor: pointer;
+}
+.csf-chip:hover { color: var(--text); }
+.csf-chip.active { background: var(--accent); color: #fff; }
+
 /* --------------------------- emoji picker --------------------------- */
 .emoji-panel { background: var(--bg-2); padding: 10px 14px 14px; animation: fade-in 0.16s var(--ease) both; }
 .emoji-tabs { display: flex; gap: 2px; margin-bottom: 10px; flex-wrap: wrap; }
