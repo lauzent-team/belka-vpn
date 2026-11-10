@@ -329,6 +329,7 @@ const state = {
   searchQuery: '', // active in-chat search
   searchHits: [],
   searchIndex: -1,
+  forceScrollBottom: false, // jump to the newest message on the next paint
   settings: { theme: 'dark', wallpaper: 'none' },
   groups: new Map(), // groupId -> { id, name, owner, members: [] }
   channels: new Map(), // channelId -> { id, name, owner, subs, verified, ... }
@@ -867,7 +868,7 @@ async function loadChannels() {
 function ensureChat(key) {
   if (!state.chats.has(key)) {
     state.chats.set(key, {
-      pinned: false, muted: false, archived: false, unread: 0,
+      key, pinned: false, muted: false, archived: false, unread: 0,
       last: '', lastTs: 0, messages: [], loaded: false
     });
   }
@@ -881,6 +882,15 @@ function sortedKeys(list) {
     if (ca.pinned !== cb.pinned) return ca.pinned ? -1 : 1;
     return (cb.lastTs || 0) - (ca.lastTs || 0);
   });
+}
+
+/** Everything a chat row shows, as one string, so an unchanged row is skipped. */
+function chatRowSignature(chat) {
+  const key = chat.key;
+  const peer = peerUsername(key);
+  const tick = isVerified(peer) ? (badgeImageFor(peer) || 'check') : '';
+  return [displayNameFor(key), tick, avatarImageFor(key) || '', chat.lastTs || 0,
+    chat.last || '', chat.unread || 0, chat.muted ? 1 : 0, chat.pinned ? 1 : 0].join('\u0000');
 }
 
 function chatItemEl(key) {
@@ -907,6 +917,8 @@ function chatItemEl(key) {
       ? `<span class="verified-badge verified-badge-sm verified-badge-img" title="Проверенный аккаунт"><img src="${escapeHtml(tickImage)}" alt="" /></span>`
       : `<span class="verified-badge verified-badge-sm" title="Проверенный аккаунт">${icon('i-check')}</span>`)
     : '';
+  chat.tick = tick;
+  chat.tickImage = tickImage;
 
   li.innerHTML = `
     <div class="avatar small" data-color="${escapeHtml(avatarColorFor(key))}">${avatarInner}</div>
@@ -920,19 +932,22 @@ function chatItemEl(key) {
     <div class="chat-item-flags">${flags}${badge}</div>
   `;
   li.addEventListener('click', () => openChat(key));
+  li.dataset.sig = chatRowSignature(chat);
   return li;
 }
 
-function renderChatList() {
+/**
+ * Repaint the chat list. Rows whose content has not changed keep their DOM node,
+ * so the list does not flicker and the browser does no work for untouched rows.
+ * Only reordering (a new last message) moves an existing node.
+ */
+function renderChatListNow() {
   const keys = Array.from(state.chats.keys());
   const active = sortedKeys(keys.filter((k) => !state.chats.get(k).archived));
   const archived = sortedKeys(keys.filter((k) => state.chats.get(k).archived));
 
-  els.chatList.innerHTML = '';
-  active.forEach((k) => els.chatList.appendChild(chatItemEl(k)));
-
-  els.archivedList.innerHTML = '';
-  archived.forEach((k) => els.archivedList.appendChild(chatItemEl(k)));
+  paintChatSection(els.chatList, active);
+  paintChatSection(els.archivedList, archived);
   els.sectionArchived.hidden = archived.length === 0;
   els.archivedCount.textContent = String(archived.length);
 
@@ -943,6 +958,50 @@ function renderChatList() {
 
   const total = active.length + archived.length;
   els.chatEmpty.hidden = total > 0;
+}
+
+let chatListScheduled = false;
+function renderChatList() {
+  if (chatListScheduled) return;
+  chatListScheduled = true;
+  requestAnimationFrame(() => { chatListScheduled = false; renderChatListNow(); });
+}
+
+function paintChatSection(container, keys) {
+  const existing = new Map();
+  for (const el of Array.from(container.children)) {
+    if (el.classList.contains('chat-item')) existing.set(el.dataset.peer, el);
+    else el.remove();
+  }
+  const seen = new Set();
+  let cursor = container.firstElementChild;
+  for (const key of keys) {
+    seen.add(key);
+    const chat = state.chats.get(key);
+    let el = existing.get(key);
+    // Note whether this node is the one the cursor expects *before* a possible
+    // replacement, because `replaceWith` detaches the old node and a detached
+    // node can no longer be used as an insertion reference.
+    const atCursor = !!el && el === cursor;
+    if (!el) {
+      el = chatItemEl(key);
+    } else if (el.dataset.sig !== chatRowSignature(chat)) {
+      const next = chatItemEl(key);
+      el.replaceWith(next);
+      el = next;
+    }
+    el.classList.toggle('active', key === state.activePeer);
+    // Walk the cursor to the row that must sit here, inserting only when the
+    // order actually changed.
+    if (atCursor) {
+      cursor = el.nextElementSibling;
+    } else {
+      container.insertBefore(el, cursor);
+    }
+  }
+  for (const el of Array.from(container.children)) {
+    if (!seen.has(el.dataset.peer)) el.remove();
+  }
 }
 
 function renderMessageBody(m) {
@@ -1129,10 +1188,22 @@ function updateComposerForChannel(key) {
   if (readOnly) els.composerInput.value = '';
 }
 
-function renderMessages() {
+function appendMessage(m) {
+  els.messages.appendChild(messageEl(m));
+  els.messages.scrollTop = els.messages.scrollHeight;
+}
+
+/**
+ * Repaint the message list. The whole list is rebuilt because a message change
+ * can shift day separators and edit markers; a coalescing scheduler
+ * (`renderMessages`) bounds the cost, so a burst of events paints once.
+ */
+function renderMessagesNow() {
   const chat = activeChat();
   if (!chat) return;
+  const atBottom = els.messages.scrollHeight - els.messages.scrollTop - els.messages.clientHeight < 60;
   els.messages.innerHTML = '';
+  const frag = document.createDocumentFragment();
   let lastDay = null;
   for (const m of chat.messages) {
     const day = dayLabel(m.ts);
@@ -1140,12 +1211,54 @@ function renderMessages() {
       const sep = document.createElement('div');
       sep.className = 'day-sep';
       sep.textContent = day;
-      els.messages.appendChild(sep);
+      frag.appendChild(sep);
       lastDay = day;
     }
-    els.messages.appendChild(messageEl(m));
+    frag.appendChild(messageEl(m));
   }
-  els.messages.scrollTop = els.messages.scrollHeight;
+  els.messages.appendChild(frag);
+  if (atBottom || state.forceScrollBottom) els.messages.scrollTop = els.messages.scrollHeight;
+  state.forceScrollBottom = false;
+}
+
+/* A burst of events (a fan-out, a history load, a reaction) must not repaint the
+   list once per event: coalesce them into one frame. A single live message uses
+   the O(1) append path instead. Callers that need the new DOM immediately
+   (scrolling to a search hit) use `renderMessagesImmediate`. */
+let messagesScheduled = false;
+function renderMessages() {
+  if (messagesScheduled) return;
+  messagesScheduled = true;
+  requestAnimationFrame(() => { messagesScheduled = false; renderMessagesNow(); });
+}
+
+function renderMessagesImmediate() {
+  messagesScheduled = false;
+  renderMessagesNow();
+}
+
+/**
+ * Append one message at the end of the open chat without rebuilding the list.
+ * A live message only ever lands at the end, so this keeps a long conversation
+ * O(1) per message instead of O(n). Returns false when a full rebuild is needed
+ * (a search is filtering, select mode is on, or the message is not the last one).
+ */
+function appendMessageEl(m) {
+  if (state.searchQuery || state.selecting || !state.activePeer) return false;
+  const chat = activeChat();
+  if (!chat || chat.messages[chat.messages.length - 1] !== m) return false;
+  const prev = chat.messages[chat.messages.length - 2];
+  if (!prev || dayLabel(prev.ts) !== dayLabel(m.ts)) {
+    const sep = document.createElement('div');
+    sep.className = 'day-sep';
+    sep.textContent = dayLabel(m.ts);
+    els.messages.appendChild(sep);
+  }
+  const atBottom = els.messages.scrollHeight - els.messages.scrollTop - els.messages.clientHeight < 60;
+  els.messages.appendChild(messageEl(m));
+  if (atBottom || state.forceScrollBottom) els.messages.scrollTop = els.messages.scrollHeight;
+  state.forceScrollBottom = false;
+  return true;
 }
 
 function updatePeerSub() {
@@ -1292,6 +1405,7 @@ async function sendCurrentMessage(text) {
   chat.last = text;
   chat.lastTs = optimistic.ts;
   clearReply();
+  state.forceScrollBottom = true;
   renderMessages();
   renderChatList();
 
@@ -2726,7 +2840,9 @@ api.onEvent((evt) => {
         : evt.text;
       chat.lastTs = evt.ts;
       if (state.activePeer === key) {
-        renderMessages();
+        // A single live message lands at the end, so append it directly and
+        // fall back to a rebuild only when the list is filtered.
+        if (!appendMessageEl(m)) renderMessages();
         updatePinnedBar();
         api.markRead(peerUsername(key)).catch(() => {});
       } else {
@@ -3375,7 +3491,7 @@ async function runChatSearch(query) {
   state.searchHits = hits;
   state.searchIndex = hits.length ? hits.length - 1 : -1;
   els.chatSearchCount.textContent = hits.length ? `${hits.length} found` : 'none';
-  renderMessages();
+  renderMessagesImmediate();
   if (hits.length) scrollToMessage(hits[state.searchIndex], { smooth: false });
 }
 
@@ -3393,8 +3509,8 @@ els.chatSearchInput.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter' || !state.searchHits.length) return;
   e.preventDefault();
   state.searchIndex = (state.searchIndex - 1 + state.searchHits.length) % state.searchHits.length;
+  renderMessagesImmediate();
   scrollToMessage(state.searchHits[state.searchIndex]);
-  renderMessages();
 });
 
 /* ============================ pinned banner ============================ */
