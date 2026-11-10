@@ -155,6 +155,13 @@ db.exec(`
     username TEXT NOT NULL,
     exp      INTEGER NOT NULL
   );
+  -- The "огонёк" streak: how many days in a row the account has sent something.
+  -- Only the day and the count are stored; the relay never sees a message.
+  CREATE TABLE IF NOT EXISTS streaks (
+    username TEXT PRIMARY KEY,
+    day      TEXT NOT NULL,
+    count    INTEGER NOT NULL DEFAULT 0
+  );
 `);
 
 // Columns added after the first release. Existing databases are upgraded in
@@ -413,7 +420,15 @@ const q = {
   deleteSession: db.prepare('DELETE FROM sessions WHERE token = ?'),
   deleteUserSessions: db.prepare('DELETE FROM sessions WHERE username = ?'),
   renameSessions: db.prepare('UPDATE sessions SET username = ? WHERE username = ?'),
-  pruneSessions: db.prepare('DELETE FROM sessions WHERE exp < ?')
+  pruneSessions: db.prepare('DELETE FROM sessions WHERE exp < ?'),
+
+  /* ------------------------------- streaks ------------------------------- */
+  getStreak: db.prepare('SELECT * FROM streaks WHERE username = ?'),
+  setStreak: db.prepare(
+    `INSERT INTO streaks (username, day, count) VALUES (?, ?, ?)
+     ON CONFLICT(username) DO UPDATE SET day = excluded.day, count = excluded.count`
+  ),
+  deleteUserStreak: db.prepare('DELETE FROM streaks WHERE username = ?')
 };
 
 /* Statements used only by the username rename, which rewrites every reference. */
@@ -430,7 +445,8 @@ const renameStmts = {
   channelMessages: db.prepare('UPDATE channel_messages SET sender = ? WHERE sender = ?'),
   channelSubs: db.prepare('UPDATE channel_subs SET username = ? WHERE username = ?'),
   channelsOwner: db.prepare('UPDATE channels SET owner = ? WHERE owner = ?'),
-  sessions: db.prepare('UPDATE sessions SET username = ? WHERE username = ?')
+  sessions: db.prepare('UPDATE sessions SET username = ? WHERE username = ?'),
+  streaks: db.prepare('UPDATE streaks SET username = ? WHERE username = ?')
 };
 
 /* --------------------------- password KDF --------------------------- */
@@ -534,8 +550,57 @@ function cleanText(value, max) {
   return trimmed.slice(0, max);
 }
 
-/** Public shape of a user. `verified` drives the badge; `admin` is a hint only. */
+/** The UTC day of a timestamp, as YYYY-MM-DD. The relay has no timezone. */
+function dayKey(ts) {
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
+/**
+ * The current "огонёк" streak for an account: the number of days in a row it has
+ * sent at least one message, and whether today is already counted. A streak that
+ * missed a whole day reads as 0, so it visibly breaks the way it should.
+ */
+function streakView(username) {
+  const row = q.getStreak.get(username);
+  if (!row || !row.count) return { count: 0, active: false };
+  const today = dayKey(Date.now());
+  if (row.day === today) return { count: row.count, active: true };
+  const yesterday = dayKey(Date.now() - 86400000);
+  if (row.day === yesterday) return { count: row.count, active: false };
+  return { count: 0, active: false };
+}
+
+/** Extend the streak when the account sends something today. */
+function bumpStreak(username, ts) {
+  const today = dayKey(ts);
+  const row = q.getStreak.get(username);
+  if (row && row.day === today) return;
+  const yesterday = dayKey(ts - 86400000);
+  const count = row && row.day === yesterday ? row.count + 1 : 1;
+  q.setStreak.run(username, today, count);
+}
+
+/**
+ * Count today's activity for the sender and, when the streak actually moved,
+ * tell their peers so the fire updates live instead of on the next profile fetch.
+ */
+function touchStreak(username) {
+  const before = streakView(username);
+  bumpStreak(username, Date.now());
+  const after = streakView(username);
+  if (before.count !== after.count || before.active !== after.active) {
+    const user = q.getUser.get(username);
+    if (user) {
+      const profile = publicProfile(user);
+      // The sender's own other devices, and the sender, need the new count too.
+      broadcastProfile(username, profile);
+      deliverToUser(username, { t: 'profile', username, profile });
+    }
+  }
+}
+
 function publicProfile(user) {
+  const streak = streakView(user.username);
   return {
     username: user.username,
     displayName: user.display_name || user.username,
@@ -548,6 +613,9 @@ function publicProfile(user) {
     verified: !!user.verified,
     // A custom badge picture replaces the plain checkmark when present.
     badgeImage: user.badge_image || null,
+    // Days in a row the account has sent something, and whether today counts.
+    streak: streak.count,
+    streakActive: streak.active,
     admin: !!user.is_admin,
     // Named in ADMINS but not yet flagged: the relay still treats them as an
     // admin, so the client must show the panel. The flag is set on next login.
@@ -882,6 +950,11 @@ function handleProfileGet(ws, msg, rid) {
   });
 }
 
+function handleStreakGet(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  reply(ws, rid, { t: 'streak', ...streakView(ws.username) });
+}
+
 function handleProfileSet(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
   const user = q.getUser.get(ws.username);
@@ -933,6 +1006,7 @@ function handleUsernameSet(ws, msg, rid) {
     renameStmts.channelSubs.run(next, prev);
     renameStmts.channelsOwner.run(next, prev);
     renameStmts.sessions.run(next, prev);
+    renameStmts.streaks.run(next, prev);
     db.exec('COMMIT');
   } catch {
     try { db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
@@ -1067,6 +1141,7 @@ function handleSend(ws, msg, rid) {
     ws.username, to, safeBox, safeNonce, ts, replyTo, kind, parsed.attachment
   );
   const id = Number(info.lastInsertRowid);
+  touchStreak(ws.username);
 
   reply(ws, rid, { t: 'sent', id, ts, to, replyTo, kind, attachment: parsed.attachment });
   const delivered = deliverToUser(to, {
@@ -1446,6 +1521,7 @@ function handleGroupSend(ws, msg, rid) {
     groupId, ws.username, JSON.stringify(envelopes), ts, replyTo, parsed.kind, parsed.attachment
   );
   const id = Number(info.lastInsertRowid);
+  touchStreak(ws.username);
 
   reply(ws, rid, { t: 'group.sent', id, groupId, ts, replyTo, kind: parsed.kind, attachment: parsed.attachment });
   for (const [user, env] of Object.entries(envelopes)) {
@@ -1690,6 +1766,7 @@ function handleChannelPost(ws, msg, rid) {
     channelId, ws.username, JSON.stringify(envelopes), ts, replyTo, parsed.kind, parsed.attachment
   );
   const id = Number(info.lastInsertRowid);
+  touchStreak(ws.username);
 
   reply(ws, rid, { t: 'channel.posted', id, channelId, ts, replyTo, kind: parsed.kind, attachment: parsed.attachment });
   for (const [user, env] of Object.entries(envelopes)) {
@@ -1935,6 +2012,7 @@ function deleteUserData(username) {
     q.deleteUserChats.run(username, username);
     q.deleteUserSettings.run(username);
     q.deleteUserSessions.run(username);
+    q.deleteUserStreak.run(username);
     q.deleteUser.run(username);
     db.exec('COMMIT');
   } catch {
@@ -1956,6 +2034,7 @@ const handlers = {
   directory: handleDirectory,
   'profile.get': handleProfileGet,
   'profile.set': handleProfileSet,
+  'streak.get': handleStreakGet,
   'profile.username': handleUsernameSet,
   'users.search': handleUserSearch,
   send: handleSend,

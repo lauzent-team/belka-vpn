@@ -289,9 +289,21 @@ input, textarea { user-select: text; }
 .avatar-picker-hint { font-size: 11.5px; color: var(--text-faint); }
 .avatar-picker.is-drag .avatar { outline: 2px dashed var(--accent); outline-offset: 2px; }
 
-.me-meta { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.me-meta { display: flex; flex-direction: column; min-width: 0; gap: 1px; flex: 1; }
 .me-name { font-weight: 600; font-size: 14px; min-width: 0; overflow-wrap: anywhere; }
 .me-status { flex-basis: 100%; display: flex; align-items: center; gap: 5px; color: var(--text-dim); font-size: 11.5px; }
+
+/* "Огонёк": the number of days in a row the account has been active. Dim until
+   the account has sent something today, so it reads as lit only when it counts. */
+.streak-chip {
+  flex: none; display: inline-flex; align-items: center; gap: 3px;
+  padding: 2px 8px; border-radius: 999px;
+  background: var(--bg-3); color: var(--text-dim);
+  font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.streak-chip .ico { font-size: 13px; color: var(--text-faint); }
+.streak-chip.on { color: var(--text); background: color-mix(in srgb, var(--swatch-amber) 22%, transparent); }
+.streak-chip.on .ico { color: var(--swatch-amber); }
 
 .icon-btn {
   border: 0; background: none;
@@ -759,6 +771,11 @@ body.theme-light .att-dl:hover { background: rgba(0, 0, 0, 0.13); }
 .profile-handle { color: var(--text-dim); font-size: 13px; }
 .profile-presence { font-size: 12px; color: var(--text-faint); }
 .profile-presence.online { color: var(--accent); }
+.profile-streak {
+  display: inline-flex; align-items: center; gap: 4px; margin-top: 2px;
+  font-size: 12px; font-weight: 600; color: var(--text-dim);
+}
+.profile-streak .ico { font-size: 14px; color: var(--swatch-amber); }
 .profile-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .profile-actions .btn-primary, .profile-actions .btn-secondary,
 .profile-actions .btn-danger { flex: 1; min-width: 130px; width: auto; }

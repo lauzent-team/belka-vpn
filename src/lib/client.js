@@ -1147,6 +1147,12 @@ class SleePhyClient {
     };
   }
 
+  /** The account's own "огонёк" streak: days in a row it has been active. */
+  async getStreak() {
+    const res = await this.request({ t: 'streak.get' });
+    return { count: res.count || 0, active: !!res.active };
+  }
+
   async saveProfile({ displayName, bio, avatarColor, avatarImage }) {
     const res = await this.request({
       t: 'profile.set',

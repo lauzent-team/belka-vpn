@@ -118,6 +118,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('sleephy:react', async (_e, payload) => client.react(payload));
   ipcMain.handle('sleephy:typing', async (_e, payload) => client.typing(payload));
   ipcMain.handle('sleephy:profile', async (_e, username) => client.getProfile(username));
+  ipcMain.handle('sleephy:streak', async () => client.getStreak());
   ipcMain.handle('sleephy:saveProfile', async (_e, payload) => client.saveProfile(payload));
   ipcMain.handle('sleephy:changeUsername', async (_e, username) => client.changeUsername(username));
   ipcMain.handle('sleephy:searchUsers', async (_e, query) => client.searchUsers(query));

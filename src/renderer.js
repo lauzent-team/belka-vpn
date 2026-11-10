@@ -53,6 +53,8 @@ const els = {
   meName: $('me-name'),
   meAvatar: $('me-avatar'),
   meState: $('me-state'),
+  meStreak: $('me-streak'),
+  meStreakCount: $('me-streak-count'),
   search: $('search'),
   btnSearchClear: $('btn-search-clear'),
   searchPanel: $('search-panel'),
@@ -157,6 +159,8 @@ const els = {
   profileDisplay: $('profile-display'),
   profileHandle: $('profile-handle'),
   profilePresence: $('profile-presence'),
+  profileStreak: $('profile-streak'),
+  profileStreakText: $('profile-streak-text'),
   profileView: $('profile-view'),
   profileViewUsername: $('profile-view-username'),
   profileViewBio: $('profile-view-bio'),
@@ -331,6 +335,7 @@ const state = {
   searchIndex: -1,
   forceScrollBottom: false, // jump to the newest message on the next paint
   settings: { theme: 'dark', wallpaper: 'none' },
+  streak: null, // { count, active } for the signed-in account, the "огонёк"
   groups: new Map(), // groupId -> { id, name, owner, members: [] }
   channels: new Map(), // channelId -> { id, name, owner, subs, verified, ... }
   contacts: [], // usernames saved as contacts
@@ -760,9 +765,11 @@ async function enterMain(username) {
   state.lastSeen.clear();
   state.groups.clear();
   state.channels.clear();
+  state.streak = null;
+  els.meStreak.hidden = true;
   await refreshStatus();
   showScreen('main');
-  await Promise.all([loadChats(), loadGroups(), loadChannels(), loadContacts()]);
+  await Promise.all([loadChats(), loadGroups(), loadChannels(), loadContacts(), loadStreak()]);
   renderChatList();
 }
 
@@ -1295,7 +1302,13 @@ function updatePeerSub() {
   }
   els.peerSub.classList.remove('typing');
   const presence = peerPresenceText(peer);
-  els.peerSub.textContent = presence || 'end-to-end encrypted';
+  els.peerSub.textContent = (presence || 'end-to-end encrypted') + streakSuffix(peer);
+}
+
+/** " · 5 🔥" when a peer has a streak, so the header shows it at a glance. */
+function streakSuffix(username) {
+  const p = state.profiles.get(username);
+  return p && p.streak > 0 ? ` · ${p.streak} 🔥` : '';
 }
 
 /* ------------------------------- searching ------------------------------- */
@@ -1428,6 +1441,7 @@ async function sendCurrentMessage(text) {
       const res = await api.send({ to: peerUsername(key), text, replyTo: replyTo ? replyTo.id : undefined });
       optimistic.id = res.id;
     }
+    noteLocalSend();
     optimistic.pending = false;
     const el = els.messages.querySelector(`.msg[data-id="${optimistic.id}"]`);
     if (el) el.classList.remove('pending');
@@ -1827,6 +1841,7 @@ async function showProfile(username, { self = false } = {}) {
   const presenceText = peerPresenceText(p.username);
   els.profilePresence.textContent = isSelf ? 'Это вы' : (presenceText || 'не в сети');
   els.profilePresence.classList.toggle('online', !isSelf && !!info.online);
+  renderProfileStreak(p.username);
   els.profileViewBio.parentElement.hidden = false;
 
   els.btnProfileMessage.hidden = isSelf;
@@ -2083,6 +2098,10 @@ function applySelfProfile(p) {
     paintBadge(els.meBadge, p.username);
     if (els.setHeroAvatar) paintAvatar(els.setHeroAvatar, p.username, 'avatar-lg');
     if (els.setHeroName) els.setHeroName.textContent = p.displayName || p.username;
+    if (typeof p.streak === 'number') {
+      state.streak = { count: p.streak, active: !!p.streakActive };
+      renderSelfStreak();
+    }
     setAdminMode(!!p.admin || !!p.adminByConfig);
   }
 }
@@ -2735,6 +2754,52 @@ function updateConnIndicators(online) {
   if (dot) dot.classList.toggle('on', online);
 }
 
+/* -------------------------------- streak -------------------------------- */
+// The "огонёк": how many days in a row the account has sent something. The
+// relay counts the days; the client only draws the flame. A streak is always at
+// least one the moment it is shown, so the chip stays hidden until it has one.
+function renderSelfStreak() {
+  const s = state.streak;
+  if (!s || !s.count) { els.meStreak.hidden = true; return; }
+  els.meStreak.hidden = false;
+  els.meStreakCount.textContent = String(s.count);
+  els.meStreak.classList.toggle('on', !!s.active);
+  els.meStreak.title = s.active
+    ? `Огонёк: ${s.count} ${plural(s.count, 'день', 'дня', 'дней')} подряд`
+    : `Огонёк: ${s.count} ${plural(s.count, 'день', 'дня', 'дней')}. Отправьте сообщение, чтобы продлить.`;
+}
+
+/** Paint the streak line of the open profile from the cached profile fields. */
+function renderProfileStreak(username) {
+  const p = state.profiles.get(username);
+  const count = p && p.streak ? p.streak : 0;
+  if (!count) { els.profileStreak.hidden = true; return; }
+  els.profileStreak.hidden = false;
+  const active = !!p.streakActive;
+  const days = plural(count, 'день', 'дня', 'дней');
+  els.profileStreakText.textContent = active
+    ? `${count} ${days} подряд`
+    : `${count} ${days} подряд · сегодня ещё нет`;
+}
+
+async function loadStreak() {
+  try {
+    state.streak = await api.streak();
+  } catch { /* the chip simply stays hidden until the next fetch */ }
+  renderSelfStreak();
+}
+
+/**
+ * Sending today lights the flame without waiting for a round trip. The relay
+ * reconciles the count on the next open; this only makes the send feel immediate.
+ */
+function noteLocalSend() {
+  const s = state.streak;
+  if (!s || s.active) return;
+  state.streak = { count: (s.count || 0) + 1, active: true };
+  renderSelfStreak();
+}
+
 async function refreshStatus() {
   const s = await api.status();
   state.username = s.username || state.username;
@@ -3159,6 +3224,7 @@ async function sendWithAttachment(att) {
             attachment: { kind: att.kind, bytes: att.bytes, name: att.name, mime: att.mime, duration: att.duration }
           });
     optimistic.id = res.id;
+    noteLocalSend();
     optimistic.pending = false;
     optimistic.attachment = res.attachment || optimistic.attachment;
     renderMessages();
@@ -3685,6 +3751,7 @@ async function forwardTo(key, messages) {
         await api.send({ to: peerUsername(key), text: m.text });
       }
       sent += 1;
+      noteLocalSend();
     } catch (err) {
       toast(err.message || 'Could not forward');
       break;
