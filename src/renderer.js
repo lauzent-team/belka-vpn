@@ -97,10 +97,25 @@ const els = {
   btnGroupClose: $('btn-group-close'),
   channelBackdrop: $('channel-backdrop'),
   channelName: $('channel-name'),
+  channelHandle: $('channel-handle'),
   channelDesc: $('channel-desc'),
   channelError: $('channel-error'),
   btnChannelCreate: $('btn-channel-create'),
   btnChannelClose: $('btn-channel-close'),
+  chsetBackdrop: $('chset-backdrop'),
+  chsetAvatar: $('chset-avatar'),
+  chsetNameLabel: $('chset-name-label'),
+  chsetHandleLabel: $('chset-handle-label'),
+  chsetName: $('chset-name'),
+  chsetHandle: $('chset-handle'),
+  chsetDesc: $('chset-desc'),
+  chsetError: $('chset-error'),
+  chsetSubs: $('chset-subs'),
+  btnChsetSave: $('btn-chset-save'),
+  btnChsetDelete: $('btn-chset-delete'),
+  btnChsetClose: $('btn-chset-close'),
+  menuChannelSettings: $('menu-channel-settings'),
+  menuChannelLink: $('menu-channel-link'),
   discoverBackdrop: $('discover-backdrop'),
   discoverList: $('discover-list'),
   discoverEmpty: $('discover-empty'),
@@ -1318,7 +1333,8 @@ function updatePeerSub() {
     const c = state.channels.get(channelIdOf(key));
     const n = (c && c.subs) || 0;
     els.peerSub.classList.remove('typing');
-    els.peerSub.textContent = `${n} ${plural(n, 'подписчик', 'подписчика', 'подписчиков')}`;
+    const head = `${n} ${plural(n, 'подписчик', 'подписчика', 'подписчиков')}`;
+    els.peerSub.textContent = (c && c.handle) ? `@${c.handle} · ${head}` : head;
     return;
   }
   const peer = peerUsername(key);
@@ -1380,10 +1396,46 @@ async function runSearch(query) {
     state.profiles.set(u.username, u);
     state.presence.set(u.username, !!u.online);
   }
+  // An `@handle` may name a channel rather than a person. Try that too, so the
+  // same box finds both, and show a channel row above the people.
+  let channelHit = null;
+  const handle = bareUsername(query);
+  if (handle && USERNAME_RE.test(handle)) {
+    try { channelHit = await api.channelInfo({ handle }); } catch { channelHit = null; }
+    if (channelHit) state.channels.set(channelHit.id, channelHit);
+  }
   els.searchPanel.hidden = false;
   els.chatSections.hidden = true;
   els.searchResults.innerHTML = '';
-  els.searchEmpty.hidden = items.length > 0;
+  els.searchEmpty.hidden = items.length > 0 || !!channelHit;
+
+  if (channelHit) {
+    const li = document.createElement('li');
+    li.className = 'chat-item';
+    const label = channelHit.subscribed ? (channelHit.isOwner ? 'ваш канал' : 'вы подписаны') : 'канал';
+    li.innerHTML = `
+      <div class="avatar small" data-color="cyan">${icon('i-globe')}</div>
+      <div class="chat-item-body">
+        <div class="chat-item-top">
+          <span class="chat-item-name">${escapeHtml(channelHit.name)}</span>
+        </div>
+        <div class="chat-item-last">@${escapeHtml(channelHit.handle)} · ${label}</div>
+      </div>
+    `;
+    li.addEventListener('click', () => {
+      els.search.value = '';
+      els.btnSearchClear.hidden = true;
+      closeSearchPanel();
+      if (channelHit.subscribed) {
+        ensureChat(channelKey(channelHit.id));
+        renderChatList();
+        openChat(channelKey(channelHit.id));
+      } else {
+        subscribeToChannel(channelHit.id);
+      }
+    });
+    els.searchResults.appendChild(li);
+  }
 
   for (const u of items) {
     const li = document.createElement('li');
@@ -1727,6 +1779,9 @@ function openChatMenu() {
   // Leaving applies to channels only, and never to the channel's own owner.
   els.menuLeave.hidden = !channel || channel.isOwner;
   els.menuLeaveLabel.textContent = 'Покинуть канал';
+  // Channel settings are for the owner; the shareable @handle is for everyone.
+  els.menuChannelSettings.hidden = !channel || !channel.isOwner;
+  els.menuChannelLink.hidden = !channel || !channel.handle;
   els.chatmenuBackdrop.hidden = false;
 }
 
@@ -1781,6 +1836,15 @@ els.chatmenuBody.addEventListener('click', async (e) => {
       renderMessages();
       renderChatList();
       toast('History cleared');
+    } else if (action === 'channel-settings') {
+      const channel = isChannelKey(key) ? state.channels.get(channelIdOf(key)) : null;
+      if (channel) openChannelSettings(channel.id);
+    } else if (action === 'channel-link') {
+      const channel = isChannelKey(key) ? state.channels.get(channelIdOf(key)) : null;
+      if (channel && channel.handle) {
+        try { await navigator.clipboard.writeText('@' + channel.handle); toast('@' + channel.handle + ' скопирован'); }
+        catch { toast('Не удалось скопировать'); }
+      }
     } else if (action === 'leave') {
       const channel = isChannelKey(key) ? state.channels.get(channelIdOf(key)) : null;
       if (!channel) return;
@@ -3128,6 +3192,12 @@ api.onEvent((evt) => {
         els.peerName.textContent = displayNameFor(state.activePeer);
         updatePeerSub();
       }
+      // Keep an open settings sheet in step with a change made elsewhere.
+      if (c && !els.chsetBackdrop.hidden && chsetChannelId === c.id) {
+        els.chsetNameLabel.textContent = c.name || '—';
+        els.chsetHandleLabel.textContent = c.handle ? '@' + c.handle : 'без @адреса';
+        renderChannelSubs(c);
+      }
       renderChatList();
       break;
     }
@@ -4171,6 +4241,7 @@ els.btnGroupCreate.addEventListener('click', async () => {
 /* --------------------------- create channel --------------------------- */
 function openChannelModal() {
   els.channelName.value = '';
+  els.channelHandle.value = '';
   els.channelDesc.value = '';
   els.channelError.hidden = true;
   els.channelBackdrop.hidden = false;
@@ -4185,23 +4256,131 @@ els.channelBackdrop.addEventListener('click', (e) => {
 els.btnChannelCreate.addEventListener('click', async () => {
   const name = els.channelName.value.trim();
   const description = els.channelDesc.value.trim();
+  const handle = bareUsername(els.channelHandle.value) || undefined;
   els.channelError.hidden = true;
   if (!name) {
     els.channelError.textContent = 'Введите название канала';
     els.channelError.hidden = false;
     return;
   }
+  if (handle && !USERNAME_RE.test(handle)) {
+    els.channelError.textContent = '@адрес: 3–32 символа a–z, 0–9, _';
+    els.channelError.hidden = false;
+    return;
+  }
   try {
-    const channel = await api.createChannel({ name, description });
+    const channel = await api.createChannel({ name, description, handle });
     state.channels.set(channel.id, channel);
     els.channelBackdrop.hidden = true;
     ensureChat(channelKey(channel.id));
     renderChatList();
     openChat(channelKey(channel.id));
-    toast('Канал создан');
+    toast(channel.handle ? `Канал создан: @${channel.handle}` : 'Канал создан');
   } catch (err) {
     els.channelError.textContent = err.message || 'Не удалось создать канал';
     els.channelError.hidden = false;
+  }
+});
+
+/* -------------------------- channel settings -------------------------- */
+let chsetChannelId = null;
+
+function openChannelSettings(channelId) {
+  const c = state.channels.get(channelId);
+  if (!c) return;
+  chsetChannelId = channelId;
+  els.chsetError.hidden = true;
+  els.chsetName.value = c.name || '';
+  els.chsetHandle.value = c.handle ? '@' + c.handle : '';
+  els.chsetDesc.value = c.description || '';
+  els.chsetNameLabel.textContent = c.name || '—';
+  els.chsetHandleLabel.textContent = c.handle ? '@' + c.handle : 'без @адреса';
+  els.chsetAvatar.dataset.color = 'cyan';
+  els.chsetAvatar.innerHTML = icon('i-globe');
+  renderChannelSubs(c);
+  els.chsetBackdrop.hidden = false;
+  els.chsetName.focus();
+}
+
+function renderChannelSubs(c) {
+  const subs = c.subscribers || [];
+  els.chsetSubs.innerHTML = '';
+  if (!subs.length) {
+    els.chsetSubs.innerHTML = '<span class="panel-empty">Список недоступен</span>';
+    return;
+  }
+  for (const name of subs) {
+    const chip = document.createElement('span');
+    chip.className = 'chset-sub';
+    const isOwner = name === c.owner;
+    chip.innerHTML = `
+      <span class="avatar" data-color="${escapeHtml(avatarColorFor(name))}">${escapeHtml(initial(displayNameFor(name)))}</span>
+      <span class="${isOwner ? 'chset-sub-owner' : ''}">${escapeHtml(atUsername(name))}${isOwner ? ' · владелец' : ''}</span>
+    `;
+    els.chsetSubs.appendChild(chip);
+  }
+}
+
+els.btnChsetClose.addEventListener('click', () => { els.chsetBackdrop.hidden = true; });
+els.chsetBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.chsetBackdrop) els.chsetBackdrop.hidden = true;
+});
+
+els.btnChsetSave.addEventListener('click', async () => {
+  const c = state.channels.get(chsetChannelId);
+  if (!c) return;
+  const name = els.chsetName.value.trim();
+  const handle = bareUsername(els.chsetHandle.value);
+  const description = els.chsetDesc.value.trim();
+  els.chsetError.hidden = true;
+  if (!name) {
+    els.chsetError.textContent = 'Введите название канала';
+    els.chsetError.hidden = false;
+    return;
+  }
+  if (!handle || !USERNAME_RE.test(handle)) {
+    els.chsetError.textContent = '@адрес: 3–32 символа a–z, 0–9, _';
+    els.chsetError.hidden = false;
+    return;
+  }
+  els.btnChsetSave.disabled = true;
+  try {
+    const updated = await api.editChannel({ channelId: c.id, name, description, handle });
+    state.channels.set(updated.id, updated);
+    if (updated.ownerProfile) state.profiles.set(updated.owner, updated.ownerProfile);
+    els.chsetNameLabel.textContent = updated.name;
+    els.chsetHandleLabel.textContent = updated.handle ? '@' + updated.handle : 'без @адреса';
+    els.chsetBackdrop.hidden = true;
+    renderChatList();
+    if (state.activePeer === channelKey(updated.id)) {
+      els.peerName.textContent = displayNameFor(state.activePeer);
+      updatePeerSub();
+    }
+    toast('Канал обновлён');
+  } catch (err) {
+    els.chsetError.textContent = err.message || 'Не удалось сохранить';
+    els.chsetError.hidden = false;
+  } finally {
+    els.btnChsetSave.disabled = false;
+  }
+});
+
+els.btnChsetDelete.addEventListener('click', async () => {
+  const c = state.channels.get(chsetChannelId);
+  if (!c) return;
+  const ok = await confirmDialog({
+    title: 'Удалить канал?',
+    text: `Канал «${c.name}» будет удалён для всех подписчиков.`,
+    confirmLabel: 'Удалить'
+  });
+  if (!ok) return;
+  try {
+    await api.deleteChannel({ channelId: c.id });
+    els.chsetBackdrop.hidden = true;
+    toast('Канал удалён');
+  } catch (err) {
+    els.chsetError.textContent = err.message || 'Не удалось удалить';
+    els.chsetError.hidden = false;
   }
 });
 
@@ -4224,7 +4403,12 @@ async function openDiscover() {
 
 function renderDiscover() {
   const query = (els.discoverSearch.value || '').trim().toLowerCase();
-  const items = discoverItems.filter((c) => !query || c.name.toLowerCase().includes(query));
+  const items = discoverItems.filter((c) => {
+    if (!query) return true;
+    const name = (c.name || '').toLowerCase();
+    const handle = (c.handle || '').toLowerCase();
+    return name.includes(query) || handle.includes(bareUsername(query));
+  });
   els.discoverList.innerHTML = '';
   els.discoverEmpty.hidden = items.length > 0;
   if (!items.length) {
@@ -4243,7 +4427,7 @@ function renderDiscover() {
     row.innerHTML = `
       <span class="avatar tiny" data-color="cyan">${icon('i-globe')}</span>
       <span class="contact-name">${escapeHtml(c.name)}${tick}</span>
-      <span class="contact-handle">${escapeHtml(label)}</span>
+      <span class="contact-handle">${c.handle ? '@' + escapeHtml(c.handle) + ' · ' : ''}${escapeHtml(label)}</span>
       <button class="btn-secondary btn-compact" data-open="${c.id}">${c.subscribed ? 'Открыть' : 'Подписаться'}</button>
     `;
     row.addEventListener('click', (e) => {

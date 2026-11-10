@@ -76,7 +76,7 @@ async function main() {
   await step('my profile opens and shows my username', async () => {
     await a.win.click('#btn-my-profile');
     await a.win.waitForSelector('#profile-backdrop:not([hidden])', { timeout: 8000 });
-    assert.strictEqual(await a.win.textContent('#profile-view-username'), alice);
+    assert.strictEqual((await a.win.textContent('#profile-view-username')).replace(/^@/, ''), alice);
     assert.ok(await a.win.isVisible('#username-block'), 'the rename block should be visible for me');
   });
 
@@ -103,7 +103,7 @@ async function main() {
       renamed,
       { timeout: 10000 }
     );
-    assert.strictEqual(await a.win.textContent('#profile-view-username'), renamed);
+    assert.strictEqual((await a.win.textContent('#profile-view-username')).replace(/^@/, ''), renamed);
     a.username = renamed;
   });
 

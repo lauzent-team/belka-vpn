@@ -887,6 +887,8 @@
           <button class="menu-item" data-action="archive"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-archive"></use></svg></span><span id="menu-archive-label">Archive</span></button>
           <button class="menu-item" data-action="read"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-check"></use></svg></span><span>Mark as read</span></button>
           <button class="menu-item" data-action="clear"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-broom"></use></svg></span><span>Clear history</span></button>
+          <button class="menu-item" data-action="channel-settings" id="menu-channel-settings" hidden><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-gear"></use></svg></span><span>Настройки канала</span></button>
+          <button class="menu-item" data-action="channel-link" id="menu-channel-link" hidden><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-copy"></use></svg></span><span>Скопировать @адрес</span></button>
           <button class="menu-item" data-action="leave" id="menu-leave"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"></use></svg></span><span id="menu-leave-label">Покинуть канал</span></button>
           <button class="menu-item danger" data-action="delete" id="menu-delete"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"></use></svg></span><span>Delete chat</span></button>
         </div>
@@ -1138,6 +1140,11 @@
                    placeholder="Например, Новости" />
           </label>
           <label class="field">
+            <span class="field-label">Публичный @адрес (необязательно)</span>
+            <input id="channel-handle" type="text" spellcheck="false" autocapitalize="none"
+                   placeholder="@minigames" />
+          </label>
+          <label class="field">
             <span class="field-label">Описание (необязательно)</span>
             <input id="channel-desc" type="text" spellcheck="false" maxlength="200"
                    placeholder="О чём этот канал" />
@@ -1152,6 +1159,45 @@
       </div>
     </div>
 
+    <!-- ===================== CHANNEL SETTINGS ===================== -->
+    <div class="modal-backdrop" id="chset-backdrop" hidden>
+      <div class="modal">
+        <header class="modal-head">
+          <h3>Настройки канала</h3>
+          <button class="icon-btn" id="btn-chset-close" title="Close"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"></use></svg></button>
+        </header>
+        <div class="modal-body">
+          <div class="chset-head">
+            <span class="avatar avatar-lg" data-color="cyan" id="chset-avatar"></span>
+            <div class="chset-head-text">
+              <span class="chset-name" id="chset-name-label">—</span>
+              <span class="chset-handle" id="chset-handle-label">—</span>
+            </div>
+          </div>
+          <label class="field">
+            <span class="field-label">Название</span>
+            <input id="chset-name" type="text" spellcheck="false" maxlength="64" />
+          </label>
+          <label class="field">
+            <span class="field-label">Публичный @адрес</span>
+            <input id="chset-handle" type="text" spellcheck="false" autocapitalize="none"
+                   placeholder="@channel_name" />
+          </label>
+          <label class="field">
+            <span class="field-label">Описание</span>
+            <input id="chset-desc" type="text" spellcheck="false" maxlength="200" />
+          </label>
+          <p class="auth-error" id="chset-error" hidden></p>
+          <button class="btn-primary" id="btn-chset-save">Сохранить</button>
+          <div class="chset-subs">
+            <span class="setting-label">Подписчики</span>
+            <div class="chset-subs-list" id="chset-subs"></div>
+          </div>
+          <button class="btn-danger" id="btn-chset-delete">Удалить канал</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ======================== DISCOVER CHANNELS ======================== -->
     <div class="modal-backdrop" id="discover-backdrop" hidden>
       <div class="modal modal-sheet">
@@ -1161,7 +1207,7 @@
         </header>
         <div class="modal-body">
           <input id="discover-search" class="contact-input" type="text" spellcheck="false"
-                 placeholder="Поиск по названию…" />
+                 placeholder="Поиск по названию или @адресу…" />
           <div class="modal-menu" id="discover-list"></div>
           <p class="panel-empty" id="discover-empty" hidden>Каналов пока нет. Создайте первый.</p>
         </div>

@@ -134,6 +134,7 @@ async function main() {
 
   let groupName;
   let channelName;
+  let channelHandle;
   await step('a group can be created from the drawer', async () => {
     groupName = 'Друзья ' + suffix;
     await A.win.click('#btn-menu');
@@ -209,12 +210,15 @@ async function main() {
     await A.win.click('#create-channel');
     await A.win.waitForSelector('#channel-backdrop:not([hidden])', { timeout: 5000 });
     channelName = 'Канал ' + suffix;
+    channelHandle = 'chan_' + suffix;
     await A.win.fill('#channel-name', channelName);
+    await A.win.fill('#channel-handle', '@' + channelHandle);
     await A.win.fill('#channel-desc', 'Описание канала');
     await A.win.click('#btn-channel-create');
     await A.win.waitForSelector('#channel-backdrop', { state: 'hidden', timeout: 8000 });
     await A.win.waitForSelector('#chat-view:not([hidden])', { timeout: 8000 });
     assert.strictEqual(await A.win.textContent('#peer-name'), channelName);
+    assert.ok((await A.win.textContent('#peer-sub')).includes('@' + channelHandle), 'the header should show the handle');
 
     // Bob finds it in the channel directory and subscribes.
     await B.win.click('#btn-menu');
@@ -244,6 +248,36 @@ async function main() {
       text,
       { timeout: 10000 }
     );
+  });
+
+  await step('the owner can open channel settings and rename it', async () => {
+    await A.win.click('#btn-chat-menu');
+    await A.win.waitForSelector('#chatmenu-backdrop:not([hidden])', { timeout: 5000 });
+    assert.ok(await A.win.isVisible('#menu-channel-settings'), 'the owner should see channel settings');
+    await A.win.click('#menu-channel-settings');
+    await A.win.waitForSelector('#chset-backdrop:not([hidden])', { timeout: 5000 });
+    assert.strictEqual(await A.win.inputValue('#chset-handle'), '@' + channelHandle);
+    assert.ok((await A.win.textContent('#chset-subs')).includes('@' + alice), 'the subscriber list should show the owner');
+    channelName = 'Канал переименован ' + suffix;
+    await A.win.fill('#chset-name', channelName);
+    await A.win.click('#btn-chset-save');
+    await A.win.waitForSelector('#chset-backdrop', { state: 'hidden', timeout: 8000 });
+    await A.win.waitForFunction(
+      (n) => document.getElementById('peer-name').textContent === n,
+      channelName,
+      { timeout: 8000 }
+    );
+  });
+
+  await step('a channel is found by its @handle in search', async () => {
+    await A.win.fill('#search', '@' + channelHandle);
+    await A.win.waitForSelector('#search-panel:not([hidden])', { timeout: 5000 });
+    await A.win.waitForFunction(
+      (h) => document.getElementById('search-results').textContent.includes(h),
+      channelHandle,
+      { timeout: 8000 }
+    );
+    await A.win.click('#btn-search-clear');
   });
 
   await step('the channel is gone from the subscriber list after leaving', async () => {
