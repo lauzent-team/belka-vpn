@@ -131,6 +131,7 @@ const els = {
   setPreview: $('set-preview'),
   setSound: $('set-sound'),
   setLastSeen: $('set-lastseen'),
+  setHideProfile: $('set-hide-profile'),
   setReceipts: $('set-receipts'),
   setAutoLock: $('set-autolock'),
   setBlockedSub: $('set-blocked-sub'),
@@ -2182,6 +2183,10 @@ els.btnUsernameSave.addEventListener('click', async () => {
 
 function applySelfProfile(p) {
   state.profile = p;
+  // The relay filters a hidden profile for everyone but the owner; when the
+  // owner's own view arrives with the switch on, keep the settings controls in
+  // step with what the relay is enforcing.
+  syncPrivacyUI(p);
   if (p.username === state.username) {
     els.meName.textContent = p.displayName || p.username;
     paintAvatar(els.meAvatar, p.username);
@@ -2231,13 +2236,24 @@ els.btnSettings.addEventListener('click', () => {
   });
 });
 
+/** Mirror the relay's privacy switches into the settings controls. */
+function syncPrivacyUI(profile) {
+  const p = (profile && profile.privacy) || null;
+  if (!p || !els.setLastSeen || !els.setHideProfile) return;
+  els.setLastSeen.checked = !p.lastSeenHidden;
+  els.setHideProfile.checked = !!p.profileHidden;
+  state.settings.hideLastSeen = !!p.lastSeenHidden;
+  state.settings.hideProfile = !!p.profileHidden;
+}
+
 /** Mirror the stored settings into the settings controls. */
 function syncSettingsUI() {
   const s = state.settings;
   els.setNotify.checked = s.notify !== false;
   els.setPreview.checked = s.notifyPreview !== false;
   els.setSound.checked = s.notifySound !== false;
-  els.setLastSeen.checked = s.lastSeen !== false;
+  els.setLastSeen.checked = s.hideLastSeen !== true;
+  els.setHideProfile.checked = s.hideProfile === true;
   els.setReceipts.checked = s.readReceipts !== false;
   els.setAutoLock.value = String(s.autoLock || 0);
   els.setAutoPhoto.checked = s.autoDownloadPhotos !== false;
@@ -2630,13 +2646,30 @@ function bindToggle(el, key, invert = false) {
 bindToggle(els.setNotify, 'notify');
 bindToggle(els.setPreview, 'notifyPreview');
 bindToggle(els.setSound, 'notifySound');
-bindToggle(els.setLastSeen, 'lastSeen');
 bindToggle(els.setReceipts, 'readReceipts');
 bindToggle(els.setAutoPhoto, 'autoDownloadPhotos');
 bindToggle(els.setEnter, 'sendWithEnter');
 bindToggle(els.setChatPreview, 'chatPreview');
 bindToggle(els.setEscClose, 'escClose');
 bindToggle(els.setPlainPaste, 'plainPaste');
+
+/**
+ * Privacy switches are enforced by the relay, so they must round-trip through
+ * `privacy.set` rather than the cosmetic settings store. `set-lastseen` is
+ * inverted: checked means "show my last seen", so hiding is `!checked`.
+ */
+async function persistPrivacy(patch) {
+  try {
+    await api.setPrivacy(patch);
+  } catch { /* keep the local value; the relay will correct it on next login */ }
+  await persistSettings({
+    hideLastSeen: els.setLastSeen.checked === false,
+    hideProfile: els.setHideProfile.checked === true
+  });
+}
+
+els.setLastSeen.addEventListener('change', () => persistPrivacy({ lastSeenHidden: !els.setLastSeen.checked }));
+els.setHideProfile.addEventListener('change', () => persistPrivacy({ profileHidden: els.setHideProfile.checked }));
 
 // "Reduce motion" is applied straight to the document, not just stored.
 els.setReduceMotion.addEventListener('change', async () => {
@@ -2899,7 +2932,7 @@ async function refreshStatus() {
   if (s.profile) { state.profile = s.profile; state.profiles.set(s.profile.username, s.profile); }
   if (state.username) {
     els.setUsername.textContent = '@' + state.username;
-    if (s.profile) applySelfProfile(s.profile);
+    if (s.profile) { applySelfProfile(s.profile); syncPrivacyUI(s.profile); }
     else {
       els.meName.textContent = state.username;
       els.meAvatar.textContent = initial(state.username);
@@ -2932,7 +2965,7 @@ api.onEvent((evt) => {
 
     case 'profile':
       state.profiles.set(evt.username, evt.profile);
-      if (evt.username === state.username) applySelfProfile(evt.profile);
+      if (evt.username === state.username) { applySelfProfile(evt.profile); syncPrivacyUI(evt.profile); }
       renderChatList();
       if (state.activePeer && peerUsername(state.activePeer) === evt.username) {
         els.peerName.textContent = displayNameFor(evt.username);

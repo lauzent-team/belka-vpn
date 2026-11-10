@@ -125,6 +125,41 @@ async function main() {
     assert.strictEqual(row.members.length, 2, 'the group list must report the member count');
   });
 
+  await step('hiding last-seen removes it from the profile and the chat row', async () => {
+    // Bob hides his last-seen; alice must no longer receive the timestamp.
+    await bob.client.setPrivacy({ lastSeenHidden: true });
+    bob.client.disconnect();
+    await wait(400);
+    const info = await alice.client.getProfile('pres_bob');
+    assert.strictEqual(info.lastSeen, null, 'a hidden last-seen must not be sent to a peer');
+    const chats = await alice.client.listChats();
+    const row = chats.find((c) => c.peer === 'pres_bob');
+    assert.ok(row, 'bob should still have a chat row');
+    assert.ok(!row.profile.lastSeen, 'the chat row must not leak a hidden last-seen');
+  });
+
+  await step('hiding the profile hides name, bio, picture and streak but keeps the handle', async () => {
+    await bob.client.connect(URL);
+    await bob.client.unlock(PASSWORD).catch(() => {});
+    await bob.client.saveProfile({ displayName: 'Bob Hidden', bio: 'secret bio' });
+    await bob.client.setPrivacy({ profileHidden: true });
+    const info = await alice.client.getProfile('pres_bob');
+    assert.strictEqual(info.profile.displayName, 'pres_bob', 'the display name must fall back to the handle');
+    assert.strictEqual(info.profile.bio, '', 'the bio must be hidden');
+    assert.strictEqual(info.profile.streak, 0, 'the streak must be hidden');
+    assert.strictEqual(info.profile.username, 'pres_bob', 'the handle must stay visible');
+    // The owner still sees their own real profile.
+    const own = await bob.client.getProfile('pres_bob');
+    assert.strictEqual(own.profile.displayName, 'Bob Hidden', 'the owner sees their own profile');
+  });
+
+  await step('turning the switches back off restores the real profile', async () => {
+    await bob.client.setPrivacy({ lastSeenHidden: false, profileHidden: false });
+    const info = await alice.client.getProfile('pres_bob');
+    assert.strictEqual(info.profile.displayName, 'Bob Hidden', 'the name must come back');
+    assert.strictEqual(info.profile.bio, 'secret bio', 'the bio must come back');
+  });
+
   server.kill('SIGTERM');
   await wait(200);
   for (const f of [DB, `${DB}-wal`, `${DB}-shm`]) { try { fs.rmSync(f, { force: true }); } catch {} }

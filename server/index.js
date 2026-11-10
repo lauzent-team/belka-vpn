@@ -197,7 +197,11 @@ for (const sql of [
   'ALTER TABLE users ADD COLUMN last_seen INTEGER',
   // A public @handle for a channel, so it can be found and shared as `@name`
   // instead of by an opaque numeric id.
-  'ALTER TABLE channels ADD COLUMN handle TEXT'
+  'ALTER TABLE channels ADD COLUMN handle TEXT',
+  // Privacy switches. The relay enforces them so a hidden "last seen" or bio is
+  // never sent to another account in the first place, not merely hidden in the UI.
+  'ALTER TABLE users ADD COLUMN last_seen_hidden INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE users ADD COLUMN profile_hidden INTEGER NOT NULL DEFAULT 0'
 ]) {
   try { db.exec(sql); } catch { /* column already present */ }
 }
@@ -238,6 +242,7 @@ const q = {
   ),
   setAvatarImage: db.prepare('UPDATE users SET avatar_image = ?, updated_at = ? WHERE username = ?'),
   setLastSeen: db.prepare('UPDATE users SET last_seen = ? WHERE username = ?'),
+  setPrivacy: db.prepare('UPDATE users SET last_seen_hidden = ?, profile_hidden = ? WHERE username = ?'),
   searchUsers: db.prepare(
     `SELECT username, display_name, bio, avatar_color, avatar_image FROM users
       WHERE username LIKE ? OR display_name LIKE ? ORDER BY username ASC LIMIT 20`
@@ -644,17 +649,23 @@ function touchStreak(username) {
   }
 }
 
-function publicProfile(user) {
-  const streak = streakView(user.username);
+function publicProfile(user, viewer) {
+  const isSelf = !viewer || viewer === user.username;
+  // Profile privacy hides the name, bio, picture and streak from everyone else;
+  // the @handle and the verification badge stay, so the account is still
+  // reachable and recognisable.
+  const hidden = !isSelf && !!user.profile_hidden;
+  const streak = hidden ? { count: 0, active: false } : streakView(user.username);
   return {
     username: user.username,
-    displayName: user.display_name || user.username,
-    bio: user.bio || '',
-    avatarColor: user.avatar_color || 'mint',
+    displayName: hidden ? user.username : (user.display_name || user.username),
+    bio: hidden ? '' : (user.bio || ''),
+    avatarColor: hidden ? 'mint' : (user.avatar_color || 'mint'),
     // A profile picture set by the user, shown instead of their initial.
-    avatarImage: user.avatar_image || null,
+    avatarImage: hidden ? null : (user.avatar_image || null),
     // When the account was last connected, for "last seen" under the name.
-    lastSeen: user.last_seen || null,
+    // Hidden either when the owner turned it off or when the profile is hidden.
+    lastSeen: (hidden || user.last_seen_hidden) && !isSelf ? null : (user.last_seen || null),
     verified: !!user.verified,
     // A custom badge picture replaces the plain checkmark when present.
     badgeImage: user.badge_image || null,
@@ -664,7 +675,12 @@ function publicProfile(user) {
     admin: !!user.is_admin,
     // Named in ADMINS but not yet flagged: the relay still treats them as an
     // admin, so the client must show the panel. The flag is set on next login.
-    adminByConfig: ADMINS.has(user.username)
+    adminByConfig: ADMINS.has(user.username),
+    // The owner's own devices learn the privacy switches so the settings
+    // controls reflect what the relay is enforcing. Never sent to anyone else.
+    privacy: isSelf
+      ? { lastSeenHidden: !!user.last_seen_hidden, profileHidden: !!user.profile_hidden }
+      : undefined
   };
 }
 
@@ -708,10 +724,14 @@ function isOnline(username) {
   return sockets.has(username);
 }
 
-function lastSeenOf(username) {
+function lastSeenOf(username, viewer) {
   if (isOnline(username)) return null;
   const user = q.getUser.get(username);
-  return (user && user.last_seen) || null;
+  if (!user) return null;
+  // The owner's own devices always see the real value; everyone else sees
+  // nothing when the owner hid last-seen or hid the whole profile.
+  if (viewer && viewer !== username && (user.last_seen_hidden || user.profile_hidden)) return null;
+  return user.last_seen || null;
 }
 
 function deliverToUser(username, payload) {
@@ -732,18 +752,23 @@ function audienceOf(username) {
 }
 
 function announcePresence(username, online, lastSeen) {
-  const payload = { t: 'presence', username, online };
-  if (online) payload.lastSeen = null;
-  else if (lastSeen !== undefined) payload.lastSeen = lastSeen;
-  else payload.lastSeen = lastSeenOf(username);
+  const user = q.getUser.get(username);
+  const hidesSeen = !!user && (user.last_seen_hidden || user.profile_hidden);
+  const explicit = online ? null : (lastSeen !== undefined ? lastSeen : lastSeenOf(username));
   for (const who of audienceOf(username)) {
-    deliverToUser(who, payload);
+    // Each viewer gets their own privacy-filtered last-seen, so a hidden value
+    // never leaves the relay to anyone but the owner's own devices.
+    const seen = (!online && hidesSeen && who !== username) ? null : explicit;
+    deliverToUser(who, { t: 'presence', username, online, lastSeen: online ? null : seen });
   }
 }
 
 function broadcastProfile(username, profile) {
+  const user = q.getUser.get(username);
   for (const who of audienceOf(username)) {
-    deliverToUser(who, { t: 'profile', username, profile });
+    // Rebuild per viewer so profile privacy is enforced on the way out.
+    const p = user ? publicProfile(user, who) : profile;
+    deliverToUser(who, { t: 'profile', username, profile: p });
   }
 }
 
@@ -982,7 +1007,7 @@ function handleDirectory(ws, msg, rid) {
   if (!user) return bad(ws, rid, 'No such user');
   reply(ws, rid, {
     t: 'key', username: user.username, publicKey: user.public_key,
-    profile: publicProfile(user), online: isOnline(user.username)
+    profile: publicProfile(user, ws.username), online: isOnline(user.username)
   });
 }
 
@@ -991,8 +1016,8 @@ function handleProfileGet(ws, msg, rid) {
   const user = q.getUser.get(normalizeUsername(msg.username) || ws.username);
   if (!user) return bad(ws, rid, 'No such user');
   reply(ws, rid, {
-    t: 'profile', profile: publicProfile(user), online: isOnline(user.username),
-    lastSeen: lastSeenOf(user.username),
+    t: 'profile', profile: publicProfile(user, ws.username), online: isOnline(user.username),
+    lastSeen: lastSeenOf(user.username, ws.username),
     isSelf: user.username === ws.username
   });
 }
@@ -1000,6 +1025,30 @@ function handleProfileGet(ws, msg, rid) {
 function handleStreakGet(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
   reply(ws, rid, { t: 'streak', ...streakView(ws.username) });
+}
+
+/**
+ * Privacy switches, enforced by the relay. The client also keeps the same
+ * preferences locally for the UI, but the server is the authority: a hidden
+ * last-seen or profile is filtered out of every reply and broadcast here.
+ */
+function handlePrivacySet(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const user = q.getUser.get(ws.username);
+  if (!user) return bad(ws, rid, 'Unknown account');
+  const lastSeenHidden = msg.lastSeenHidden === undefined
+    ? !!user.last_seen_hidden : !!msg.lastSeenHidden;
+  const profileHidden = msg.profileHidden === undefined
+    ? !!user.profile_hidden : !!msg.profileHidden;
+  q.setPrivacy.run(lastSeenHidden ? 1 : 0, profileHidden ? 1 : 0, ws.username);
+  const profile = publicProfile(q.getUser.get(ws.username), ws.username);
+  reply(ws, rid, {
+    t: 'privacy.saved',
+    privacy: { lastSeenHidden, profileHidden },
+    profile
+  });
+  // Tell peers the new view right away so a just-hidden profile disappears.
+  broadcastProfile(ws.username, profile);
 }
 
 function handleProfileSet(ws, msg, rid) {
@@ -1079,7 +1128,7 @@ function handleUserSearch(ws, msg, rid) {
   if (query.length < 1) return reply(ws, rid, { t: 'users', items: [] });
   const like = `%${query}%`;
   const rows = q.searchUsers.all(like, like);
-  const items = rows.map((r) => ({ ...publicProfile(r), online: isOnline(r.username) }));
+  const items = rows.map((r) => ({ ...publicProfile(r, ws.username), online: isOnline(r.username) }));
   reply(ws, rid, { t: 'users', items });
 }
 
@@ -1304,7 +1353,7 @@ function handleChatsList(ws, msg, rid) {
     const peerUser = q.getUser.get(chat.peer);
     items.push({
       peer: chat.peer,
-      profile: peerUser ? publicProfile(peerUser) : null,
+      profile: peerUser ? publicProfile(peerUser, ws.username) : null,
       pinned: !!chat.pinned,
       muted: !!chat.muted,
       archived: !!chat.archived,
@@ -1459,12 +1508,12 @@ function handleSettingsSet(ws, msg, rid) {
 /* -------------------------------- groups -------------------------------- */
 const MAX_GROUP_MEMBERS = 200;
 
-function groupView(groupId) {
+function groupView(groupId, viewer) {
   const group = q.getGroup.get(groupId);
   if (!group) return null;
   const members = q.membersOf.all(groupId).map((m) => ({
     username: m.username,
-    profile: publicProfile(q.getUser.get(m.username)),
+    profile: publicProfile(q.getUser.get(m.username), viewer),
     online: isOnline(m.username)
   }));
   return { id: group.id, name: group.name, owner: group.owner, members };
@@ -1474,6 +1523,17 @@ function groupView(groupId) {
 function deliverToGroup(groupId, payload, exceptUser) {
   for (const m of q.membersOf.all(groupId)) {
     if (m.username !== exceptUser) deliverToUser(m.username, payload);
+  }
+}
+
+/**
+ * Send a group view to each member built for that member, so profile privacy
+ * inside the member list is enforced per viewer rather than once for everyone.
+ */
+function deliverGroupView(groupId, type, exceptUser, extra) {
+  for (const m of q.membersOf.all(groupId)) {
+    if (m.username === exceptUser) continue;
+    deliverToUser(m.username, { t: type, ...(extra || {}), group: groupView(groupId, m.username) });
   }
 }
 
@@ -1492,14 +1552,14 @@ function handleGroupCreate(ws, msg, rid) {
   const groupId = Number(info.lastInsertRowid);
   for (const u of members) q.addMember.run(groupId, u, now);
 
-  reply(ws, rid, { t: 'group.created', group: groupView(groupId) });
-  // Everyone else learns about the new group.
-  deliverToGroup(groupId, { t: 'group.joined', group: groupView(groupId) }, ws.username);
+  reply(ws, rid, { t: 'group.created', group: groupView(groupId, ws.username) });
+  // Everyone else learns about the new group, each with a view built for them.
+  deliverGroupView(groupId, 'group.joined', ws.username);
 }
 
 function handleGroupList(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
-  const items = q.groupsFor.all(ws.username).map((r) => groupView(r.group_id)).filter(Boolean);
+  const items = q.groupsFor.all(ws.username).map((r) => groupView(r.group_id, ws.username)).filter(Boolean);
   reply(ws, rid, { t: 'groups', items });
 }
 
@@ -1514,8 +1574,8 @@ function handleGroupAdd(ws, msg, rid) {
   if (q.isMember.get(groupId, target)) return bad(ws, rid, 'Already a member');
 
   q.addMember.run(groupId, target, Date.now());
-  reply(ws, rid, { t: 'group.added', group: groupView(groupId) });
-  deliverToGroup(groupId, { t: 'group.joined', group: groupView(groupId) });
+  reply(ws, rid, { t: 'group.added', group: groupView(groupId, ws.username) });
+  deliverGroupView(groupId, 'group.joined');
 }
 
 function handleGroupLeave(ws, msg, rid) {
@@ -1527,15 +1587,14 @@ function handleGroupLeave(ws, msg, rid) {
 
   q.removeMember.run(groupId, ws.username);
   reply(ws, rid, { t: 'group.left', groupId });
-  const view = groupView(groupId);
-  if (view) deliverToGroup(groupId, { t: 'group.memberLeft', groupId, username: ws.username, group: view });
+  deliverGroupView(groupId, 'group.memberLeft', null, { groupId, username: ws.username });
 }
 
 function handleGroupMembers(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
   const groupId = Number(msg.groupId);
   if (!q.isMember.get(groupId, ws.username)) return bad(ws, rid, 'Not a member');
-  reply(ws, rid, { t: 'group.members', group: groupView(groupId) });
+  reply(ws, rid, { t: 'group.members', group: groupView(groupId, ws.username) });
 }
 
 /**
@@ -1659,7 +1718,7 @@ function channelView(channelId, viewer) {
     handle: ch.handle || null,
     description: ch.description || '',
     owner: ch.owner,
-    ownerProfile: owner ? publicProfile(owner) : null,
+    ownerProfile: owner ? publicProfile(owner, viewer) : null,
     verified: !!ch.verified,
     subs: q.countSubs.get(ch.id).c,
     subscribed: viewer ? !!q.isSub.get(ch.id, viewer) : false,
@@ -1794,7 +1853,7 @@ function handleChannelEdit(ws, msg, rid) {
   q.renameChannel.run(name, description, handle, channelId);
   const view = channelView(channelId, ws.username);
   reply(ws, rid, { t: 'channel.edited', channel: view });
-  deliverToChannel(channelId, { t: 'channel.updated', channel: channelView(channelId) }, ws.username);
+  broadcastChannelUpdate(channelId, ws.username);
 }
 
 function handleChannelDelete(ws, msg, rid) {
@@ -2002,8 +2061,8 @@ function handleAdminAction(ws, msg, rid) {
     if (!ch) return bad(ws, rid, 'No such channel');
     if (msg.action === 'channelVerify') {
       q.setChannelVerified.run(ch.verified ? 0 : 1, channelId);
-      const view = channelView(channelId);
-      deliverToChannel(channelId, { t: 'channel.updated', channel: view });
+      const view = channelView(channelId, actor);
+      broadcastChannelUpdate(channelId);
       return reply(ws, rid, { t: 'admin.ok', action: 'channelVerify', channelId, channel: view });
     }
     deliverToChannel(channelId, { t: 'channel.deleted', channelId });
@@ -2137,6 +2196,7 @@ const handlers = {
   'chat.delete': handleChatDelete,
   'settings.get': handleSettingsGet,
   'settings.set': handleSettingsSet,
+  'privacy.set': handlePrivacySet,
   'group.create': handleGroupCreate,
   'group.list': handleGroupList,
   'group.add': handleGroupAdd,

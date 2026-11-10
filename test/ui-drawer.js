@@ -89,9 +89,26 @@ async function main() {
     await A.win.click('#drawer .drawer-item[data-drawer="settings"]');
     await A.win.waitForSelector('#settings-backdrop:not([hidden])', { timeout: 5000 });
     for (const id of ['#set-notify', '#set-preview', '#set-sound', '#set-lastseen', '#set-receipts',
-      '#set-autolock', '#set-autophoto', '#set-keepmedia', '#set-enter', '#set-language', '#btn-blocked']) {
+      '#set-autolock', '#set-autophoto', '#set-keepmedia', '#set-enter', '#set-language', '#btn-blocked',
+      '#set-hide-profile']) {
       assert.ok(await A.win.$(id), `settings is missing ${id}`);
     }
+  });
+
+  await step('the privacy switch is enforced by the relay', async () => {
+    await A.win.click('.settings-nav-item[data-pane="privacy"]');
+    await A.win.waitForSelector('.settings-pane[data-pane="privacy"].active');
+    await A.win.click('label.switch:has(#set-hide-profile) .slider');
+    await wait(600);
+    // The relay echoes the switch on the owner's own profile.
+    const hidden = await A.win.evaluate(async () => {
+      const s = await window.sleephy.status();
+      const p = await window.sleephy.profile(s.username);
+      return p && p.profile && p.profile.privacy ? p.profile.privacy.profileHidden : null;
+    });
+    assert.strictEqual(hidden, true, 'the relay must report the profile as hidden');
+    await A.win.click('label.switch:has(#set-hide-profile) .slider');
+    await wait(500);
   });
 
   await step('a settings toggle persists to the account', async () => {

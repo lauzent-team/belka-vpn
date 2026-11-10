@@ -133,6 +133,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('sleephy:searchMessages', async (_e, payload) => client.searchMessages(payload));
   ipcMain.handle('sleephy:getSettings', async () => client.getSettings());
   ipcMain.handle('sleephy:saveSettings', async (_e, settings) => client.saveSettings(settings));
+  ipcMain.handle('sleephy:setPrivacy', async (_e, privacy) => client.setPrivacy(privacy));
 
   // Groups
   ipcMain.handle('sleephy:createGroup', async (_e, payload) => client.createGroup(payload));

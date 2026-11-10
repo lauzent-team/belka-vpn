@@ -53,6 +53,7 @@ contextBridge.exposeInMainWorld('sleephy', {
   searchMessages: (payload) => invoke('sleephy:searchMessages', payload),
   getSettings: () => invoke('sleephy:getSettings'),
   saveSettings: (settings) => invoke('sleephy:saveSettings', settings),
+  setPrivacy: (privacy) => invoke('sleephy:setPrivacy', privacy),
   createGroup: (payload) => invoke('sleephy:createGroup', payload),
   listGroups: () => invoke('sleephy:listGroups'),
   addGroupMember: (payload) => invoke('sleephy:addGroupMember', payload),

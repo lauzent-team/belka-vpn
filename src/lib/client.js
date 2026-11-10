@@ -1146,6 +1146,13 @@ class SleePhyClient {
     return res.settings || {};
   }
 
+  /** Privacy switches the relay enforces: hidden last-seen and hidden profile. */
+  async setPrivacy(privacy) {
+    const res = await this.request({ t: 'privacy.set', ...privacy });
+    if (res.profile) this.profile = res.profile;
+    return res.privacy || {};
+  }
+
   /* ------------------------------ profile ------------------------------ */
   async getProfile(username) {
     const res = await this.request({ t: 'profile.get', username: bareUsername(username) });
