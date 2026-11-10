@@ -1,0 +1,25 @@
+[Unit]
+Description=SleePhy relay (blind message relay + download host)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sleephy
+WorkingDirectory=/opt/sleephy
+Environment=SLEEPHY_PORT=12000
+Environment=SLEEPHY_DB=/var/lib/sleephy/sleephy.db
+Environment=SLEEPHY_DOWNLOADS=/opt/sleephy/dist
+ExecStart=/usr/bin/node /opt/sleephy/server/index.js
+Restart=always
+RestartSec=2
+# A tight, self-contained service: no new privileges, its own writable state dir.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sleephy
+StateDirectory=sleephy
+
+[Install]
+WantedBy=multi-user.target
