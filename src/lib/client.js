@@ -438,6 +438,21 @@ class SleePhyClient {
       this.emit({ type: 'channel.deleted', channelId: msg.channelId });
       return;
     }
+    if (msg.t === 'story.new') {
+      this.emit({
+        type: 'story.new', id: msg.id, author: msg.author, ts: msg.ts,
+        expiresAt: msg.expiresAt, kind: msg.kind || null, attachment: msg.attachment || null
+      });
+      return;
+    }
+    if (msg.t === 'story.views') {
+      this.emit({ type: 'story.views', id: msg.id, count: msg.count || 0 });
+      return;
+    }
+    if (msg.t === 'story.deleted') {
+      this.emit({ type: 'story.deleted', id: msg.id, author: msg.author });
+      return;
+    }
     if (msg.t === 'ok') {
       this.applySession(msg);
     }
@@ -1110,6 +1125,112 @@ class SleePhyClient {
   async adminChannels() {
     const res = await this.request({ t: 'admin.channels' });
     return res.items || [];
+  }
+
+  /* ------------------------------- stories ------------------------------- */
+  // A story is a 24-hour post shared with the author's contacts and peers. The
+  // body is encrypted once per viewer, exactly like a group message, so the
+  // relay stores only ciphertext and never learns the caption or the picture.
+
+  /** The people who may see my story: my contacts, plus anyone I talk to. */
+  async storyAudience() {
+    const res = await this.request({ t: 'story.audience' });
+    return res.items || [];
+  }
+
+  /** Encrypt one copy per viewer and publish the story. */
+  async postStory({ text, audience, ttl, attachment }) {
+    if (!this.secretKey) throw new Error('Vault is locked');
+    const body = typeof text === 'string' ? text : '';
+    const viewers = Array.isArray(audience) ? audience.slice() : [];
+    // The author always keeps a copy so the story can be reopened later.
+    if (!viewers.includes(this.username)) viewers.push(this.username);
+
+    let encAttachment = null;
+    let kind = null;
+    if (attachment) {
+      kind = attachment.kind;
+      const perMember = {};
+      for (const u of viewers) {
+        const key = await this.ensurePeerKey(u);
+        const enc = await cryptoLib.encryptBytes(attachment.bytes, key, this.secretKey);
+        perMember[u] = { box: enc.box, nonce: enc.nonce };
+      }
+      encAttachment = {
+        kind,
+        name: attachment.name || null, mime: attachment.mime || null,
+        size: attachment.bytes ? attachment.bytes.length : 0,
+        duration: attachment.duration || null,
+        perMember
+      };
+    }
+
+    const { envelopes } = await this.groupEnvelopes(body, viewers);
+    const res = await this.request({
+      t: 'story.post', envelopes, audience: viewers, ttl,
+      attachment: encAttachment || undefined
+    });
+    return { id: res.id, ts: res.ts, expiresAt: res.expiresAt };
+  }
+
+  async listStories() {
+    if (!this.secretKey) throw new Error('Vault is locked');
+    const res = await this.request({ t: 'story.list' });
+    const items = [];
+    for (const s of res.items || []) {
+      let text = '';
+      if (s.envelope && s.envelope.box) {
+        try {
+          const authorKey = await this.ensurePeerKey(s.author);
+          text = await cryptoLib.decryptMessage(s.envelope.box, s.envelope.nonce, authorKey, this.secretKey);
+        } catch {
+          text = '⚠ Story could not be decrypted';
+        }
+      }
+      let attachment = s.attachment ? JSON.parse(s.attachment) : null;
+      if (attachment && attachment.perMember) {
+        attachment = { ...attachment, ...(attachment.perMember[this.username] || {}), perMember: undefined };
+      }
+      items.push({
+        id: s.id, author: s.author, text, ts: s.ts, expiresAt: s.expiresAt,
+        kind: s.kind || null, attachment, seen: !!s.seen, views: s.views || 0,
+        mine: s.author === this.username
+      });
+    }
+    return items;
+  }
+
+  async viewStory({ id }) {
+    const res = await this.request({ t: 'story.viewed', id });
+    return { id: res.id, views: res.views };
+  }
+
+  /** Decrypt the picture attached to a story, for the signed-in viewer. */
+  async openStoryAttachment({ id }) {
+    if (!this.secretKey) throw new Error('Vault is locked');
+    const res = await this.request({ t: 'story.get', id });
+    const story = res.story;
+    if (!story) throw new Error('No such story');
+    const attachment = story.attachment ? JSON.parse(story.attachment) : null;
+    if (!attachment) throw new Error('Story has no attachment');
+    const mine = attachment.perMember ? attachment.perMember[this.username] : null;
+    if (!mine) throw new Error('Attachment is not addressed to you');
+    const authorKey = await this.ensurePeerKey(story.author);
+    const bytes = await cryptoLib.decryptBytes(mine.box, mine.nonce, authorKey, this.secretKey);
+    const mime = attachment.mime || 'application/octet-stream';
+    return {
+      name: attachment.name || null, mime, size: bytes.length,
+      dataUrl: `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`
+    };
+  }
+
+  async storyViewers({ id }) {
+    const res = await this.request({ t: 'story.viewers', id });
+    return res.viewers || [];
+  }
+
+  async deleteStory({ id }) {
+    await this.request({ t: 'story.delete', id });
   }
 
   /* ------------------------------- admin ------------------------------- */

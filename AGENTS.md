@@ -28,6 +28,8 @@ node test/dialog-streaks.js # the pair "огонёк": start, extend, reset, the
 node test/downloads.js # the relay serves the download page and the installer
 node test/handles.js # @-usernames and channel @handles
 node test/nicknames.js # nicknames: owner privilege, admin edit, cap, privacy
+node test/story.js     # the story rules (pure): defaults, TTL clamp, encode/decode, ordering
+node test/story-relay.js # stories against a real relay: publish, per-viewer crypto, expiry, views
 xvfb-run -a node test/ui.js            # UI tests driving the real Electron app
 xvfb-run -a node test/ui-features.js   # the newer UI features, clicked for real
 xvfb-run -a node test/ui-drawer.js     # drawer, settings, contacts, groups, accounts
@@ -36,6 +38,7 @@ xvfb-run -a node test/ui-session.js    # reopen the app: no sign-in screen, phot
 xvfb-run -a node test/ui-peer-badges.js # a peer's badge and picture survive a re-entry
 xvfb-run -a node test/ui-streak.js     # the dialog flame chip, the note, the profile streak line
 xvfb-run -a node test/ui-nicknames.js  # the profile nickname editor and the admin popup
+xvfb-run -a node test/ui-stories.js    # the stories bar, composer and viewer, clicked for real
 xvfb-run -a node test/connection.js    # connection and error handling
 xvfb-run -a node test/shots.js         # regenerate shots/*.png
 ```
@@ -547,3 +550,38 @@ arriving now can change a header that is already on screen.
   background window, so the highlight lingered in `test/ui-chatsearch.js`.
 - **The filter button shows a dot** (`.has-filter`) whenever a chip is not on its
   default; `activeFilterCount` is the single source of that.
+
+## Stories (v0.9.0)
+
+- **The story rules live in `src/lib/stories.js`** (`window.SleePhyStories`), a
+  pure library with no DOM, no crypto and no network: `make`/`clampTtl` normalize
+  a draft (TTL clamped to 1–24 h), `encode`/`decode` wrap the caption in a tiny
+  JSON body, `expiresAt`/`isExpired`/`remainingMs`/`remainingLabel` handle the
+  24-hour window, and `filterActive`/`byAuthor`/`orderAuthors`/`unseenCount`/
+  `nextId` drive the bar. Unit tests are `test/story.js`.
+- **A story body is an ordinary end-to-end encrypted envelope**, one copy per
+  viewer, exactly like a group message. The relay stores only the ciphertext plus
+  an audience list, so it never learns the caption, the picture or who watched
+  what. `test/story-relay.js` asserts no plaintext body reaches the relay.
+- **The relay keeps the audience, not a broadcast.** `story_audience` lists who
+  may open a story (contacts and peers the author has talked to), and
+  `story_views` records who opened it. `handleStoryList` returns only the rows
+  the signed-in account is in the audience of, or authored.
+- **The author learns a count, never a list, from the socket.** `story.viewed`
+  increments `story_views` and pushes `story.views { id, count }` to the author.
+  The who-viewed list is a separate, author-only request (`story.viewers`).
+- **An expired story is hidden and swept on read.** `handleStoryList` drops rows
+  past `expires_at` and deletes them, so a 24-hour story leaves the relay store
+  without a background job.
+- **A story picture is encrypted per viewer too**, in the same envelope as the
+  caption: `{ perMember: { viewer: { box, nonce } } }`. `openStoryAttachment`
+  decrypts the signed-in viewer's own blob; a stranger has no blob and is refused.
+- **The stories bar stays visible once signed in** (the "my story" button is how
+  a person adds one, and it must be reachable before the first story exists). It
+  is hidden only while signed out.
+- **The viewer's prev/next tap zones sit between the header and the footer**
+  (`top: 64px; bottom: 60px`), not over the whole screen — otherwise they cover
+  the close and delete buttons. `test/ui-stories.js` caught this.
+- **`test/ui-stories.js` drives the real UI** — publish, see the ring, open it,
+  watch the ring go from unseen to seen, and read the author's view count. Run it
+  with `xvfb-run`.

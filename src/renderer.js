@@ -21,6 +21,7 @@ const POLLS = (typeof window !== 'undefined' && window.SleePhyPolls) || null;
 const FOLDERS = (typeof window !== 'undefined' && window.SleePhyFolders) || null;
 const CHATSEARCH = (typeof window !== 'undefined' && window.SleePhyChatSearch) || null;
 const STREAK = (typeof window !== 'undefined' && window.SleePhyStreak) || null;
+const STORIES = (typeof window !== 'undefined' && window.SleePhyStories) || null;
 
 const BOT_MINIGAMES = 'minigames';
 const BOT_STICKERS = 'stickers';
@@ -815,6 +816,34 @@ const els = {
   giftsGrid: $('gifts-grid'),
   giftsNote: $('gifts-note'),
   btnGiftsClose: $('btn-gifts-close'),
+  storiesBar: $('stories-bar'),
+  storyAdd: $('btn-story-add'),
+  storyAddAvatar: $('story-add-avatar'),
+  storyRingList: $('story-ring-list'),
+  storyBackdrop: $('story-backdrop'),
+  storyPreview: $('story-preview'),
+  storyPreviewText: $('story-preview-text'),
+  storyCaption: $('story-caption'),
+  storyBgRow: $('story-bg-row'),
+  storyTtl: $('story-ttl'),
+  storyAudienceNote: $('story-audience-note'),
+  storyError: $('story-error'),
+  btnStoryClose: $('btn-story-close'),
+  btnStoryPhoto: $('btn-story-photo'),
+  btnStoryPublish: $('btn-story-publish'),
+  storyViewer: $('story-viewer'),
+  storyProgress: $('story-progress'),
+  storyViewerAvatar: $('story-viewer-avatar'),
+  storyViewerName: $('story-viewer-name'),
+  storyViewerTime: $('story-viewer-time'),
+  storyViewerCard: $('story-viewer-card'),
+  storyViewerText: $('story-viewer-text'),
+  storyViewerImage: $('story-viewer-image'),
+  storyViewerViews: $('story-viewer-views'),
+  btnStoryViewerClose: $('btn-story-viewer-close'),
+  btnStoryDelete: $('btn-story-delete'),
+  btnStoryPrev: $('btn-story-prev'),
+  btnStoryNext: $('btn-story-next'),
   pollBackdrop: $('poll-backdrop'),
   pollQuestion: $('poll-question'),
   pollOptions: $('poll-options'),
@@ -1161,7 +1190,14 @@ const state = {
   folders: [], // chat folders ("папки"), mirrored into account settings
   activeFolder: 'all', // id of the selected folder tab
   searchFilter: { query: '', from: 'any', kind: 'any', date: 'any' }, // in-chat search
-  folderEditing: null // id of the folder open in the editor, or 'new'
+  folderEditing: null, // id of the folder open in the editor, or 'new'
+  stories: [], // every active story the account may see, newest first
+  storiesSeen: new Set(), // story ids this account has already opened
+  storyGroup: null, // author whose stories the viewer is playing
+  storyOrder: [], // authors in bar order, for prev/next across authors
+  storyIndex: 0, // index into the current author's story list
+  storyDraft: null, // { cap, kind, bg, ttl, attachment } while composing
+  storyTimer: null // autoplay timer for the viewer
 };
 
 
@@ -1619,6 +1655,11 @@ async function enterMain(username) {
   state.channels.clear();
   state.streak = null;
   state.dialogStreaks.clear();
+  state.stories = [];
+  state.storiesSeen.clear();
+  state.storyGroup = null;
+  state.storyIndex = 0;
+  if (els.storiesBar) els.storiesBar.hidden = true;
   if (els.meStreak) els.meStreak.hidden = true;
   await refreshStatus();
   api.version().then((v) => {
@@ -1627,7 +1668,8 @@ async function enterMain(username) {
     if (els.drawerVer) els.drawerVer.textContent = label;
   }).catch(() => {});
   showScreen('main');
-  await Promise.all([loadChats(), loadGroups(), loadChannels(), loadContacts(), loadStreak(), loadDrafts(), loadFolders()]);
+  await Promise.all([loadChats(), loadGroups(), loadChannels(), loadContacts(), loadStreak(), loadDrafts(), loadFolders(), loadStories()]);
+  renderStoriesBar();
   renderChatList();
 }
 
@@ -4943,6 +4985,18 @@ api.onEvent((evt) => {
       toast('New encrypted channel post');
       break;
 
+    case 'story.new':
+      handleStoryNew(evt);
+      break;
+
+    case 'story.views':
+      updateStoryViews(evt.id, evt.count);
+      break;
+
+    case 'story.deleted':
+      handleStoryDeleted(evt.id);
+      break;
+
     default:
       break;
   }
@@ -6369,6 +6423,8 @@ async function restartSession() {
   state.drafts = {};
   state.folders = [];
   state.activeFolder = 'all';
+  state.stories = [];
+  state.storiesSeen.clear();
   state.activePeer = null;
   els.chatList.innerHTML = '';
   els.archivedList.innerHTML = '';
@@ -6731,6 +6787,398 @@ els.discoverBackdrop.addEventListener('click', (e) => {
 els.btnDiscoverCreate.addEventListener('click', () => {
   els.discoverBackdrop.hidden = true;
   openChannelModal();
+});
+
+/* ------------------------------ stories ------------------------------ */
+// A story is a 24-hour post shared with the account's contacts and peers. The
+// body travels as an ordinary end-to-end encrypted envelope, one copy per
+// viewer, so the relay stores ciphertext and never learns the caption or the
+// picture. This module owns the bar, the composer and the full-screen viewer.
+
+const STORY_BGS = ['mint', 'sky', 'violet', 'amber', 'rose', 'lime', 'cyan', 'coral'];
+const STORY_TTL_MS = 8000; // how long one story stays on screen before advancing
+
+async function loadStories() {
+  if (!STORIES) return;
+  try {
+    const items = await api.listStories();
+    state.stories = items;
+    for (const s of items) if (s.seen) state.storiesSeen.add(s.id);
+    renderStoriesBar();
+  } catch { /* offline: keep whatever we have */ }
+}
+
+function handleStoryNew(evt) {
+  // A fresh story has no body until it is fetched; keep a light stub so the bar
+  // shows the ring at once, then refresh to decrypt.
+  if (!state.stories.some((s) => s.id === evt.id)) {
+    state.stories.unshift({
+      id: evt.id, author: evt.author, text: '', ts: evt.ts, expiresAt: evt.expiresAt,
+      kind: evt.kind || null, attachment: null, seen: false, views: 0,
+      mine: evt.author === state.username
+    });
+  }
+  renderStoriesBar();
+  loadStories();
+  if (evt.author !== state.username) toast(`Новая история от ${displayNameFor(evt.author)}`);
+}
+
+function handleStoryDeleted(id) {
+  state.stories = state.stories.filter((s) => s.id !== id);
+  state.storiesSeen.delete(id);
+  if (state.storyViewer && !els.storyViewer.hidden) {
+    const current = currentStory();
+    if (current && current.id === id) closeStoryViewer();
+  }
+  renderStoriesBar();
+}
+
+function updateStoryViews(id, count) {
+  const s = state.stories.find((x) => x.id === id);
+  if (s) s.views = count;
+  if (state.storyViewer && !els.storyViewer.hidden) paintStoryViews();
+}
+
+/** The active stories grouped by author, in bar order. */
+function storyGroups() {
+  const groups = STORIES.byAuthor(state.stories, Date.now());
+  const order = STORIES.orderAuthors(groups, {
+    me: state.username,
+    unseen: (_name, s) => !state.storiesSeen.has(s.id)
+  });
+  return { groups, order };
+}
+
+function renderStoriesBar() {
+  if (!STORIES || !els.storiesBar) return;
+  const { groups, order } = storyGroups();
+  const mine = groups.get(state.username) || [];
+  // The bar stays visible whenever the account is signed in: the "my story"
+  // button is how a person adds one, and it must be reachable before the first
+  // story exists.
+  els.storiesBar.hidden = !state.username;
+
+  paintAvatar(els.storyAddAvatar, state.username);
+  const mineUnseen = STORIES.unseenCount(mine, state.storiesSeen);
+  els.storyAdd.classList.toggle('has-stories', mine.length > 0);
+  els.storyAdd.title = mine.length
+    ? (mineUnseen ? `Моя история · ${mineUnseen} новых` : 'Моя история')
+    : 'Добавить историю';
+
+  els.storyRingList.innerHTML = '';
+  for (const author of order) {
+    if (author === state.username) continue;
+    const list = groups.get(author) || [];
+    if (!list.length) continue;
+    const unseen = STORIES.unseenCount(list, state.storiesSeen);
+    const li = document.createElement('li');
+    li.className = 'story-ring ' + (unseen ? 'unseen' : 'seen');
+    const ring = document.createElement('button');
+    ring.className = 'story-ring-btn';
+    ring.title = displayNameFor(author) + (unseen ? ` · ${unseen} новых` : '');
+    ring.innerHTML = `
+      <span class="avatar story-ring-avatar" data-color="${escapeHtml(avatarColorFor(author))}">${avatarInnerHtml(author)}</span>
+      <span class="story-name">${escapeHtml(displayNameFor(author))}</span>`;
+    ring.addEventListener('click', () => openStoryViewer(author));
+    li.appendChild(ring);
+    els.storyRingList.appendChild(li);
+  }
+}
+
+els.storyAdd.addEventListener('click', (e) => {
+  const mine = storyGroups().groups.get(state.username) || [];
+  // A plain tap reopens your own story when you have one; shift-click or an
+  // empty ring opens the composer to add a new one.
+  if (mine.length && !e.shiftKey) {
+    openStoryViewer(state.username);
+    return;
+  }
+  openStoryComposer();
+});
+
+/* ------------------------------ composer ------------------------------ */
+function openStoryComposer() {
+  if (!STORIES) return;
+  state.storyDraft = { cap: '', kind: 'text', bg: 'mint', ttl: STORIES.DEFAULT_TTL_MS, attachment: null };
+  els.storyCaption.value = '';
+  els.storyTtl.value = String(STORIES.DEFAULT_TTL_MS);
+  els.storyError.hidden = true;
+  renderStoryBgRow();
+  paintStoryPreview();
+  els.storyBackdrop.hidden = false;
+  els.storyCaption.focus();
+  updateStoryAudienceNote();
+}
+
+function renderStoryBgRow() {
+  els.storyBgRow.innerHTML = '';
+  for (const bg of STORY_BGS) {
+    const dot = document.createElement('button');
+    dot.type = 'button';
+    dot.className = 'story-bg-dot' + (bg === state.storyDraft.bg ? ' active' : '');
+    dot.dataset.bg = bg;
+    dot.title = bg;
+    dot.addEventListener('click', () => {
+      state.storyDraft.bg = bg;
+      renderStoryBgRow();
+      paintStoryPreview();
+    });
+    els.storyBgRow.appendChild(dot);
+  }
+}
+
+function paintStoryPreview() {
+  const d = state.storyDraft;
+  els.storyPreview.dataset.bg = d.bg;
+  if (d.attachment && d.attachment.preview) {
+    els.storyPreview.style.backgroundImage = `url(${d.attachment.preview})`;
+    els.storyPreview.style.backgroundSize = 'cover';
+    els.storyPreview.style.backgroundPosition = 'center';
+    els.storyPreviewText.textContent = '';
+  } else {
+    els.storyPreview.style.backgroundImage = '';
+    els.storyPreviewText.textContent = d.cap || 'Текст истории…';
+  }
+}
+
+async function updateStoryAudienceNote() {
+  try {
+    const audience = await api.storyAudience();
+    els.storyAudienceNote.textContent = audience.length
+      ? `Увидят ${audience.length} ${plural(audience.length, 'контакт', 'контакта', 'контактов')}.`
+      : 'Пока некому показать — напишите кому-нибудь, и он появится здесь.';
+  } catch {
+    els.storyAudienceNote.textContent = 'Увидят ваши контакты.';
+  }
+}
+
+els.storyCaption.addEventListener('input', () => {
+  state.storyDraft.cap = els.storyCaption.value;
+  paintStoryPreview();
+});
+
+els.storyTtl.addEventListener('change', () => {
+  state.storyDraft.ttl = Number(els.storyTtl.value) || STORIES.DEFAULT_TTL_MS;
+});
+
+els.btnStoryPhoto.addEventListener('click', async () => {
+  const file = await pickFile('image/*');
+  if (!file) return;
+  if (file.size > MAX_ATTACHMENT_BYTES) {
+    els.storyError.textContent = `Слишком большой файл — лимит ${humanSize(MAX_ATTACHMENT_BYTES)}`;
+    els.storyError.hidden = false;
+    return;
+  }
+  try {
+    const bytes = await fileToBase64Bytes(file);
+    state.storyDraft.kind = 'image';
+    state.storyDraft.attachment = {
+      kind: 'image', bytes, name: file.name || 'story.png',
+      mime: file.type || 'image/png', preview: URL.createObjectURL(file)
+    };
+    paintStoryPreview();
+  } catch (err) {
+    els.storyError.textContent = err.message || 'Не удалось прочитать файл';
+    els.storyError.hidden = false;
+  }
+});
+
+async function publishStory() {
+  const draft = state.storyDraft;
+  if (!draft) return;
+  const hasImage = !!(draft.attachment && draft.attachment.bytes);
+  if (!draft.cap.trim() && !hasImage) {
+    els.storyError.textContent = 'Добавьте текст или фото';
+    els.storyError.hidden = false;
+    return;
+  }
+  els.btnStoryPublish.disabled = true;
+  try {
+    const audience = await api.storyAudience();
+    const body = STORIES.encode({ cap: draft.cap, kind: draft.kind, bg: draft.bg, ttl: draft.ttl });
+    const res = await api.postStory({
+      text: body, audience, ttl: draft.ttl,
+      attachment: hasImage
+        ? { kind: 'image', bytes: draft.attachment.bytes, name: draft.attachment.name, mime: draft.attachment.mime }
+        : undefined
+    });
+    els.storyBackdrop.hidden = true;
+    state.storyDraft = null;
+    toast('История опубликована на 24 часа');
+    await loadStories();
+    if (res && res.id) openStoryViewer(state.username);
+  } catch (err) {
+    els.storyError.textContent = err.message || 'Не удалось опубликовать';
+    els.storyError.hidden = false;
+  } finally {
+    els.btnStoryPublish.disabled = false;
+  }
+}
+
+els.btnStoryPublish.addEventListener('click', publishStory);
+els.btnStoryClose.addEventListener('click', () => { els.storyBackdrop.hidden = true; });
+els.storyBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.storyBackdrop) els.storyBackdrop.hidden = true;
+});
+
+/* ------------------------------- viewer ------------------------------- */
+function currentStory() {
+  const list = storyGroups().groups.get(state.storyGroup) || [];
+  return list[state.storyIndex] || null;
+}
+
+function openStoryViewer(author) {
+  const { groups, order } = storyGroups();
+  const list = groups.get(author) || [];
+  if (!list.length) return;
+  state.storyGroup = author;
+  state.storyOrder = order;
+  // Start at the first story this device has not opened yet, if any.
+  const firstUnseen = list.findIndex((s) => !state.storiesSeen.has(s.id));
+  state.storyIndex = firstUnseen >= 0 ? firstUnseen : 0;
+  els.storyViewer.hidden = false;
+  paintStory();
+}
+
+function closeStoryViewer() {
+  els.storyViewer.hidden = true;
+  state.storyGroup = null;
+  state.storyIndex = 0;
+  clearTimeout(state.storyTimer);
+  state.storyTimer = null;
+}
+
+async function paintStory() {
+  const story = currentStory();
+  if (!story) { closeStoryViewer(); return; }
+  const list = storyGroups().groups.get(state.storyGroup) || [];
+
+  els.storyViewerName.textContent = displayNameFor(story.author);
+  paintAvatar(els.storyViewerAvatar, story.author);
+  els.storyViewerTime.textContent = STORIES.remainingLabel(STORIES.remainingMs(story, Date.now())) + ' осталось';
+
+  // Progress segments: one per story by this author, the current one filling.
+  els.storyProgress.innerHTML = '';
+  for (let i = 0; i < list.length; i++) {
+    const seg = document.createElement('div');
+    seg.className = 'story-progress-seg' + (i < state.storyIndex ? ' done' : '');
+    if (i === state.storyIndex) {
+      const fill = document.createElement('div');
+      fill.className = 'story-progress-fill';
+      seg.appendChild(fill);
+      requestAnimationFrame(() => { fill.style.transition = `width ${STORY_TTL_MS}ms linear`; fill.style.width = '100%'; });
+    }
+    els.storyProgress.appendChild(seg);
+  }
+
+  // Body: a decoded text card, or the decrypted picture when there is one.
+  const body = STORIES.decode(story.text) || { cap: story.text || '', kind: story.kind || 'text', bg: 'mint' };
+  els.storyViewerImage.hidden = true;
+  els.storyViewerImage.removeAttribute('src');
+  els.storyViewerCard.hidden = false;
+  els.storyViewerCard.dataset.bg = body.bg || 'mint';
+  els.storyViewerText.textContent = body.cap || '';
+
+  if (story.kind === 'image' && story.attachment) {
+    els.storyViewerCard.hidden = true;
+    try {
+      const opened = await api.openStoryAttachment({ id: story.id });
+      els.storyViewerImage.src = opened.dataUrl;
+      els.storyViewerImage.hidden = false;
+    } catch {
+      els.storyViewerCard.hidden = false;
+      els.storyViewerText.textContent = '⚠ Не удалось открыть фото';
+    }
+  }
+
+  els.btnStoryDelete.hidden = story.author !== state.username;
+  paintStoryViews();
+
+  // Mark seen locally and on the relay (the author only learns a count).
+  if (!state.storiesSeen.has(story.id) && story.author !== state.username) {
+    state.storiesSeen.add(story.id);
+    story.seen = true;
+    api.viewStory({ id: story.id }).catch(() => {});
+    renderStoriesBar();
+  }
+
+  clearTimeout(state.storyTimer);
+  state.storyTimer = setTimeout(nextStory, STORY_TTL_MS);
+}
+
+function paintStoryViews() {
+  const story = currentStory();
+  if (!story) return;
+  if (story.author === state.username) {
+    els.storyViewerViews.textContent = story.views
+      ? `${story.views} ${plural(story.views, 'просмотр', 'просмотра', 'просмотров')}`
+      : 'Просмотров пока нет';
+  } else {
+    els.storyViewerViews.textContent = '';
+  }
+}
+
+function nextStory() {
+  const list = storyGroups().groups.get(state.storyGroup) || [];
+  if (state.storyIndex + 1 < list.length) {
+    state.storyIndex += 1;
+    paintStory();
+    return;
+  }
+  // End of this author: move to the next author with something unseen.
+  const order = state.storyOrder;
+  const at = order.indexOf(state.storyGroup);
+  for (let i = at + 1; i < order.length; i++) {
+    const next = order[i];
+    const group = storyGroups().groups.get(next) || [];
+    if (!group.length) continue;
+    state.storyGroup = next;
+    state.storyIndex = Math.max(0, group.findIndex((s) => !state.storiesSeen.has(s.id)));
+    paintStory();
+    return;
+  }
+  closeStoryViewer();
+}
+
+function prevStory() {
+  if (state.storyIndex > 0) {
+    state.storyIndex -= 1;
+    paintStory();
+    return;
+  }
+  const order = state.storyOrder;
+  const at = order.indexOf(state.storyGroup);
+  for (let i = at - 1; i >= 0; i--) {
+    const prev = order[i];
+    const group = storyGroups().groups.get(prev) || [];
+    if (!group.length) continue;
+    state.storyGroup = prev;
+    state.storyIndex = group.length - 1;
+    paintStory();
+    return;
+  }
+}
+
+els.btnStoryNext.addEventListener('click', nextStory);
+els.btnStoryPrev.addEventListener('click', prevStory);
+els.btnStoryViewerClose.addEventListener('click', closeStoryViewer);
+
+els.btnStoryDelete.addEventListener('click', async () => {
+  const story = currentStory();
+  if (!story || story.author !== state.username) return;
+  try {
+    await api.deleteStory({ id: story.id });
+    handleStoryDeleted(story.id);
+  } catch (err) {
+    toast(err.message || 'Не удалось удалить историю');
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (els.storyViewer.hidden) return;
+  if (e.key === 'Escape') closeStoryViewer();
+  else if (e.key === 'ArrowRight') nextStory();
+  else if (e.key === 'ArrowLeft') prevStory();
 });
 
 /* --------------------------------- boot --------------------------------- */

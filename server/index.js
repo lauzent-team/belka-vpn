@@ -190,6 +190,36 @@ db.exec(`
     count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (a, b)
   );
+  -- Stories: a 24-hour post. The body is an ordinary encrypted envelope, stored
+  -- once per viewer exactly like a group message, so the relay holds ciphertext
+  -- and the list of who may open it and never learns the caption or the picture.
+  CREATE TABLE IF NOT EXISTS stories (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    author     TEXT NOT NULL,
+    envelope   TEXT NOT NULL,
+    ts         INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    kind       TEXT,
+    attachment TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_stories_author ON stories(author, id);
+  CREATE INDEX IF NOT EXISTS idx_stories_exp ON stories(expires_at);
+  -- Who may open a story. Kept beside the per-viewer envelope so the relay can
+  -- answer "which stories can I see?" without parsing any ciphertext blob.
+  CREATE TABLE IF NOT EXISTS story_audience (
+    story_id INTEGER NOT NULL,
+    viewer   TEXT NOT NULL,
+    PRIMARY KEY (story_id, viewer)
+  );
+  CREATE INDEX IF NOT EXISTS idx_story_audience_viewer ON story_audience(viewer);
+  -- Who has opened a story. Only the viewer id and the story id are stored, so a
+  -- "seen" mark carries no content and the author never learns more than a count.
+  CREATE TABLE IF NOT EXISTS story_views (
+    story_id INTEGER NOT NULL,
+    viewer   TEXT NOT NULL,
+    ts       INTEGER NOT NULL,
+    PRIMARY KEY (story_id, viewer)
+  );
 `);
 
 // Columns added after the first release. Existing databases are upgraded in
@@ -514,7 +544,45 @@ const q = {
   deleteUserDialogStreaks: db.prepare('DELETE FROM dialog_streaks WHERE a = ? OR b = ?'),
   deleteDialogStreak: db.prepare('DELETE FROM dialog_streaks WHERE a = ? AND b = ?'),
   // Every dialog flame this account is part of, so the chat list can show them.
-  dialogStreaksFor: db.prepare('SELECT * FROM dialog_streaks WHERE a = ? OR b = ?')
+  dialogStreaksFor: db.prepare('SELECT * FROM dialog_streaks WHERE a = ? OR b = ?'),
+
+  /* ------------------------------- stories ------------------------------- */
+  insertStory: db.prepare(
+    'INSERT INTO stories (author, envelope, ts, expires_at, kind, attachment) VALUES (?, ?, ?, ?, ?, ?)'
+  ),
+  getStory: db.prepare('SELECT * FROM stories WHERE id = ?'),
+  deleteStory: db.prepare('DELETE FROM stories WHERE id = ?'),
+  // Every story still inside its 24 hours, newest first. The author's id is
+  // enough to show the bar; the envelope is per-viewer.
+  activeStories: db.prepare('SELECT * FROM stories WHERE expires_at > ? ORDER BY id DESC LIMIT 500'),
+  storiesByAuthor: db.prepare('SELECT * FROM stories WHERE author = ? ORDER BY id ASC'),
+  expiredStories: db.prepare('SELECT id FROM stories WHERE expires_at <= ?'),
+  deleteStoryViews: db.prepare('DELETE FROM story_views WHERE story_id = ?'),
+  deleteUserStories: db.prepare('DELETE FROM stories WHERE author = ?'),
+  renameStoryAuthor: db.prepare('UPDATE stories SET author = ? WHERE author = ?'),
+  insertStoryView: db.prepare(
+    `INSERT INTO story_views (story_id, viewer, ts) VALUES (?, ?, ?)
+     ON CONFLICT(story_id, viewer) DO NOTHING`
+  ),
+  storyViewers: db.prepare('SELECT viewer, ts FROM story_views WHERE story_id = ? ORDER BY ts ASC'),
+  countStoryViews: db.prepare('SELECT COUNT(*) AS c FROM story_views WHERE story_id = ?'),
+  deleteUserStoryViews: db.prepare('DELETE FROM story_views WHERE viewer = ?'),
+  countStories: db.prepare('SELECT COUNT(*) AS c FROM stories'),
+  addStoryViewer: db.prepare(
+    `INSERT INTO story_audience (story_id, viewer) VALUES (?, ?)
+     ON CONFLICT(story_id, viewer) DO NOTHING`
+  ),
+  deleteStoryAudience: db.prepare('DELETE FROM story_audience WHERE story_id = ?'),
+  deleteUserStoryAudience: db.prepare('DELETE FROM story_audience WHERE viewer = ?'),
+  renameStoryAudience: db.prepare('UPDATE story_audience SET viewer = ? WHERE viewer = ?'),
+  // The active stories a viewer may open, newest first.
+  storiesForViewer: db.prepare(
+    `SELECT s.* FROM stories s
+       JOIN story_audience a ON a.story_id = s.id
+      WHERE a.viewer = ? AND s.expires_at > ?
+      ORDER BY s.id DESC LIMIT 500`
+  ),
+  isStoryViewer: db.prepare('SELECT 1 AS ok FROM story_audience WHERE story_id = ? AND viewer = ?')
 };
 
 /* Statements used only by the username rename, which rewrites every reference. */
@@ -532,7 +600,10 @@ const renameStmts = {
   channelSubs: db.prepare('UPDATE channel_subs SET username = ? WHERE username = ?'),
   channelsOwner: db.prepare('UPDATE channels SET owner = ? WHERE owner = ?'),
   sessions: db.prepare('UPDATE sessions SET username = ? WHERE username = ?'),
-  streaks: db.prepare('UPDATE streaks SET username = ? WHERE username = ?')
+  streaks: db.prepare('UPDATE streaks SET username = ? WHERE username = ?'),
+  stories: db.prepare('UPDATE stories SET author = ? WHERE author = ?'),
+  storyViews: db.prepare('UPDATE story_views SET viewer = ? WHERE viewer = ?'),
+  storyAudience: db.prepare('UPDATE story_audience SET viewer = ? WHERE viewer = ?')
 };
 
 /* --------------------------- password KDF --------------------------- */
@@ -1327,6 +1398,9 @@ function handleUsernameSet(ws, msg, rid) {
     renameStmts.channelsOwner.run(next, prev);
     renameStmts.sessions.run(next, prev);
     renameStmts.streaks.run(next, prev);
+    renameStmts.stories.run(next, prev);
+    renameStmts.storyViews.run(next, prev);
+    renameStmts.storyAudience.run(next, prev);
     // The pair must stay sorted (`a` < `b`). Renaming can flip that, so rebuild
     // each affected row in place instead of patching one column.
     for (const row of q.dialogStreaksFor.all(prev, prev)) {
@@ -2249,6 +2323,174 @@ function handleChannelMessageGet(ws, msg, rid) {
   });
 }
 
+/* ------------------------------- stories ------------------------------- */
+// A story is a 24-hour post. Like a group message, the body is one encrypted
+// copy per viewer (`envelopes: { viewer: {box, nonce} }`), so the relay stores
+// ciphertext and the audience list, and never learns the caption or picture.
+// Expiry is a wall-clock timestamp: a story simply stops being returned once it
+// passes, and a lazy sweep drops the rows and their views.
+
+const MAX_STORY_VIEWERS = 500;
+const MAX_STORY_TTL_MS = 24 * 3600000;
+
+/** The people who may see an author's story: their contacts plus their peers. */
+function storyAudienceFor(author, requested) {
+  const audience = audienceOf(author);
+  for (const u of Array.isArray(requested) ? requested.slice(0, MAX_STORY_VIEWERS) : []) {
+    if (typeof u === 'string' && q.getUser.get(u)) audience.add(u);
+  }
+  audience.add(author); // the author can always reopen their own story
+  return [...audience];
+}
+
+/** Drop stories whose 24 hours are up, together with their views and audience. */
+function sweepExpiredStories() {
+  const now = Date.now();
+  for (const row of q.expiredStories.all(now)) {
+    q.deleteStoryViews.run(row.id);
+    q.deleteStoryAudience.run(row.id);
+    q.deleteStory.run(row.id);
+  }
+}
+
+/** Whether one viewer has already opened a story. */
+function storySeenBy(storyId, viewer) {
+  return q.storyViewers.all(storyId).some((v) => v.viewer === viewer);
+}
+
+/** A story row as the viewer sees it, with only their own envelope attached. */
+function storyView(row, viewer) {
+  let envelopes = {};
+  try { envelopes = JSON.parse(row.envelope) || {}; } catch { envelopes = {}; }
+  return {
+    id: row.id, author: row.author, ts: row.ts, expiresAt: row.expires_at,
+    kind: row.kind || null, attachment: row.attachment || null,
+    envelope: envelopes[viewer] || null,
+    seen: storySeenBy(row.id, viewer),
+    views: q.countStoryViews.get(row.id).c
+  };
+}
+
+function handleStoryPost(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  if (!msg.envelopes || typeof msg.envelopes !== 'object') return bad(ws, rid, 'Malformed envelopes');
+
+  const parsed = parseGroupAttachment(msg.attachment);
+  if (parsed.error) return bad(ws, rid, parsed.error);
+
+  const audience = storyAudienceFor(ws.username, msg.audience);
+  const envelopes = {};
+  for (const [user, env] of Object.entries(msg.envelopes)) {
+    if (typeof user !== 'string') continue;
+    const box = env && typeof env.box === 'string' ? env.box : '';
+    const nonce = env && typeof env.nonce === 'string' ? env.nonce : '';
+    if (!box || !validB64(box, 100000) || !validB64(nonce, 100)) continue;
+    envelopes[user] = { box, nonce };
+  }
+  if (Object.keys(envelopes).length === 0) return bad(ws, rid, 'No valid envelopes');
+
+  const now = Date.now();
+  const ttl = Math.min(MAX_STORY_TTL_MS, Math.max(60000, Number(msg.ttl) || MAX_STORY_TTL_MS));
+  const expiresAt = now + ttl;
+  const info = q.insertStory.run(
+    ws.username, JSON.stringify(envelopes), now, expiresAt, parsed.kind, parsed.attachment
+  );
+  const id = Number(info.lastInsertRowid);
+  for (const viewer of audience) q.addStoryViewer.run(id, viewer);
+
+  sweepExpiredStories();
+  reply(ws, rid, { t: 'story.posted', id, ts: now, expiresAt });
+
+  // Everyone in the audience hears about it, but only a viewer with an envelope
+  // can actually open it; the rest just see the ring.
+  for (const viewer of audience) {
+    if (viewer === ws.username) continue;
+    deliverToUser(viewer, {
+      t: 'story.new', id, author: ws.username, ts: now, expiresAt,
+      kind: parsed.kind, attachment: parsed.attachment
+    });
+  }
+}
+
+function handleStoryList(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  sweepExpiredStories();
+  const rows = q.storiesForViewer.all(ws.username, Date.now());
+  reply(ws, rid, { t: 'stories', items: rows.map((r) => storyView(r, ws.username)) });
+}
+
+/**
+ * Who a new story would reach: the author's saved contacts plus everyone they
+ * have a conversation with. The list is built from the relay's own view (peer
+ * rows and the account's `contacts` setting), so it never depends on the client
+ * remembering it.
+ */
+function handleStoryAudience(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const contacts = [];
+  const raw = q.getUserSettings.get(ws.username);
+  if (raw && raw.settings) {
+    try {
+      const s = JSON.parse(raw.settings);
+      if (s && Array.isArray(s.contacts)) {
+        for (const u of s.contacts.slice(0, MAX_STORY_VIEWERS)) {
+          if (typeof u === 'string' && q.getUser.get(u) && u !== ws.username) contacts.push(u);
+        }
+      }
+    } catch { /* a malformed settings blob just means no extra contacts */ }
+  }
+  const items = storyAudienceFor(ws.username, contacts).filter((u) => u !== ws.username);
+  reply(ws, rid, { t: 'story.audience', items });
+}
+
+function handleStoryGet(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const row = q.getStory.get(Number(msg.id));
+  if (!row) return bad(ws, rid, 'No such story');
+  if (!q.isStoryViewer.get(row.id, ws.username)) return bad(ws, rid, 'Not in the audience');
+  if (row.expires_at <= Date.now()) return bad(ws, rid, 'This story has expired');
+  reply(ws, rid, { t: 'story', story: storyView(row, ws.username) });
+}
+
+function handleStoryViewed(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const row = q.getStory.get(Number(msg.id));
+  if (!row) return bad(ws, rid, 'No such story');
+  if (!q.isStoryViewer.get(row.id, ws.username)) return bad(ws, rid, 'Not in the audience');
+  q.insertStoryView.run(row.id, ws.username, Date.now());
+  const count = q.countStoryViews.get(row.id).c;
+  reply(ws, rid, { t: 'story.viewed', id: row.id, views: count });
+  // The author learns only how many opened it; the list of who is a separate,
+  // author-only request.
+  if (row.author !== ws.username) deliverToUser(row.author, { t: 'story.views', id: row.id, count });
+}
+
+function handleStoryViewers(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const row = q.getStory.get(Number(msg.id));
+  if (!row) return bad(ws, rid, 'No such story');
+  if (row.author !== ws.username) return bad(ws, rid, 'Not your story');
+  const viewers = q.storyViewers.all(row.id).map((v) => ({
+    username: v.viewer, ts: v.ts, profile: publicProfile(q.getUser.get(v.viewer), ws.username)
+  }));
+  reply(ws, rid, { t: 'story.viewers', id: row.id, viewers });
+}
+
+function handleStoryDelete(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const row = q.getStory.get(Number(msg.id));
+  if (!row) return bad(ws, rid, 'No such story');
+  if (row.author !== ws.username) return bad(ws, rid, 'Not your story');
+  const viewers = q.storyViewers.all(row.id).map((v) => v.viewer);
+  q.deleteStoryViews.run(row.id);
+  q.deleteStoryAudience.run(row.id);
+  q.deleteStory.run(row.id);
+  reply(ws, rid, { t: 'story.deleted', id: row.id });
+  for (const viewer of viewers) {
+    if (viewer !== ws.username) deliverToUser(viewer, { t: 'story.deleted', id: row.id, author: ws.username });
+  }
+}
+
 /* -------------------------------- admin -------------------------------- */
 // Every admin operation is gated on requireAdmin. The relay still cannot read
 // messages, so an admin can moderate accounts but never message contents.
@@ -2268,7 +2510,8 @@ function handleAdminOverview(ws, msg, rid) {
       admins: q.countAdmins.get().c,
       announcements: q.countAnnouncements.get().c,
       sessions: q.countSessions.get().c,
-      flames: q.countDialogStreaks.get().c
+      flames: q.countDialogStreaks.get().c,
+      stories: q.countStories.get().c
     },
     isAdmin: true,
     announcements: q.recentAnnouncements.all().map((a) => ({
@@ -2513,6 +2756,9 @@ function deleteUserData(username) {
     q.deleteUserSessions.run(username);
     q.deleteUserStreak.run(username);
     q.deleteUserDialogStreaks.run(username, username);
+    q.deleteUserStories.run(username);
+    q.deleteUserStoryViews.run(username);
+    q.deleteUserStoryAudience.run(username);
     q.deleteUser.run(username);
     db.exec('COMMIT');
   } catch {
@@ -2578,6 +2824,13 @@ const handlers = {
   'channel.message.edit': handleChannelEditMessage,
   'channel.message.delete': handleChannelDeleteMessage,
   'channel.message.get': handleChannelMessageGet,
+  'story.post': handleStoryPost,
+  'story.list': handleStoryList,
+  'story.audience': handleStoryAudience,
+  'story.get': handleStoryGet,
+  'story.viewed': handleStoryViewed,
+  'story.viewers': handleStoryViewers,
+  'story.delete': handleStoryDelete,
   'admin.overview': handleAdminOverview,
   'admin.users': handleAdminUsers,
   'admin.channels': handleAdminChannels,

@@ -242,6 +242,16 @@
 
         <div class="folder-tabs" id="folder-tabs"></div>
 
+        <!-- ====================== STORIES ====================== -->
+        <div class="stories-bar" id="stories-bar" hidden>
+          <button class="story-add" id="btn-story-add" title="Добавить историю">
+            <span class="story-add-avatar avatar" id="story-add-avatar">?</span>
+            <span class="story-add-plus" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24"><use href="#i-plus"></use></svg></span>
+            <span class="story-name">Моя история</span>
+          </button>
+          <ul class="story-ring-list" id="story-ring-list"></ul>
+        </div>
+
         <div class="chat-sections" id="chat-sections">
           <section class="chat-section" id="section-archived" hidden>
             <button class="section-head" id="btn-archived-toggle">
@@ -1205,6 +1215,62 @@
       </div>
     </div>
 
+    <!-- ====================== STORY COMPOSER ====================== -->
+    <div class="modal-backdrop" id="story-backdrop" hidden>
+      <div class="modal modal-sheet">
+        <header class="modal-head">
+          <h3>Новая история</h3>
+          <button class="icon-btn" id="btn-story-close" title="Close"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"></use></svg></button>
+        </header>
+        <div class="modal-body">
+          <div class="story-preview" id="story-preview" data-bg="mint">
+            <p class="story-preview-text" id="story-preview-text">Текст истории…</p>
+          </div>
+          <textarea id="story-caption" class="contact-input" rows="3" maxlength="300"
+                    placeholder="Что нового?"></textarea>
+          <div class="story-bg-row" id="story-bg-row"></div>
+          <label class="setting-row"><span>Исчезнет через</span>
+            <select id="story-ttl" class="contact-input story-ttl">
+              <option value="3600000">1 час</option>
+              <option value="21600000">6 часов</option>
+              <option value="43200000">12 часов</option>
+              <option value="86400000" selected>24 часа</option>
+            </select></label>
+          <button class="btn-secondary btn-compact" type="button" id="btn-story-photo">Добавить фото</button>
+          <p class="setting-note" id="story-audience-note">Увидят ваши контакты.</p>
+          <p class="auth-error" id="story-error" hidden></p>
+          <button class="btn-primary" type="button" id="btn-story-publish">Опубликовать</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====================== STORY VIEWER ====================== -->
+    <div class="story-viewer" id="story-viewer" hidden>
+      <div class="story-progress" id="story-progress"></div>
+      <header class="story-viewer-head">
+        <div class="story-viewer-author">
+          <span class="avatar" id="story-viewer-avatar">?</span>
+          <span class="story-viewer-meta">
+            <span class="story-viewer-name" id="story-viewer-name">—</span>
+            <span class="story-viewer-time" id="story-viewer-time"></span>
+          </span>
+        </div>
+        <button class="icon-btn" id="btn-story-viewer-close" title="Close"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"></use></svg></button>
+      </header>
+      <div class="story-viewer-body" id="story-viewer-body">
+        <div class="story-viewer-card" id="story-viewer-card" data-bg="mint">
+          <p class="story-viewer-text" id="story-viewer-text"></p>
+        </div>
+        <img class="story-viewer-image" id="story-viewer-image" alt="" hidden />
+      </div>
+      <footer class="story-viewer-foot">
+        <span class="story-viewer-views" id="story-viewer-views"></span>
+        <button class="icon-btn" id="btn-story-delete" title="Удалить" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"></use></svg></button>
+      </footer>
+      <button class="story-nav story-nav-prev" id="btn-story-prev" title="Назад" aria-label="Назад"></button>
+      <button class="story-nav story-nav-next" id="btn-story-next" title="Вперёд" aria-label="Вперёд"></button>
+    </div>
+
     <!-- ====================== POLL ====================== -->
     <div class="modal-backdrop" id="poll-backdrop" hidden>
       <div class="modal modal-sheet">
@@ -1435,6 +1501,7 @@
   <script src="lib/folders.js"></script>
   <script src="lib/streak.js"></script>
   <script src="lib/chatsearch.js"></script>
+  <script src="lib/stories.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
