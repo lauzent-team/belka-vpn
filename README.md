@@ -40,6 +40,11 @@ and forwards ciphertext it cannot read.
   countdown. The relay holds only ciphertext, so the clock it enforces wipes the
   stored ciphertext (and any attachment) in place, then tells both devices to
   drop the bubble; an offline device learns on its next history read
+- **Key verification (safety numbers)** — open a contact's profile to see a
+  twelve-group code derived on your device from both public keys. It is the same
+  on both ends and never sent to the relay, so reading it aloud over another
+  channel proves the server did not substitute a key. Mark a contact verified to
+  keep a tick next to their name
 - Offline delivery: messages sent while you were away arrive on reconnect
 - Message history, decrypted locally, grouped by day
 - **Drafts** — what you typed but did not send is kept per chat and shown in the
@@ -142,7 +147,7 @@ overrides it.
 ## Build a Windows installer
 
 ```bash
-npm run dist:win      # -> dist/SleePhy-Setup-0.11.0.exe
+npm run dist:win      # -> dist/SleePhy-Setup-0.12.0.exe
 ```
 
 Building a Windows `.exe` from Linux/macOS uses Wine; the CI workflow does this
@@ -168,6 +173,8 @@ node test/games.js                        # game rules (21 checks)
 node test/chatsearch.js                   # in-chat search filter rules (18 checks)
 node test/ttl.js                          # self-destructing messages over the relay (8 checks)
 xvfb-run -a node test/ui-ttl.js           # the auto-delete timer, clicked for real (8 checks)
+node test/safety.js                       # safety numbers: both ends agree, per pair (8 checks)
+xvfb-run -a node test/ui-safety.js        # the safety number in the profile, clicked for real (6 checks)
 ```
 
 The end-to-end suite verifies, among other things, that the plaintext never
@@ -243,12 +250,15 @@ This is an honest list. The app should not be described as more secure than it i
 
 - **No forward secrecy.** Compromising a private key exposes past messages. A
   ratcheting protocol (Double Ratchet) is the fix.
-- **No key verification UI.** You can copy your public key from Settings, but
-  there is no safety-number comparison, so the server *could* substitute a key.
+- **Key verification is manual.** Each profile shows a safety number derived from
+  both public keys, and you can mark a contact verified, but the app does not
+  force a comparison before the first message, so a substituted key is only
+  caught if you check the code.
 - **Metadata is visible to the server** — who talks to whom, when, and message
   sizes.
 - **No multi-device support** — one key per account, tied to one device.
-- **No file or image attachments and no calls.**
+- **No calls.** Voice and video calls are not implemented; messages, pictures,
+  files and voice notes are.
 - **Message history lives on the server** until you clear the chat. It is stored
   as ciphertext the server cannot read, and "Clear history" deletes it — but a
   copy exists on the relay until then.

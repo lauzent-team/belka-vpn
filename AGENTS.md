@@ -31,6 +31,7 @@ node test/nicknames.js # nicknames: owner privilege, admin edit, cap, privacy
 node test/story.js     # the story rules (pure): defaults, TTL clamp, encode/decode, ordering
 node test/story-relay.js # stories against a real relay: publish, per-viewer crypto, expiry, views
 node test/ttl.js       # self-destructing messages over the relay: TTL, sweep, notify
+node test/safety.js    # safety numbers: both ends agree, per pair, never stored
 xvfb-run -a node test/ui.js            # UI tests driving the real Electron app
 xvfb-run -a node test/ui-features.js   # the newer UI features, clicked for real
 xvfb-run -a node test/ui-drawer.js     # drawer, settings, contacts, groups, accounts
@@ -41,6 +42,7 @@ xvfb-run -a node test/ui-streak.js     # the dialog flame chip, the note, the pr
 xvfb-run -a node test/ui-nicknames.js  # the profile nickname editor and the admin popup
 xvfb-run -a node test/ui-stories.js    # the stories bar, composer and viewer, clicked for real
 xvfb-run -a node test/ui-ttl.js        # the auto-delete timer: picker, chip, countdown
+xvfb-run -a node test/ui-safety.js     # the safety number in a peer profile, clicked for real
 xvfb-run -a node test/connection.js    # connection and error handling
 xvfb-run -a node test/shots.js         # regenerate shots/*.png
 ```
@@ -615,3 +617,24 @@ arriving now can change a header that is already on screen.
 - **`test/ttl.js` asserts the sweep on the raw database**, not just the protocol:
   after expiry the row's `box`/`nonce` are empty and a history read returns it as
   deleted. No plaintext ever reaches the relay.
+
+## Key verification (v0.12.0)
+
+- **The safety number is computed on the device, never fetched.** Both public
+  keys are decoded, sorted (`Buffer.compare`) and hashed with
+  `crypto_generichash(64, …)`; the 64-byte digest is cut into twelve five-digit
+  groups. Sorting is what makes the two ends agree without a round trip, and it
+  is also why the number can never be a value the relay chooses.
+- **`safetyNumberWith` reuses `ensurePeerKey`.** A peer key already cached by a
+  send is used as-is; otherwise the directory is asked once. There is no new wire
+  message for verification, so the relay learns nothing new.
+- **The verified tick is a local note, not a server flag.** `state.verifiedPeers`
+  is mirrored into the account settings (`verifiedPeers`) exactly like drafts, so
+  it survives a reload and follows the account. Marking is a one-way button: the
+  tick replaces it, and it cannot be un-set from the UI.
+- **A self profile hides the block** (`renderSafetyNumber` returns early), since
+  there is nothing to compare against yourself.
+- **`test/safety.js` checks the property that matters**: the same pair on two
+  devices yields one number, a different peer yields another, a substituted key
+  changes it, and the number never appears in the message store. `test/ui-safety.js`
+  drives the real profile overlay, including the tick surviving a reopen.
