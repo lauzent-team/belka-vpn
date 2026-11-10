@@ -31,6 +31,7 @@ node test/nicknames.js # nicknames: owner privilege, admin edit, cap, privacy
 node test/story.js     # the story rules (pure): defaults, TTL clamp, encode/decode, ordering
 node test/story-relay.js # stories against a real relay: publish, per-viewer crypto, expiry, views
 node test/ttl.js       # self-destructing messages over the relay: TTL, sweep, notify
+node test/scheduled.js # scheduled messages over the relay: hold, list, cancel, reschedule, send now, sweep
 node test/safety.js    # safety numbers: both ends agree, per pair, never stored
 xvfb-run -a node test/ui.js            # UI tests driving the real Electron app
 xvfb-run -a node test/ui-features.js   # the newer UI features, clicked for real
@@ -42,6 +43,7 @@ xvfb-run -a node test/ui-streak.js     # the dialog flame chip, the note, the pr
 xvfb-run -a node test/ui-nicknames.js  # the profile nickname editor and the admin popup
 xvfb-run -a node test/ui-stories.js    # the stories bar, composer and viewer, clicked for real
 xvfb-run -a node test/ui-ttl.js        # the auto-delete timer: picker, chip, countdown
+xvfb-run -a node test/ui-scheduled.js  # "send later": picker, drawer badge, list, send now, cancel
 xvfb-run -a node test/ui-safety.js     # the safety number in a peer profile, clicked for real
 xvfb-run -a node test/connection.js    # connection and error handling
 xvfb-run -a node test/shots.js         # regenerate shots/*.png
@@ -638,3 +640,38 @@ arriving now can change a header that is already on screen.
   devices yields one number, a different peer yields another, a substituted key
   changes it, and the number never appears in the message store. `test/ui-safety.js`
   drives the real profile overlay, including the tick surviving a reopen.
+
+## Scheduled messages (v0.13.0)
+
+- **A scheduled message is a held row, not a new table.** `messages.send_at`
+  holds the intended instant; while it is set, the row is invisible to the
+  recipient: `undeliveredFor` requires `send_at IS NULL`, so it never appears in
+  offline delivery or in the peer's `history`. The sender reads it back through
+  `scheduled.list`, which decrypts `box`/`nonce` on the device like any other
+  message — the relay still only ever holds ciphertext plus the send time.
+- **The sweeper releases before it expires.** On each 5-second tick the relay
+  first takes rows whose `send_at` has passed (`q.dueScheduled` → 
+  `releaseScheduledMessage`), clears `send_at`, and pushes the normal `message`
+  frame to the recipient plus `scheduled.released` to the sender. Releasing first
+  matters: a message can carry both a `send_at` and an `expires_at`, and the
+  self-destruct clock must start when the message actually arrives, not when it
+  was written.
+- **`releaseScheduledMessage` is the single release path.** "Send now"
+  (`scheduled.sendNow`) and the sweeper both call it, so a message sent early and
+  a message sent on time behave identically. Cancel and reschedule only touch
+  `send_at`; cancel also sets `scheduled_hidden = 1` so a cancelled row stays out
+  of the list on every one of the sender's devices without becoming a message.
+- **`sendAt` is clamped, never trusted.** `handleSend` and `scheduled.reschedule`
+  lift any time below `MIN_SCHEDULE_MS` into the future and cap it at
+  `MAX_SCHEDULE_MS`, mirroring the TTL clamp — a client clock that is wrong or a
+  crafted request cannot schedule something in the past or years out.
+- **The renderer mirrors the TTL picker.** `openSchedulePicker` reuses the timer
+  modal's look; the drawer's **Отложенные** entry (`data-drawer="scheduled"`) and
+  a badge count the queue. `scheduled.new` / `released` / `cancelled` /
+  `rescheduled` keep every one of the sender's devices in step, and `refreshScheduled`
+  runs on sign-in beside the other loaders.
+- **`test/scheduled.js` checks the property that matters**: a held message is
+  absent from the recipient's history and the relay store is still ciphertext,
+  cancel never delivers, "send now" and the sweep both deliver exactly once, and
+  the send time is clamped. `test/ui-scheduled.js` drives the real picker, badge,
+  list, send-now and cancel.

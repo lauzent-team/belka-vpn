@@ -40,6 +40,11 @@ and forwards ciphertext it cannot read.
   countdown. The relay holds only ciphertext, so the clock it enforces wipes the
   stored ciphertext (and any attachment) in place, then tells both devices to
   drop the bubble; an offline device learns on its next history read
+- **Scheduled messages ("send later")** — write a message, choose a time in the
+  attachment menu, and the relay holds the ciphertext until then and releases it
+  automatically. The **Отложенные** drawer entry lists everything waiting, with
+  the time and a preview; you can send one early or cancel it. The relay stores
+  only ciphertext and the send time, so it never learns what is being sent
 - **Key verification (safety numbers)** — open a contact's profile to see a
   twelve-group code derived on your device from both public keys. It is the same
   on both ends and never sent to the relay, so reading it aloud over another
@@ -172,7 +177,9 @@ node test/polls.js                        # poll encode, validate, tally (12 che
 node test/games.js                        # game rules (21 checks)
 node test/chatsearch.js                   # in-chat search filter rules (18 checks)
 node test/ttl.js                          # self-destructing messages over the relay (8 checks)
+node test/scheduled.js                    # scheduled messages over the relay (10 checks)
 xvfb-run -a node test/ui-ttl.js           # the auto-delete timer, clicked for real (8 checks)
+xvfb-run -a node test/ui-scheduled.js     # "send later" picker and list, clicked for real (9 checks)
 node test/safety.js                       # safety numbers: both ends agree, per pair (8 checks)
 xvfb-run -a node test/ui-safety.js        # the safety number in the profile, clicked for real (6 checks)
 ```

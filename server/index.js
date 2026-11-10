@@ -265,7 +265,16 @@ for (const sql of [
   'ALTER TABLE messages ADD COLUMN expires_at INTEGER',
   // The auto-delete timer both sides agreed on for this conversation (ms), or
   // NULL for "off". Stored per owner so each device can show and change it.
-  'ALTER TABLE chats ADD COLUMN ttl INTEGER'
+  'ALTER TABLE chats ADD COLUMN ttl INTEGER',
+  // Scheduled ("send later") messages. `send_at` is the ms timestamp at which
+  // the relay should release the message to its recipient; NULL means the
+  // message is already live. While it is set the row is invisible to history
+  // and to offline delivery, so the sender's own devices show it only in the
+  // scheduled list.
+  'ALTER TABLE messages ADD COLUMN send_at INTEGER',
+  // Set when the sender removes a message from the scheduled list, so the row
+  // is hidden on every one of their devices without being wiped.
+  'ALTER TABLE messages ADD COLUMN scheduled_hidden INTEGER NOT NULL DEFAULT 0'
 ]) {
   try { db.exec(sql); } catch { /* column already present */ }
 }
@@ -321,23 +330,37 @@ const q = {
       WHERE username LIKE ? OR display_name LIKE ? ORDER BY username ASC LIMIT 20`
   ),
   insertMessage: db.prepare(
-    `INSERT INTO messages (sender, recipient, box, nonce, ts, delivered, reply_to, kind, attachment, expires_at)
-     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`
+    `INSERT INTO messages (sender, recipient, box, nonce, ts, delivered, reply_to, kind, attachment, expires_at, send_at)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`
   ),
   getMessage: db.prepare('SELECT * FROM messages WHERE id = ?'),
   markDelivered: db.prepare('UPDATE messages SET delivered = 1 WHERE id = ?'),
   editMessage: db.prepare('UPDATE messages SET box = ?, nonce = ?, edited_at = ? WHERE id = ?'),
   deleteMessage: db.prepare(
-    "UPDATE messages SET deleted = 1, box = '', nonce = '', attachment = NULL, pinned = 0 WHERE id = ?"
+    "UPDATE messages SET deleted = 1, box = '', nonce = '', attachment = NULL, pinned = 0, send_at = NULL WHERE id = ?"
   ),
   setPinned: db.prepare('UPDATE messages SET pinned = ? WHERE id = ?'),
   undeliveredFor: db.prepare(
-    'SELECT * FROM messages WHERE recipient = ? AND delivered = 0 AND deleted = 0 ORDER BY id ASC LIMIT 500'
+    'SELECT * FROM messages WHERE recipient = ? AND delivered = 0 AND deleted = 0 AND send_at IS NULL ORDER BY id ASC LIMIT 500'
   ),
+  // A message still waiting for its send time: not yet visible in any history,
+  // and listed only for the sender who scheduled it.
+  scheduledFor: db.prepare(
+    'SELECT * FROM messages WHERE sender = ? AND send_at IS NOT NULL AND scheduled_hidden = 0 ORDER BY send_at ASC LIMIT 500'
+  ),
+  // Rows whose send time has arrived and that still hold ciphertext to release.
+  dueScheduled: db.prepare(
+    'SELECT * FROM messages WHERE send_at IS NOT NULL AND send_at <= ? ORDER BY send_at ASC LIMIT 500'
+  ),
+  // Releasing clears send_at, which is what makes the row appear in history.
+  releaseScheduled: db.prepare('UPDATE messages SET send_at = NULL WHERE id = ?'),
+  reschedule: db.prepare('UPDATE messages SET send_at = ? WHERE id = ?'),
+  hideScheduled: db.prepare('UPDATE messages SET scheduled_hidden = 1 WHERE id = ?'),
   history: db.prepare(
     `SELECT * FROM messages
       WHERE ((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?))
         AND id > ?
+        AND send_at IS NULL
       ORDER BY id DESC LIMIT ?`
   ),
   clearChat: db.prepare(
@@ -1086,6 +1109,24 @@ function flushUndelivered(username) {
   }
 }
 
+/**
+ * Release a scheduled message whose send time has arrived. Clearing `send_at`
+ * is what makes the row visible to history and to offline delivery; from then on
+ * it behaves exactly like an ordinary message. The sender's other devices are
+ * told so the entry leaves the scheduled list without a reload.
+ */
+function releaseScheduledMessage(row) {
+  q.releaseScheduled.run(row.id);
+  const delivered = deliverToUser(row.recipient, {
+    t: 'message', id: row.id, from: row.sender, box: row.box, nonce: row.nonce,
+    ts: row.ts, replyTo: row.reply_to,
+    kind: row.kind || null, attachment: row.attachment || null,
+    expiresAt: row.expires_at || null
+  });
+  if (delivered) q.markDelivered.run(row.id);
+  deliverToUser(row.sender, { t: 'scheduled.released', id: row.id, to: row.recipient });
+}
+
 function reactionsOf(messageId) {
   return q.reactionsFor.all(messageId).map((r) => ({ username: r.username, emoji: r.emoji }));
 }
@@ -1467,6 +1508,11 @@ const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 // range so a bad value can neither expire instantly nor pin ciphertext forever.
 const MIN_TTL_MS = 1000;
 const MAX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// Scheduled messages ("send later"). The relay holds the ciphertext until the
+// send time, so the clock it enforces is the only one that matters; the window
+// is bounded so a bad value cannot pin ciphertext for longer than a year.
+const MIN_SCHEDULE_MS = 60 * 1000;
+const MAX_SCHEDULE_MS = 365 * 24 * 60 * 60 * 1000;
 // The client caps the file the user picks; the ciphertext it sends is that file
 // plus the 16-byte box MAC and base64 padding. The stored blob is checked
 // against the file limit with this slack, so a file exactly at the limit is
@@ -1574,11 +1620,35 @@ function handleSend(ws, msg, rid) {
     ? Math.min(Math.max(Math.floor(msg.ttl), MIN_TTL_MS), MAX_TTL_MS)
     : 0;
   const expiresAt = ttl ? ts + ttl : null;
+  // A scheduled message is held by the relay until its send time. The send time
+  // is clamped into a sane window and must lie in the future; anything else is
+  // sent immediately, so a bad value can never silently drop a message.
+  const wantsSchedule = Number.isFinite(msg.sendAt) && msg.sendAt > 0;
+  const sendAt = wantsSchedule
+    ? Math.min(Math.max(Math.floor(msg.sendAt), Date.now() + MIN_SCHEDULE_MS), Date.now() + MAX_SCHEDULE_MS)
+    : null;
   const info = q.insertMessage.run(
-    ws.username, to, safeBox, safeNonce, ts, replyTo, kind, parsed.attachment, expiresAt
+    ws.username, to, safeBox, safeNonce, ts, replyTo, kind, parsed.attachment, expiresAt, sendAt
   );
   const id = Number(info.lastInsertRowid);
   touchStreak(ws.username);
+
+  // A message held for later is not delivered and not yet part of the flame; it
+  // is simply acknowledged so the sender's device can list and cancel it. The
+  // sender's other devices are told too, so the scheduled list stays in sync.
+  if (sendAt) {
+    deliverToUser(ws.username, {
+      t: 'scheduled.new',
+      item: {
+        id, to, ts, sendAt, replyTo, kind, attachment: parsed.attachment,
+        expiresAt, box: safeBox, nonce: safeNonce
+      }
+    });
+    return reply(ws, rid, {
+      t: 'sent', id, ts, to, replyTo, kind, attachment: parsed.attachment,
+      expiresAt, scheduled: true, sendAt
+    });
+  }
 
   // The dialog flame moves only between two real accounts; Saved Messages and
   // group/channel posts have no pair and are skipped.
@@ -1592,7 +1662,7 @@ function handleSend(ws, msg, rid) {
       // recipient, so it lands in both people's history (the history query is
       // symmetric) yet is never mistaken for a message in previews or unread.
       const noteId = Number(
-        q.insertMessage.run(ws.username, to, '', '', ts, null, 'system:series', null).lastInsertRowid
+        q.insertMessage.run(ws.username, to, '', '', ts, null, 'system:series', null, null, null).lastInsertRowid
       );
       q.markDelivered.run(noteId);
       note = { id: noteId, ts };
@@ -1644,6 +1714,63 @@ function handleHistory(ws, msg, rid) {
       reactions: reactionsOf(r.id)
     }))
   });
+}
+
+/* --------------------------- scheduled messages --------------------------- */
+
+/** The sender's own view of a message that is still waiting for its send time. */
+function scheduledView(row) {
+  return {
+    id: row.id, to: row.recipient, ts: row.ts, sendAt: row.send_at,
+    replyTo: row.reply_to, kind: row.kind || null, attachment: row.attachment || null,
+    expiresAt: row.expires_at || null,
+    box: row.box, nonce: row.nonce
+  };
+}
+
+function handleScheduledList(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const rows = q.scheduledFor.all(ws.username);
+  reply(ws, rid, { t: 'scheduled', items: rows.map(scheduledView) });
+}
+
+function handleScheduledCancel(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const row = q.getMessage.get(Number(msg.id));
+  if (!row || row.sender !== ws.username) return bad(ws, rid, 'No such scheduled message');
+  if (row.send_at == null) return bad(ws, rid, 'Message already sent');
+  // The row keeps its ciphertext but is hidden from the scheduled list on every
+  // one of the sender's devices. It never becomes a message: `send_at` stays set,
+  // so history and offline delivery keep ignoring it.
+  q.hideScheduled.run(row.id);
+  reply(ws, rid, { t: 'scheduled.cancelled', id: row.id });
+  deliverToUser(ws.username, { t: 'scheduled.cancelled', id: row.id });
+}
+
+function handleScheduledReschedule(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const row = q.getMessage.get(Number(msg.id));
+  if (!row || row.sender !== ws.username) return bad(ws, rid, 'No such scheduled message');
+  if (row.send_at == null) return bad(ws, rid, 'Message already sent');
+  if (!Number.isFinite(msg.sendAt)) return bad(ws, rid, 'Bad send time');
+  const sendAt = Math.min(
+    Math.max(Math.floor(msg.sendAt), Date.now() + MIN_SCHEDULE_MS),
+    Date.now() + MAX_SCHEDULE_MS
+  );
+  q.reschedule.run(sendAt, row.id);
+  reply(ws, rid, { t: 'scheduled.rescheduled', id: row.id, sendAt });
+  deliverToUser(ws.username, { t: 'scheduled.rescheduled', id: row.id, sendAt });
+}
+
+function handleScheduledSendNow(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const row = q.getMessage.get(Number(msg.id));
+  if (!row || row.sender !== ws.username) return bad(ws, rid, 'No such scheduled message');
+  if (row.send_at == null) return bad(ws, rid, 'Message already sent');
+  // Releasing it now is the same path the sweeper takes when the time arrives:
+  // the message becomes live and lands in both people's history.
+  releaseScheduledMessage(row);
+  reply(ws, rid, { t: 'scheduled.sent', id: row.id });
 }
 
 function handleMessageEdit(ws, msg, rid) {
@@ -2843,6 +2970,10 @@ const handlers = {
   'users.search': handleUserSearch,
   send: handleSend,
   history: handleHistory,
+  'scheduled.list': handleScheduledList,
+  'scheduled.cancel': handleScheduledCancel,
+  'scheduled.reschedule': handleScheduledReschedule,
+  'scheduled.sendNow': handleScheduledSendNow,
   'message.edit': handleMessageEdit,
   'message.delete': handleMessageDelete,
   'message.get': handleMessageGet,
@@ -2961,6 +3092,14 @@ wss.on('close', () => clearInterval(heartbeat));
  * offline when the timer ran out.
  */
 const sweeper = setInterval(() => {
+  // Scheduled messages whose send time has arrived are released first, so a
+  // message that was also given a self-destruct timer starts its clock on time.
+  let due;
+  try { due = q.dueScheduled.all(Date.now()); } catch { due = []; }
+  for (const row of due) {
+    try { releaseScheduledMessage(row); } catch { /* keep sweeping the rest */ }
+  }
+
   let rows;
   try { rows = q.expired.all(Date.now()); } catch { return; }
   if (!rows.length) return;

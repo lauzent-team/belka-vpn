@@ -405,6 +405,9 @@
               <button class="menu-item" data-attach="poll">
                 <span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-poll"></use></svg></span><span>Опрос</span>
               </button>
+              <button class="menu-item" data-attach="schedule">
+                <span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-clock"></use></svg></span><span>Отправить позже</span>
+              </button>
             </div>
           </div>
         </div>
@@ -1061,6 +1064,39 @@
       </div>
     </div>
 
+    <!-- ===================== SCHEDULED MESSAGES ===================== -->
+    <div class="modal-backdrop" id="sched-backdrop" hidden>
+      <div class="modal modal-ttl">
+        <header class="modal-head">
+          <h3 id="sched-title">Отложенные сообщения</h3>
+          <button class="icon-btn" id="btn-sched-close" title="Close"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"></use></svg></button>
+        </header>
+        <div class="modal-body">
+          <div class="ttl-options" id="sched-list"></div>
+          <p class="setting-note" id="sched-empty" hidden>Нет отложенных сообщений.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== SCHEDULE PICKER ===================== -->
+    <div class="modal-backdrop" id="schedule-backdrop" hidden>
+      <div class="modal modal-ttl">
+        <header class="modal-head">
+          <h3>Отправить позже</h3>
+          <button class="icon-btn" id="btn-schedule-close" title="Close"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"></use></svg></button>
+        </header>
+        <div class="modal-body">
+          <p class="setting-note">Сообщение будет отправлено автоматически в выбранное время.</p>
+          <div class="ttl-options" id="schedule-options"></div>
+          <div class="schedule-custom">
+            <label for="schedule-datetime">Своё время</label>
+            <input type="datetime-local" id="schedule-datetime" class="schedule-datetime" />
+            <button class="btn-primary" id="btn-schedule-custom">Запланировать</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ======================= MESSAGE CONTEXT ======================= -->
     <div class="ctx-backdrop" id="ctx-backdrop" hidden>
       <div class="ctx-menu" id="ctx-menu">
@@ -1187,6 +1223,10 @@
         </button>
         <button class="drawer-item" data-drawer="saved">
           <span class="drawer-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-bookmark"></use></svg></span><span class="drawer-label">Сохранённые сообщения</span>
+        </button>
+        <button class="drawer-item" data-drawer="scheduled">
+          <span class="drawer-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-clock"></use></svg></span><span class="drawer-label">Отложенные</span>
+          <span class="drawer-badge" id="drawer-scheduled-count" hidden>0</span>
         </button>
         <button class="drawer-item" data-drawer="folders">
           <span class="drawer-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-folder"></use></svg></span><span class="drawer-label">Папки с чатами</span>

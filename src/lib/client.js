@@ -365,6 +365,22 @@ class SleePhyClient {
       this.emit({ type: 'expired', id: msg.id, from: msg.from || this.username });
       return;
     }
+    if (msg.t === 'scheduled.released') {
+      this.emit({ type: 'scheduled.released', id: msg.id, to: msg.to });
+      return;
+    }
+    if (msg.t === 'scheduled.new') {
+      this.emit({ type: 'scheduled.new', item: msg.item });
+      return;
+    }
+    if (msg.t === 'scheduled.cancelled') {
+      this.emit({ type: 'scheduled.cancelled', id: msg.id });
+      return;
+    }
+    if (msg.t === 'scheduled.rescheduled') {
+      this.emit({ type: 'scheduled.rescheduled', id: msg.id, sendAt: msg.sendAt });
+      return;
+    }
     if (msg.t === 'chat.ttl') {
       this.emit({ type: 'chat.ttl', peer: msg.peer, ttl: msg.ttl || 0 });
       return;
@@ -663,7 +679,7 @@ class SleePhyClient {
     return cryptoLib.safetyNumber(this.publicKey, peerKey);
   }
 
-  async sendMessage({ to, text, replyTo, attachment, ttl }) {
+  async sendMessage({ to, text, replyTo, attachment, ttl, sendAt }) {
     if (!this.secretKey) throw new Error('Vault is locked');
     to = bareUsername(to);
     const peerKey = await this.ensurePeerKey(to);
@@ -691,8 +707,19 @@ class SleePhyClient {
 
     const res = await this.request({
       t: 'send', to, box, nonce, replyTo: replyTo || undefined,
-      attachment: encAttachment || undefined, ttl: ttl || undefined
+      attachment: encAttachment || undefined, ttl: ttl || undefined,
+      sendAt: sendAt || undefined
     });
+    // A message held for later is not delivered yet; the caller shows it in the
+    // scheduled list instead of the transcript.
+    if (res.scheduled) {
+      return {
+        id: res.id, ts: res.ts, to, text: caption, replyTo: res.replyTo || null,
+        mine: true, kind: res.kind || null, expiresAt: res.expiresAt || null,
+        sendAt: res.sendAt || null, scheduled: true,
+        attachment: encAttachment ? { ...encAttachment, dataUrl: null } : null
+      };
+    }
     // The relay reports the pair's flame on every send, so the sender's header
     // updates without a second round trip.
     if (res.streak) this.emit({ type: 'dialog.streak', peer: to, from: this.username, count: res.streak.count, active: !!res.streak.active });
@@ -701,6 +728,45 @@ class SleePhyClient {
       mine: true, kind: res.kind || null, expiresAt: res.expiresAt || null,
       attachment: encAttachment ? { ...encAttachment, dataUrl: null } : null
     };
+  }
+
+  /**
+   * The messages this account scheduled but has not sent yet. Each is decrypted
+   * here, like history, so the renderer only ever sees plaintext it can show.
+   */
+  async listScheduled() {
+    if (!this.secretKey) throw new Error('Vault is locked');
+    const res = await this.request({ t: 'scheduled.list' });
+    const items = [];
+    for (const m of res.items || []) {
+      const peerKey = await this.ensurePeerKey(m.to);
+      let text = '';
+      if (m.box) {
+        try { text = await cryptoLib.decryptMessage(m.box, m.nonce, peerKey, this.secretKey); }
+        catch { text = '⚠ Message could not be decrypted'; }
+      }
+      items.push({
+        id: m.id, to: m.to, text, ts: m.ts, sendAt: m.sendAt,
+        replyTo: m.replyTo || null, kind: m.kind || null,
+        attachment: m.attachment || null, expiresAt: m.expiresAt || null
+      });
+    }
+    return items;
+  }
+
+  async cancelScheduled({ id }) {
+    const res = await this.request({ t: 'scheduled.cancel', id });
+    return res.id;
+  }
+
+  async rescheduleScheduled({ id, sendAt }) {
+    const res = await this.request({ t: 'scheduled.reschedule', id, sendAt });
+    return res.sendAt;
+  }
+
+  async sendScheduledNow({ id }) {
+    const res = await this.request({ t: 'scheduled.sendNow', id });
+    return res.id;
   }
 
   async editMessage({ id, to, text }) {

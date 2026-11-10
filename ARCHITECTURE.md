@@ -102,8 +102,13 @@ Client -> server
 - `{t:'profile.set', displayName?, bio?, avatarColor?}` -> `{t:'profile.saved', profile}`
 - `{t:'profile.username', username}` -> `{t:'username.changed', username, profile}`
 - `{t:'users.search', query}` -> `{t:'users', items:[...]}`
-- `{t:'send', to, box, nonce, replyTo?}` -> `{t:'sent', id, ts, to, replyTo}`
+- `{t:'send', to, box, nonce, replyTo?, sendAt?}` -> `{t:'sent', id, ts, to, replyTo, scheduled?, sendAt?}`
+  (a future `sendAt` holds the ciphertext; the message is released when the time comes)
 - `{t:'history', with, limit}` -> `{t:'history', items:[...]}`
+- `{t:'scheduled.list'}` -> `{t:'scheduled', items:[{id, to, box, nonce, ts, sendAt, ...}]}`
+- `{t:'scheduled.cancel', id}` -> `{t:'scheduled.cancelled', id}`
+- `{t:'scheduled.reschedule', id, sendAt}` -> `{t:'scheduled.rescheduled', id, sendAt}`
+- `{t:'scheduled.sendNow', id}` -> `{t:'scheduled.sent', id}`
 - `{t:'message.edit', id, box, nonce}` -> `{t:'edited', id, editedAt}`
 - `{t:'message.delete', id}` -> `{t:'deleted', id}`
 - `{t:'reaction', id, emoji}` -> `{t:'reactions', id, reactions:[...]}` (empty emoji clears)
@@ -123,3 +128,7 @@ Server -> client (unsolicited)
 - `{t:'typing', from, state}`
 - `{t:'presence', username, online}`
 - `{t:'profile', username, profile}`
+- `{t:'scheduled.new', item}` (this account's other device scheduled a message)
+- `{t:'scheduled.released', id, to}` (a held message went out; the `message` frame follows)
+- `{t:'scheduled.cancelled', id}`
+- `{t:'scheduled.rescheduled', id, sendAt}`

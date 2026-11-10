@@ -1023,6 +1023,16 @@ const els = {
   ttlBackdrop: $('ttl-backdrop'),
   ttlOptions: $('ttl-options'),
   btnTtlClose: $('btn-ttl-close'),
+  schedBackdrop: $('sched-backdrop'),
+  schedList: $('sched-list'),
+  schedEmpty: $('sched-empty'),
+  btnSchedClose: $('btn-sched-close'),
+  scheduleBackdrop: $('schedule-backdrop'),
+  scheduleOptions: $('schedule-options'),
+  btnScheduleClose: $('btn-schedule-close'),
+  scheduleDatetime: $('schedule-datetime'),
+  btnScheduleCustom: $('btn-schedule-custom'),
+  drawerScheduledCount: $('drawer-scheduled-count'),
   menuPinLabel: $('menu-pin-label'),
   menuMuteLabel: $('menu-mute-label'),
   menuArchiveLabel: $('menu-archive-label'),
@@ -1200,6 +1210,8 @@ const state = {
   drafts: {}, // peerKey -> unsent composer text, mirrored into account settings
   draftSaveTimer: null, // coalesces keystrokes into one settings write
   verifiedPeers: {}, // username -> true when the safety number was checked, mirrored into settings
+  scheduled: [], // messages the account scheduled but has not sent yet
+  schedulePending: null, // { to, text, replyTo, ttl } awaiting a send time
   folders: [], // chat folders ("папки"), mirrored into account settings
   activeFolder: 'all', // id of the selected folder tab
   searchFilter: { query: '', from: 'any', kind: 'any', date: 'any' }, // in-chat search
@@ -1672,6 +1684,7 @@ function resetToAuth() {
   state.drafts = {};
   state.folders = [];
   state.activeFolder = 'all';
+  state.schedulePending = null;
   els.chatList.innerHTML = '';
   els.archivedList.innerHTML = '';
   els.chatBlank.hidden = false;
@@ -1694,6 +1707,8 @@ async function enterMain(username) {
   state.dialogStreaks.clear();
   state.stories = [];
   state.storiesSeen.clear();
+  state.scheduled = [];
+  setScheduledBadge();
   state.storyGroup = null;
   state.storyIndex = 0;
   if (els.storiesBar) els.storiesBar.hidden = true;
@@ -1705,7 +1720,7 @@ async function enterMain(username) {
     if (els.drawerVer) els.drawerVer.textContent = label;
   }).catch(() => {});
   showScreen('main');
-  await Promise.all([loadChats(), loadGroups(), loadChannels(), loadContacts(), loadStreak(), loadDrafts(), loadFolders(), loadStories(), loadVerifiedPeers()]);
+  await Promise.all([loadChats(), loadGroups(), loadChannels(), loadContacts(), loadStreak(), loadDrafts(), loadFolders(), loadStories(), loadVerifiedPeers(), refreshScheduled()]);
   renderStoriesBar();
   renderChatList();
 }
@@ -3135,6 +3150,154 @@ function openTtlPicker(key) {
 els.btnTtlClose.addEventListener('click', () => { els.ttlBackdrop.hidden = true; });
 els.ttlBackdrop.addEventListener('click', (e) => {
   if (e.target === els.ttlBackdrop) els.ttlBackdrop.hidden = true;
+});
+
+/* --------------------------- scheduled messages --------------------------- */
+
+// Quick choices for "send later", in minutes from now. 0 is not offered: a
+// scheduled message must land in the future.
+const SCHEDULE_QUICK = [60, 3 * 60, 8 * 60, 24 * 60, 7 * 24 * 60];
+
+/** A short, human label for a future instant, e.g. "через 3 ч" or a date. */
+function scheduleWhenLabel(ms) {
+  const delta = ms - Date.now();
+  if (delta < 0) return i18n.t('сейчас');
+  if (delta < 3600000) return `${i18n.t('через')} ${Math.max(1, Math.round(delta / 60000))} ${i18n.t('мин')}`;
+  if (delta < 86400000) return `${i18n.t('через')} ${Math.round(delta / 3600000)} ${i18n.t('ч')}`;
+  if (delta < 7 * 86400000) return `${i18n.t('через')} ${Math.round(delta / 86400000)} ${i18n.t('дн.')}`;
+  return new Date(ms).toLocaleString([], { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+/** A one-line preview of a scheduled message, so the list reads like a chat. */
+function schedulePreview(item) {
+  if (item.attachment) {
+    const k = item.attachment.kind;
+    return k === 'image' ? i18n.t('Фото') : k === 'voice' ? i18n.t('Голосовое сообщение') : i18n.t('Файл');
+  }
+  return item.text || i18n.t('Сообщение');
+}
+
+function setScheduledBadge() {
+  const n = state.scheduled.length;
+  if (!els.drawerScheduledCount) return;
+  els.drawerScheduledCount.hidden = !n;
+  els.drawerScheduledCount.textContent = String(n);
+}
+
+async function refreshScheduled() {
+  try {
+    state.scheduled = await api.listScheduled();
+  } catch {
+    state.scheduled = [];
+  }
+  setScheduledBadge();
+}
+
+function renderScheduledList() {
+  els.schedList.innerHTML = '';
+  els.schedEmpty.hidden = state.scheduled.length > 0;
+  for (const item of state.scheduled) {
+    const row = document.createElement('div');
+    row.className = 'sched-item';
+    row.innerHTML = `
+      <div class="sched-head">
+        <span class="sched-peer">${escapeHtml(displayNameFor(item.to))}</span>
+        <span class="sched-when">${escapeHtml(scheduleWhenLabel(item.sendAt))}</span>
+      </div>
+      <div class="sched-text">${escapeHtml(schedulePreview(item))}</div>
+      <div class="sched-actions">
+        <button class="menu-item" data-sched="now">${icon('i-send')}<span>${i18n.t('Сейчас')}</span></button>
+        <button class="menu-item danger" data-sched="cancel">${icon('i-trash')}<span>${i18n.t('Отменить')}</span></button>
+      </div>`;
+    row.querySelector('[data-sched="now"]').addEventListener('click', () => sendScheduledNow(item));
+    row.querySelector('[data-sched="cancel"]').addEventListener('click', () => cancelScheduled(item));
+    els.schedList.appendChild(row);
+  }
+}
+
+async function openScheduled() {
+  await refreshScheduled();
+  renderScheduledList();
+  els.schedBackdrop.hidden = false;
+}
+
+async function cancelScheduled(item) {
+  try {
+    await api.cancelScheduled(item.id);
+    state.scheduled = state.scheduled.filter((x) => x.id !== item.id);
+    setScheduledBadge();
+    renderScheduledList();
+    toast(i18n.t('Отложенное сообщение отменено'));
+  } catch (err) {
+    toast(err.message || i18n.t('Не удалось отменить'));
+  }
+}
+
+async function sendScheduledNow(item) {
+  try {
+    await api.sendScheduledNow(item.id);
+    state.scheduled = state.scheduled.filter((x) => x.id !== item.id);
+    setScheduledBadge();
+    renderScheduledList();
+    toast(i18n.t('Сообщение отправлено'));
+  } catch (err) {
+    toast(err.message || i18n.t('Не удалось отправить'));
+  }
+}
+
+/** Ask for a send time, then hand the pending message to the relay. */
+function openSchedulePicker(pending) {
+  state.schedulePending = pending;
+  els.scheduleOptions.innerHTML = '';
+  for (const minutes of SCHEDULE_QUICK) {
+    const when = Date.now() + minutes * 60000;
+    const b = document.createElement('button');
+    b.className = 'menu-item';
+    b.innerHTML = `<span>${escapeHtml(scheduleWhenLabel(when))}</span>`;
+    b.addEventListener('click', () => commitSchedule(when));
+    els.scheduleOptions.appendChild(b);
+  }
+  els.scheduleDatetime.value = '';
+  els.scheduleBackdrop.hidden = false;
+}
+
+async function commitSchedule(sendAt) {
+  const pending = state.schedulePending;
+  els.scheduleBackdrop.hidden = true;
+  if (!pending) return;
+  state.schedulePending = null;
+  if (!Number.isFinite(sendAt) || sendAt <= Date.now()) {
+    toast(i18n.t('Выберите время в будущем'));
+    return;
+  }
+  try {
+    const res = await api.send({
+      to: pending.to, text: pending.text, replyTo: pending.replyTo,
+      attachment: pending.attachment, ttl: pending.ttl, sendAt
+    });
+    await refreshScheduled();
+    toast(`${i18n.t('Отправлю')} ${scheduleWhenLabel(res.sendAt || sendAt)}`);
+  } catch (err) {
+    toast(err.message || i18n.t('Не удалось запланировать'));
+  }
+}
+
+els.btnSchedClose.addEventListener('click', () => { els.schedBackdrop.hidden = true; });
+els.schedBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.schedBackdrop) els.schedBackdrop.hidden = true;
+});
+els.btnScheduleClose.addEventListener('click', () => {
+  els.scheduleBackdrop.hidden = true;
+  state.schedulePending = null;
+});
+els.scheduleBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.scheduleBackdrop) { els.scheduleBackdrop.hidden = true; state.schedulePending = null; }
+});
+els.btnScheduleCustom.addEventListener('click', () => {
+  const value = els.scheduleDatetime.value;
+  if (!value) { toast(i18n.t('Выберите дату и время')); return; }
+  const ts = new Date(value).getTime();
+  commitSchedule(ts);
 });
 
 /* ------------------------------- profile ------------------------------- */
@@ -5008,6 +5171,43 @@ api.onEvent((evt) => {
       break;
     }
 
+    case 'scheduled.new': {
+      // Another one of this account's devices scheduled a message; keep the
+      // shared list in step without a reload.
+      const item = evt.item;
+      if (item && !state.scheduled.some((x) => x.id === item.id)) {
+        state.scheduled.push({ ...item, text: '' });
+        state.scheduled.sort((a, b) => a.sendAt - b.sendAt);
+        setScheduledBadge();
+        if (!els.schedBackdrop.hidden) renderScheduledList();
+      }
+      break;
+    }
+
+    case 'scheduled.released': {
+      // A scheduled message left the queue and became a real message. The
+      // `message` frame that follows will add the bubble itself.
+      state.scheduled = state.scheduled.filter((x) => x.id !== evt.id);
+      setScheduledBadge();
+      if (!els.schedBackdrop.hidden) renderScheduledList();
+      break;
+    }
+
+    case 'scheduled.cancelled': {
+      state.scheduled = state.scheduled.filter((x) => x.id !== evt.id);
+      setScheduledBadge();
+      if (!els.schedBackdrop.hidden) renderScheduledList();
+      break;
+    }
+
+    case 'scheduled.rescheduled': {
+      const item = state.scheduled.find((x) => x.id === evt.id);
+      if (item) item.sendAt = evt.sendAt;
+      state.scheduled.sort((a, b) => a.sendAt - b.sendAt);
+      if (!els.schedBackdrop.hidden) renderScheduledList();
+      break;
+    }
+
     case 'deleted': {
       for (const [key, chat] of state.chats) {
         const m = chat.messages.find((x) => x.id === evt.id);
@@ -5591,9 +5791,28 @@ els.attachMenu.addEventListener('click', async (e) => {
   els.attachBackdrop.hidden = true;
   if (kind === 'gift') { openGifts(); return; }
   if (kind === 'poll') { openPollComposer(); return; }
+  if (kind === 'schedule') { startScheduling(); return; }
   const file = await pickFile(kind === 'image' ? 'image/*' : undefined);
   if (file) await attachFile(kind === 'image' ? 'image' : 'file', file);
 });
+
+/** Open the "send later" picker for what is currently in the composer. */
+function startScheduling() {
+  const key = state.activePeer;
+  if (!key) { toast(i18n.t('Откройте чат, чтобы отложить сообщение')); return; }
+  if (isMultiKey(key) || isBotKey(key)) {
+    toast(i18n.t('Отложенная отправка доступна в личных чатах'));
+    return;
+  }
+  const text = els.composerInput.value.trim();
+  if (!text) { toast(i18n.t('Сначала напишите сообщение')); return; }
+  const replyTo = state.replyTo;
+  openSchedulePicker({
+    to: peerUsername(key), text,
+    replyTo: replyTo ? replyTo.id : undefined,
+    ttl: (activeChat().ttl || undefined)
+  });
+}
 
 /* ---------------------------- voice notes ---------------------------- */
 els.btnVoice.addEventListener('click', async () => {
@@ -6081,6 +6300,7 @@ els.drawer.addEventListener('click', (e) => {
   else if (action === 'contacts') openContacts();
   else if (action === 'bots') openBots();
   else if (action === 'saved') startChatWith(state.username);
+  else if (action === 'scheduled') openScheduled();
   else if (action === 'folders') openFolders();
   else if (action === 'settings') els.btnSettings.click();
   else if (action === 'new-chat') { els.search.value = ''; els.btnSearchClear.hidden = true; els.search.focus(); }

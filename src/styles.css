@@ -1002,6 +1002,22 @@ body.theme-light ::-webkit-scrollbar-thumb { background: #C4CEDA; }
 .ttl-options .menu-item.active { color: var(--accent); font-weight: 700; }
 .ttl-options .ttl-check { display: inline-flex; color: var(--accent); }
 
+/* Scheduled messages: the picker reuses the timer modal, plus a free-form time. */
+.schedule-custom { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.schedule-custom label { font-size: 12px; color: var(--text-dim); font-weight: 600; }
+.schedule-datetime {
+  width: 100%; padding: 9px 11px; border-radius: 10px; font: inherit;
+  background: var(--bg-3); color: var(--text); border: 1px solid var(--border);
+}
+.sched-item { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 10px; background: var(--bg-3); }
+.sched-item + .sched-item { margin-top: 6px; }
+.sched-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.sched-peer { font-weight: 600; }
+.sched-when { font-size: 12px; color: var(--accent); font-weight: 600; }
+.sched-text { font-size: 13px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sched-actions { display: flex; gap: 6px; margin-top: 6px; }
+.sched-actions .menu-item { flex: 1; justify-content: center; padding: 6px 8px; font-size: 12px; }
+
 /* Key verification: a monospace safety number both sides can read aloud. */
 .safety-block { margin-top: 14px; padding: 12px 14px; border-radius: 12px; background: var(--bg-3); }
 .safety-head { display: flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 12px; font-weight: 600; }

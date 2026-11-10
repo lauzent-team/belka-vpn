@@ -1426,6 +1426,106 @@ const PAIRS = [
   [
     "сейчас",
     "now"
+  ],
+  [
+    "Отложенные сообщения",
+    "Scheduled messages"
+  ],
+  [
+    "Отложенные",
+    "Scheduled"
+  ],
+  [
+    "Нет отложенных сообщений.",
+    "No scheduled messages."
+  ],
+  [
+    "Отправить позже",
+    "Send later"
+  ],
+  [
+    "Сообщение будет отправлено автоматически в выбранное время.",
+    "The message will be sent automatically at the time you choose."
+  ],
+  [
+    "Своё время",
+    "Custom time"
+  ],
+  [
+    "Запланировать",
+    "Schedule"
+  ],
+  [
+    "Сейчас",
+    "Now"
+  ],
+  [
+    "Отменить",
+    "Cancel"
+  ],
+  [
+    "через",
+    "in"
+  ],
+  [
+    "Фото",
+    "Photo"
+  ],
+  [
+    "Файл",
+    "File"
+  ],
+  [
+    "Голосовое сообщение",
+    "Voice message"
+  ],
+  [
+    "Сообщение",
+    "Message"
+  ],
+  [
+    "Отложенное сообщение отменено",
+    "Scheduled message cancelled"
+  ],
+  [
+    "Сообщение отправлено",
+    "Message sent"
+  ],
+  [
+    "Не удалось отменить",
+    "Could not cancel"
+  ],
+  [
+    "Не удалось отправить",
+    "Could not send"
+  ],
+  [
+    "Не удалось запланировать",
+    "Could not schedule"
+  ],
+  [
+    "Отправлю",
+    "Sending"
+  ],
+  [
+    "Выберите время в будущем",
+    "Choose a time in the future"
+  ],
+  [
+    "Выберите дату и время",
+    "Choose a date and time"
+  ],
+  [
+    "Откройте чат, чтобы отложить сообщение",
+    "Open a chat to schedule a message"
+  ],
+  [
+    "Отложенная отправка доступна в личных чатах",
+    "Scheduling is available in private chats"
+  ],
+  [
+    "Сначала напишите сообщение",
+    "Write a message first"
   ]
 ];
 
