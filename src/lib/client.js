@@ -1094,8 +1094,10 @@ class SleePhyClient {
     return res.items || [];
   }
 
-  async adminAction({ action, username, text, image, channelId }) {
-    const res = await this.request({ t: 'admin.action', action, username, text, image, channelId });
+  async adminAction({ action, username, text, image, channelId, nickname, index }) {
+    const res = await this.request({
+      t: 'admin.action', action, username, text, image, channelId, nickname, index
+    });
     return { action: res.action, username: res.username, channelId: res.channelId };
   }
 
@@ -1171,14 +1173,15 @@ class SleePhyClient {
     return { count: res.count || 0, active: !!res.active };
   }
 
-  async saveProfile({ displayName, bio, avatarColor, avatarImage, socials }) {
+  async saveProfile({ displayName, bio, avatarColor, avatarImage, socials, nicknames }) {
     const res = await this.request({
       t: 'profile.set',
       displayName: displayName === undefined ? undefined : displayName,
       bio: bio === undefined ? undefined : bio,
       avatarColor,
       avatarImage: avatarImage === undefined ? undefined : avatarImage,
-      socials: socials === undefined ? undefined : socials
+      socials: socials === undefined ? undefined : socials,
+      nicknames: nicknames === undefined ? undefined : nicknames
     });
     this.profile = res.profile;
     return res.profile;

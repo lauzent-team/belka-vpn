@@ -25,6 +25,7 @@ node test/peer-badges.js # a peer's checkmark and picture survive re-entry
 node test/streaks.js  # the "огонёк": days active in a row, extend, reset, rename
 node test/downloads.js # the relay serves the download page and the installer
 node test/handles.js # @-usernames and channel @handles
+node test/nicknames.js # nicknames: owner privilege, admin edit, cap, privacy
 xvfb-run -a node test/ui.js            # UI tests driving the real Electron app
 xvfb-run -a node test/ui-features.js   # the newer UI features, clicked for real
 xvfb-run -a node test/ui-drawer.js     # drawer, settings, contacts, groups, accounts
@@ -32,6 +33,7 @@ xvfb-run -a node test/ui-menu.js       # menu bar hidden, editing shortcuts inta
 xvfb-run -a node test/ui-session.js    # reopen the app: no sign-in screen, photo kept
 xvfb-run -a node test/ui-peer-badges.js # a peer's badge and picture survive a re-entry
 xvfb-run -a node test/ui-streak.js     # the flame chip and the profile streak line
+xvfb-run -a node test/ui-nicknames.js  # the profile nickname editor and the admin popup
 xvfb-run -a node test/connection.js    # connection and error handling
 xvfb-run -a node test/shots.js         # regenerate shots/*.png
 ```
@@ -396,3 +398,65 @@ arriving now can change a header that is already on screen.
   the network against `SOCIAL_NETWORKS` and requires an `http(s)` URL, so a
   `javascript:`/`data:` link cannot be stored. The client validates again before
   rendering, because it must not trust stored data to build an `href`.
+
+## Nicknames (v0.9.0)
+
+- **Nicknames are extra display names under a profile name**, stored as a JSON
+  array in `users.nicknames` and returned by `publicProfile` as `nicknames`.
+  Like `socials`, they are cleared when a hidden profile is viewed by someone
+  else, so a new profile call site must go through `publicProfile`.
+- **The privilege is asymmetric and enforced on the relay.** Only the owner
+  account (the first name in `SLEEPHY_ADMINS`, overridable with `SLEEPHY_OWNER`)
+  may hold an unbounded list and set it from its own profile form; every other
+  account is capped at `MAX_NICKNAMES` (3) and is edited only by an
+  administrator. `nicknameLimit(username)` is the single source of that rule.
+- **`cleanNicknames` validates the list for the target, not the actor**, so an
+  admin cannot hand a normal account an unbounded list. `cleanNickname` checks a
+  single entry strictly — `cleanText` truncates silently and must not be used
+  where the client relies on a length error.
+- **`publicProfile` carries two permission hints**: `owner` (only to the owner's
+  own devices) turns on the profile-form editor, and `canEditNicknames` (to any
+  admin viewer) turns on the hover popup in the admin list. The relay decides;
+  the client only reflects.
+- **The admin popup is a floating `.nick-pop`** anchored under the `@handle`;
+  it stays open while hovered and closes a beat after the pointer leaves, so a
+  click inside is possible. It calls the `nicknameAdd` / `nicknameSet` /
+  `nicknameRemove` admin actions.
+
+## Games, bots and gifts (v0.9.0)
+
+- **Games live in `src/lib/games.js`** (`window.SleePhyGames`), a pure library
+  with a `byId` registry. Each game exposes `create`, `moves`, `apply`,
+  `result`, `bot`, `encode`, `decode`; the renderer owns only the DOM. Unit
+  tests are `test/games.js`, and the game logic must stay DOM-free so those
+  tests keep running under plain `node`.
+- **A game is one evolving object on the chat (`chat.game`), not one message per
+  move.** `renderMessagesNow` skips payload messages (`gamePayloadOf`) and
+  `renderGameBoardInto` appends a single `.game-msg` board pinned at the end.
+  `appendMessageEl` must re-append that board after a new message, or the board
+  ends up above the newest bubble.
+- **A move is the whole position, encoded** (`{g, s, seat, status}`), sent as an
+  ordinary encrypted message, so the relay stays blind and a replayed or
+  reordered message cannot desync the game. `applyPeerGame` adopts it and flips
+  the seat.
+- **Game-driven renders use `renderMessagesImmediate`.** The coalesced
+  `renderMessages` waits on `requestAnimationFrame`, which is throttled in a
+  backgrounded window, so a peer that is not focused would not repaint its board
+  until focused.
+- **Beware shadowing the module-level `state`.** `applyPeerGame` once declared
+  `let state` for the decoded position, which made `state.activePeer` undefined
+  and silently skipped the repaint. Decoded positions are named `position`.
+- **A tic-tac-toe move is a cell index and cell `0` is falsy**, so
+  `gameMoveEquals` compares with `== null`, not `!a`. Any guard on a move value
+  must not use truthiness.
+- **Bots are local pseudo-peers** (like Saved Messages): no relay traffic, their
+  transcript lives only in `state.chats`. `botReply` answers plain text, and the
+  minigames bot starts a game on its own chat.
+- **Gifts ride as ordinary encrypted messages** (`giftPayloadOf` /
+  `.gift-bubble`), so the server needs no change; `previewOf` shows
+  `Подарок: <name>` in the chat list.
+- **The bots/games/gifts UI test is `test/ui-bots-games.js`**, run with
+  `xvfb-run -a node test/ui-bots-games.js`. It opens two windows and checks a
+  game invite and a gift over the real relay. Electron UI tests need
+  `xvfb-run`; a test that launches a window without it fails on `Missing X
+  server or $DISPLAY`.

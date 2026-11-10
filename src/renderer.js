@@ -10,6 +10,555 @@ const api = window.sleephy;
 const AVATAR_COLORS = ['mint', 'sky', 'violet', 'amber', 'rose', 'lime', 'cyan', 'coral'];
 const SAVED = 'saved'; // pseudo-peer for Saved Messages (really "your own username")
 
+/* ------------------------------- bots --------------------------------- */
+// Bots are local pseudo-peers, like Saved Messages: there is no account behind
+// them and the relay never hears of them. A bot reply is produced on this
+// device, so a bot conversation stays as private as the device itself. Games
+// between two real people are different — those moves travel as ordinary
+// end-to-end encrypted messages (see `game.*` below), so the relay stays blind.
+const GAMES = (typeof window !== 'undefined' && window.SleePhyGames) || null;
+const POLLS = (typeof window !== 'undefined' && window.SleePhyPolls) || null;
+const FOLDERS = (typeof window !== 'undefined' && window.SleePhyFolders) || null;
+
+const BOT_MINIGAMES = 'minigames';
+const BOT_STICKERS = 'stickers';
+const BOTS = new Map([
+  [BOT_MINIGAMES, {
+    id: BOT_MINIGAMES,
+    username: BOT_MINIGAMES,
+    title: 'Мини-игры',
+    subtitle: 'Играйте с ботом или с собеседником',
+    color: 'violet',
+    greeting: 'Привет! Выберите игру: крестики-нолики, шашки, шахматы или морской бой. Можно сыграть с ботом или отправить вызов собеседнику.'
+  }],
+  [BOT_STICKERS, {
+    id: BOT_STICKERS,
+    username: BOT_STICKERS,
+    title: 'Стикеры',
+    subtitle: 'Пак стикеров SleePhy',
+    color: 'amber',
+    greeting: 'Держите стикеры! Нажмите на смайлик, чтобы отправить его в чат.'
+  }]
+]);
+
+function botKey(id) { return `bot:${id}`; }
+function isBotKey(key) { return typeof key === 'string' && key.startsWith('bot:'); }
+function botIdOf(key) { return String(key).slice('bot:'.length); }
+function botFor(key) { return BOTS.get(botIdOf(key)) || null; }
+/** A message written by a bot shows on the left, like an incoming message. */
+function isBot(username) { return BOTS.has(username); }
+
+/* ---------------------------- games / bots ---------------------------- */
+// A game is stored on the chat as `chat.game`. Against a bot the whole game
+// lives here; against a person the same object is mirrored from the encrypted
+// `game.*` messages that travel over the relay (see the event handler).
+//
+//   { id, state, seat, opponent, level, started, lastMove, status }
+//
+// `seat` is this device's side (0 or 1). `opponent` is 'bot' or a username.
+
+const GAME_ICONS = {
+  tictactoe: 'i-game-ttt',
+  checkers: 'i-game-checkers',
+  chess: 'i-game-chess',
+  battleship: 'i-game-ships'
+};
+
+/** A short, stable signature of a position, to ignore duplicate/echoed moves. */
+function gameSignature(game) {
+  if (!game || !game.state) return '';
+  return GAMES ? GAMES.encode(game.id, game.state) : JSON.stringify(game.state);
+}
+
+function gameResult(game) {
+  if (!GAMES || !game) return null;
+  const g = GAMES.byId(game.id);
+  return g ? g.result(game.state) : null;
+}
+
+/** Whose turn it is, and whether this device may move right now. */
+function gameIsMyTurn(game) {
+  return !!game && game.state.turn === game.seat;
+}
+
+function gameStatusText(game) {
+  const g = GAMES && GAMES.byId(game.id);
+  if (!g) return '';
+  const res = g.result(game.state);
+  if (res) {
+    if (res.winner === -1) return 'Ничья';
+    return res.winner === game.seat ? 'Вы победили' : 'Вы проиграли';
+  }
+  if (game.opponent === 'bot') {
+    return game.state.turn === game.seat ? 'Ваш ход' : 'Ход бота…';
+  }
+  return game.state.turn === game.seat ? 'Ваш ход' : 'Ход соперника…';
+}
+
+/* ------------------------- bot chat bootstrap ------------------------- */
+// The bot chat is created the first time it is opened and its transcript lives
+// only on this device (it is never sent anywhere). It reuses the normal chat
+// map, so the list, search and unread logic all work unchanged.
+
+function openBotChat(id) {
+  const key = botKey(id);
+  const bot = BOTS.get(id);
+  if (!bot) return;
+  const chat = ensureChat(key);
+  if (!chat.loaded) {
+    chat.messages = [{
+      id: 'bot-hello', text: bot.greeting, ts: Date.now(), mine: false, reactions: []
+    }];
+    chat.last = bot.greeting;
+    chat.lastTs = chat.messages[0].ts;
+    chat.loaded = true;
+  }
+  renderChatList();
+  openChat(key);
+}
+
+/** Append a message to a chat as if it came from the bot, then repaint. */
+function pushBotMessage(key, text, extra) {
+  const chat = ensureChat(key);
+  const m = Object.assign({
+    id: 'bot-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+    text, ts: Date.now(), mine: false, reactions: []
+  }, extra || {});
+  chat.messages.push(m);
+  chat.last = m.kind ? (m.kind === 'image' ? 'Фото' : m.kind) : text;
+  chat.lastTs = m.ts;
+  if (state.activePeer === key) renderMessages();
+  renderChatList();
+  return m;
+}
+
+/** Answer a plain text message sent to a bot. */
+function botReply(key, text, chat) {
+  const id = botIdOf(key);
+  const lower = String(text).toLowerCase();
+  if (id === BOT_MINIGAMES) {
+    const game = GAMES && GAMES.GAMES.find((g) => lower.includes(g.id) || lower.includes(g.name.toLowerCase()));
+    if (game) {
+      // Ask for a game by name, e.g. "шахматы" or "chess".
+      setTimeout(() => {
+        if (state.activePeer === key) startGameWithBot(game.id);
+      }, 250);
+      return;
+    }
+    setTimeout(() => pushBotMessage(key,
+      'Напишите название игры — крестики-нолики, шашки, шахматы или морской бой — или откройте панель «Игры» под полем ввода.'), 300);
+    return;
+  }
+  if (id === BOT_STICKERS) {
+    setTimeout(() => pushBotMessage(key,
+      'Откройте панель «Стикеры» под полем ввода и выберите любой — он отправится как изображение.'), 300);
+    return;
+  }
+  setTimeout(() => pushBotMessage(key, 'Понял!'), 300);
+}
+
+/* ---------------------------- game menu ---------------------------- */
+
+function buildGamePanel() {
+  els.gameGrid.innerHTML = '';
+  for (const game of (GAMES ? GAMES.GAMES : [])) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'game-card';
+    card.dataset.game = game.id;
+    card.innerHTML = `
+      <span class="game-card-ico">${icon(GAME_ICONS[game.id] || 'i-dice')}</span>
+      <span class="game-card-name">${escapeHtml(game.name)}</span>
+    `;
+    card.addEventListener('click', () => {
+      els.emojiPanel.hidden = true;
+      const key = state.activePeer;
+      if (isBotKey(key) && botIdOf(key) === BOT_MINIGAMES) startGameWithBot(game.id);
+      else startGameWithPeer(game.id);
+    });
+    els.gameGrid.appendChild(card);
+  }
+}
+
+/**
+ * Invite the person in the open chat to a game. The invite is an ordinary
+ * encrypted message carrying an empty position, so the relay stays blind and
+ * the peer's device adopts the game the moment it arrives.
+ */
+async function startGameWithPeer(gameId) {
+  const key = state.activePeer;
+  if (!key || isBotKey(key) || isGroupKey(key) || isChannelKey(key) || key === SAVED) {
+    toast('Откройте личный чат, чтобы пригласить в игру');
+    return;
+  }
+  const g = GAMES && GAMES.byId(gameId);
+  if (!g) return;
+  let st = g.create();
+  if (gameId === 'battleship') st = GAMES.setFleet(st, 0);
+  const chat = ensureChat(key);
+  chat.game = {
+    id: gameId, state: st, seat: 0, opponent: key,
+    started: Date.now(), lastMove: null, status: 'play', sel: null
+  };
+  renderMessagesImmediate();
+  renderChatList();
+  const payload = JSON.stringify({ g: gameId, s: GAMES.encode(gameId, st), seat: 0, status: 'play' });
+  try {
+    await api.send({ to: peerUsername(key), text: payload });
+    noteLocalSend();
+  } catch (err) {
+    toast(err.message || 'Не удалось отправить приглашение');
+  }
+}
+
+/** Begin (or restart) a game against the bot in the open bot chat. */
+function startGameWithBot(gameId) {
+  const key = state.activePeer;
+  if (!isBotKey(key) || botIdOf(key) !== BOT_MINIGAMES) return;
+  const g = GAMES && GAMES.byId(gameId);
+  if (!g) return;
+  let st = g.create();
+  // Battleship: place this device's fleet (seat 0 in a bot game).
+  if (gameId === 'battleship') st = GAMES.setFleet(st, 0);
+  const chat = ensureChat(key);
+  chat.game = {
+    id: gameId, state: st, seat: 0, opponent: 'bot', level: 2,
+    started: Date.now(), lastMove: null, status: 'play'
+  };
+  pushBotMessage(key, `Игра: ${g.name}. Вы играете первым.`);
+  renderMessagesImmediate();
+  // If the bot opens (never, seat 0 opens) keep the guard anyway.
+  maybeBotMove(chat.game);
+}
+
+/** Let the bot answer when it is its turn. */
+function maybeBotMove(game) {
+  if (!game || game.opponent !== 'bot' || game.status !== 'play') return;
+  if (game.state.turn === game.seat) return;
+  const g = GAMES.byId(game.id);
+  const move = g.bot(game.state, game.level);
+  if (move == null) return;
+  // A short pause so the reply feels like an opponent, not a local computation.
+  setTimeout(() => {
+    if (game.status !== 'play') return;
+    game.state = g.apply(game.state, move);
+    game.lastMove = { seat: 1 - game.seat, move };
+    const res = g.result(game.state);
+    if (res) game.status = 'done';
+    renderMessagesImmediate();
+    renderChatList();
+  }, 420);
+}
+
+/* --------------------------- playing a move --------------------------- */
+
+/** A click on the board: validate it, apply it, and hand over if needed. */
+function playMove(move) {
+  const key = state.activePeer;
+  const chat = state.chats.get(key);
+  const game = chat && chat.game;
+  if (!game || game.status !== 'play') return;
+  if (!gameIsMyTurn(game)) return;
+  const g = GAMES.byId(game.id);
+  const legal = g.moves(game.state);
+  const ok = legal.some((m) => gameMoveEquals(game.id, m, move));
+  if (!ok) return;
+
+  game.state = g.apply(game.state, move);
+  game.lastMove = { seat: game.seat, move };
+  const res = g.result(game.state);
+  if (res) game.status = 'done';
+  renderMessagesImmediate();
+  renderChatList();
+
+  if (game.status !== 'play') return;
+  if (game.opponent === 'bot') {
+    maybeBotMove(game);
+  } else {
+    // Send the whole position, encrypted, to the peer. The position is the
+    // source of truth, so a lost or reordered message cannot desync the game.
+    sendGameState(game);
+  }
+}
+
+function gameMoveEquals(id, a, b) {
+  // A tic-tac-toe move is a cell index, and cell 0 is falsy, so compare against
+  // null rather than truthiness.
+  if (a == null || b == null) return false;
+  if (id === 'tictactoe') return a === b;
+  if (id === 'battleship') return a[0] === b[0] && a[1] === b[1];
+  return JSON.stringify(a.from) === JSON.stringify(b.from) && JSON.stringify(a.to) === JSON.stringify(b.to)
+    && (a.promo || '') === (b.promo || '');
+}
+
+/** Send the current position to a peer as one encrypted message. */
+async function sendGameState(game) {
+  const key = state.activePeer;
+  if (!key || game.opponent === 'bot') return;
+  const payload = JSON.stringify({
+    g: game.id, s: GAMES.encode(game.id, game.state),
+    seat: game.seat, status: game.status
+  });
+  try {
+    await api.send({ to: peerUsername(key), text: payload });
+  } catch (err) {
+    toast(err.message || 'Не удалось отправить ход');
+  }
+}
+
+/* --------------------------- game rendering --------------------------- */
+
+/**
+ * Adopt a position that arrived from a peer. The payload carries the sender's
+ * seat, so the local seat is the other one. The payload is the whole position,
+ * not a delta, so the newest message always leaves both devices agreeing — a
+ * replayed or reordered message cannot desync the game.
+ */
+function applyPeerGame(chat, from, payload) {
+  const g = GAMES && GAMES.byId(payload.g);
+  if (!g) return;
+  const seat = payload.seat === 0 ? 1 : 0;
+  let position;
+  try { position = GAMES.decode(payload.g, payload.s); } catch { return; }
+  if (chat.game && gameSignature(chat.game) === payload.s) return;
+  chat.game = {
+    id: payload.g,
+    state: position,
+    seat,
+    opponent: from,
+    started: (chat.game && chat.game.started) || Date.now(),
+    lastMove: (chat.game && chat.game.lastMove) || null,
+    status: payload.status === 'done' ? 'done' : 'play',
+    sel: null
+  };
+  chat.last = `Игра: ${g.name}`;
+  chat.lastTs = Date.now();
+  if (state.activePeer === chat.key) renderMessagesImmediate();
+  renderChatList();
+}
+
+/** The game position carried by a message, or null for ordinary text. */
+function gamePayloadOf(m) {
+  if (!m || !m.text || m.text[0] !== '{') return null;
+  try {
+    const obj = JSON.parse(m.text);
+    if (obj && obj.g && typeof obj.s === 'string') return obj;
+  } catch { /* not a game payload */ }
+  return null;
+}
+
+function renderGameBoard(game) {
+  const g = GAMES && GAMES.byId(game.id);
+  if (!g) return '';
+  const wrap = document.createElement('div');
+  wrap.className = 'game-board';
+  const head = document.createElement('div');
+  head.className = 'game-board-head';
+  head.innerHTML = `<span class="game-board-title">${escapeHtml(g.name)}</span>
+    <span class="game-board-status">${escapeHtml(gameStatusText(game))}</span>`;
+  wrap.appendChild(head);
+
+  const canPlay = game.status === 'play' && gameIsMyTurn(game);
+  const body = game.id === 'tictactoe' ? tttBoard(game, canPlay)
+    : game.id === 'checkers' ? draughtsBoard(game, canPlay)
+      : game.id === 'chess' ? chessBoard(game, canPlay)
+        : battleshipBoards(game, canPlay);
+  wrap.appendChild(body);
+
+  const res = g.result(game.state);
+  if (game.status !== 'play' || res) {
+    const again = document.createElement('button');
+    again.type = 'button';
+    again.className = 'btn-secondary btn-compact';
+    again.textContent = 'Играть снова';
+    again.addEventListener('click', () => restartGame(game));
+    wrap.appendChild(again);
+  }
+  return wrap;
+}
+
+function restartGame(game) {
+  const g = GAMES.byId(game.id);
+  let st = g.create();
+  if (game.id === 'battleship') st = GAMES.setFleet(st, game.seat);
+  game.state = st;
+  game.status = 'play';
+  game.lastMove = null;
+  renderMessagesImmediate();
+  renderChatList();
+  if (game.opponent === 'bot') maybeBotMove(game);
+  else sendGameState(game);
+}
+
+function tttBoard(game, canPlay) {
+  const grid = document.createElement('div');
+  grid.className = 'ttt-grid';
+  const res = GAMES.byId('tictactoe').result(game.state);
+  const winLine = res && res.winner >= 0 ? tttWinLine(game.state.cells, res.winner) : [];
+  for (let i = 0; i < 9; i++) {
+    const cell = document.createElement('button');
+    cell.type = 'button';
+    cell.className = 'ttt-cell';
+    cell.dataset.cell = String(i);
+    const v = game.state.cells[i];
+    cell.textContent = v == null ? '' : (v === 0 ? '✕' : '◯');
+    if (v != null) cell.disabled = true;
+    if (winLine.includes(i)) cell.classList.add('win');
+    if (canPlay && v == null) cell.addEventListener('click', () => playMove(i));
+    grid.appendChild(cell);
+  }
+  return grid;
+}
+
+/** The three cells of the line that won, for highlighting. */
+function tttWinLine(cells, player) {
+  const lines = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]];
+  return lines.find(([a, b, c]) => cells[a] === player && cells[b] === player && cells[c] === player) || [];
+}
+
+function draughtsBoard(game, canPlay) {
+  const grid = document.createElement('div');
+  grid.className = 'checkers-grid';
+  const moves = canPlay ? GAMES.byId('checkers').moves(game.state) : [];
+  const targets = new Set(moves.map((m) => m.to.join(',')));
+  const last = game.lastMove && game.lastMove.move;
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = 'checkers-cell ' + ((r + c) % 2 === 0 ? 'light' : 'dark');
+      const v = game.state.board[r][c];
+      cell.textContent = v === 1 || v === 3 ? '●' : v === 2 || v === 4 ? '♛' : '';
+      if (v === 1 || v === 2) cell.style.color = '#e8eef6';
+      if (v === 3 || v === 4) cell.style.color = '#1a2530';
+      if (targets.has(r + ',' + c)) cell.classList.add('move');
+      if (last && JSON.stringify(last.from) === JSON.stringify([r, c])) cell.classList.add('last');
+      if (canPlay && v !== 0 && ((game.seat === 0 && (v === 1 || v === 2)) || (game.seat === 1 && (v === 3 || v === 4)))) {
+        cell.addEventListener('click', () => selectDraughts(game, [r, c]));
+      }
+      grid.appendChild(cell);
+    }
+  }
+  return grid;
+}
+
+// Draughts needs two clicks (from, then to). The first click records the piece
+// on the game object so the next paint can highlight its destinations.
+function selectDraughts(game, from) {
+  game.sel = from;
+  const moves = GAMES.byId('checkers').moves(game.state)
+    .filter((m) => m.from[0] === from[0] && m.from[1] === from[1]);
+  if (moves.length === 1 && moves[0].captures && moves[0].captures.length > 0) {
+    playMove(moves[0]);
+    return;
+  }
+  renderMessagesImmediate();
+}
+
+function chessBoard(game, canPlay) {
+  const grid = document.createElement('div');
+  grid.className = 'chess-grid';
+  const moves = canPlay ? GAMES.byId('chess').moves(game.state) : [];
+  const from = game.sel;
+  const targets = new Set(moves.filter((m) => from && m.from[0] === from[0] && m.from[1] === from[1]).map((m) => m.to.join(',')));
+  const GLYPH = {
+    K: '♔', Q: '♕', R: '♖', B: '♗', N: '♘', P: '♙',
+    k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟'
+  };
+  const last = game.lastMove && game.lastMove.move;
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = 'chess-cell ' + ((r + c) % 2 === 0 ? 'light' : 'dark');
+      const p = game.state.board[r][c];
+      cell.textContent = p ? GLYPH[p] || '' : '';
+      if (p && p === p.toUpperCase()) cell.style.color = '#f1f5f9';
+      if (p && p === p.toLowerCase()) cell.style.color = '#101a23';
+      if (from && from[0] === r && from[1] === c) cell.classList.add('sel');
+      if (targets.has(r + ',' + c)) cell.classList.add('move');
+      if (last && JSON.stringify(last.to) === JSON.stringify([r, c])) cell.classList.add('last');
+      if (canPlay) cell.addEventListener('click', () => clickChess(game, [r, c]));
+      grid.appendChild(cell);
+    }
+  }
+  return grid;
+}
+
+function clickChess(game, square) {
+  const moves = GAMES.byId('chess').moves(game.state);
+  const from = game.sel;
+  if (from) {
+    const candidates = moves.filter((m) => m.from[0] === from[0] && m.from[1] === from[1]
+      && m.to[0] === square[0] && m.to[1] === square[1]);
+    if (candidates.length === 1) { playMove(candidates[0]); game.sel = null; return; }
+    if (candidates.length > 1) {
+      // Promotion: default to a queen, the near-universal choice.
+      playMove(candidates.find((m) => m.promo === 'q') || candidates[0]);
+      game.sel = null;
+      return;
+    }
+  }
+  const mine = moves.some((m) => m.from[0] === square[0] && m.from[1] === square[1]);
+  game.sel = mine ? square : null;
+  renderMessagesImmediate();
+}
+
+function battleshipBoards(game, canPlay) {
+  const wrap = document.createElement('div');
+  wrap.className = 'bs-grids';
+  const myFleet = game.state.fleets[game.seat];
+  const enemySeat = 1 - game.seat;
+  const enemyShots = game.state.shots[enemySeat]; // squares I fired at
+  const enemyFleet = game.state.fleets[enemySeat];
+
+  wrap.appendChild(bsGrid('Ваше поле', (r, c) => {
+    const v = myFleet ? myFleet.grid[r][c] : null;
+    const shot = game.state.shots[game.seat][r][c];
+    if (shot === 'hit') return { cls: 'hit', text: '✕' };
+    if (shot === 'miss') return { cls: 'miss', text: '·' };
+    if (v != null) return { cls: 'ship', text: '' };
+    return { cls: '', text: '' };
+  }, null));
+
+  wrap.appendChild(bsGrid('Поле соперника', (r, c) => {
+    const shot = enemyShots[r][c];
+    if (shot === 'hit') return { cls: 'hit', text: '✕' };
+    if (shot === 'miss') return { cls: 'miss', text: '·' };
+    const sunk = enemyFleet && enemyFleet.grid[r][c] != null;
+    return { cls: '', text: '' };
+  }, canPlay && game.state.ready[enemySeat] ? (r, c) => {
+    if (enemyShots[r][c] != null) return;
+    playMove([r, c]);
+  } : null));
+
+  return wrap;
+}
+
+function bsGrid(label, cellFn, clickFn) {
+  const box = document.createElement('div');
+  const cap = document.createElement('div');
+  cap.className = 'bs-label';
+  cap.textContent = label;
+  const grid = document.createElement('div');
+  grid.className = 'bs-grid';
+  for (let r = 0; r < 10; r++) {
+    for (let c = 0; c < 10; c++) {
+      const info = cellFn(r, c);
+      const cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = 'bs-cell' + (info.cls ? ' ' + info.cls : '');
+      cell.textContent = info.text;
+      if (info.cls === 'hit' || info.cls === 'miss') cell.disabled = true;
+      if (clickFn) cell.addEventListener('click', () => clickFn(r, c));
+      grid.appendChild(cell);
+    }
+  }
+  box.appendChild(cap);
+  box.appendChild(grid);
+  return box;
+}
+
 /* --------------------------- element helpers --------------------------- */
 const $ = (id) => document.getElementById(id);
 
@@ -81,6 +630,36 @@ const els = {
   accountsBackdrop: $('accounts-backdrop'),
   accountsList: $('accounts-list'),
   btnAccountsClose: $('btn-accounts-close'),
+  botsBackdrop: $('bots-backdrop'),
+  botsList: $('bots-list'),
+  btnBotsClose: $('btn-bots-close'),
+  giftsBackdrop: $('gifts-backdrop'),
+  giftsGrid: $('gifts-grid'),
+  giftsNote: $('gifts-note'),
+  btnGiftsClose: $('btn-gifts-close'),
+  pollBackdrop: $('poll-backdrop'),
+  pollQuestion: $('poll-question'),
+  pollOptions: $('poll-options'),
+  pollMultiple: $('poll-multiple'),
+  pollAnon: $('poll-anon'),
+  pollError: $('poll-error'),
+  btnPollAdd: $('btn-poll-add'),
+  btnPollCreate: $('btn-poll-create'),
+  btnPollClose: $('btn-poll-close'),
+  folderTabs: $('folder-tabs'),
+  folderBackdrop: $('folder-backdrop'),
+  folderList: $('folder-list'),
+  folderEmpty: $('folder-empty'),
+  btnFolderNew: $('btn-folder-new'),
+  folderEditor: $('folder-editor'),
+  folderName: $('folder-name'),
+  folderKinds: $('folder-kinds'),
+  folderUnread: $('folder-unread'),
+  folderExclusive: $('folder-exclusive'),
+  folderError: $('folder-error'),
+  btnFolderSave: $('btn-folder-save'),
+  btnFolderDelete: $('btn-folder-delete'),
+  btnFolderClose: $('btn-folder-close'),
   btnAccountsAdd: $('btn-accounts-add'),
   contactsBackdrop: $('contacts-backdrop'),
   contactsList: $('contacts-list'),
@@ -197,6 +776,12 @@ const els = {
   profileSocialUrl: $('profile-social-url'),
   btnSocialAdd: $('btn-social-add'),
   profileSocials: $('profile-socials'),
+  profileNicknames: $('profile-nicknames'),
+  nicknamesField: $('nicknames-field'),
+  profileNicknameRows: $('profile-nickname-rows'),
+  profileNicknameInput: $('profile-nickname-input'),
+  btnNicknameAdd: $('btn-nickname-add'),
+  nicknamesHint: $('nicknames-hint'),
   profileError: $('profile-error'),
   btnProfileCancel: $('btn-profile-cancel'),
   usernameSep: $('username-sep'),
@@ -329,6 +914,8 @@ const els = {
   emojiMode: $('emoji-mode'),
   stickerMode: $('sticker-mode'),
   stickerGrid: $('sticker-grid'),
+  gamesMode: $('games-mode'),
+  gameGrid: $('game-grid'),
 
   toast: $('toast')
 };
@@ -367,8 +954,14 @@ const state = {
   adminUsers: [], // last admin user list, filtered client-side by the search box
   adminChannels: [], // last admin channel list, filtered client-side
   adminAnnounceCount: 0,
-  settingsPane: 'account' // active settings section
+  settingsPane: 'account', // active settings section
+  drafts: {}, // peerKey -> unsent composer text, mirrored into account settings
+  draftSaveTimer: null, // coalesces keystrokes into one settings write
+  folders: [], // chat folders ("папки"), mirrored into account settings
+  activeFolder: 'all', // id of the selected folder tab
+  folderEditing: null // id of the folder open in the editor, or 'new'
 };
+
 
 /* ------------------------------ utilities ------------------------------ */
 function showScreen(name) {
@@ -518,6 +1111,11 @@ function peerUsername(key) {
 }
 
 function displayNameFor(username) {
+  if (username === SAVED) return 'Saved Messages';
+  if (isBotKey(username)) {
+    const b = botFor(username);
+    return b ? b.title : 'Бот';
+  }
   if (isGroupKey(username)) {
     const g = state.groups.get(groupIdOf(username));
     return g ? g.name : 'Группа';
@@ -532,6 +1130,7 @@ function displayNameFor(username) {
 }
 
 function avatarColorFor(username) {
+  if (isBotKey(username)) { const b = botFor(username); return (b && b.color) || 'violet'; }
   if (isGroupKey(username)) return 'violet';
   if (isChannelKey(username)) return 'cyan';
   const p = state.profiles.get(username);
@@ -540,6 +1139,7 @@ function avatarColorFor(username) {
 
 /** A verified account (the checkmark) as far as the client knows. */
 function isVerified(username) {
+  if (isBotKey(username)) return true;
   if (isGroupKey(username)) return false;
   if (isChannelKey(username)) {
     const c = state.channels.get(channelIdOf(username));
@@ -562,6 +1162,7 @@ function badgeImageFor(username) {
 
 /** The profile picture for an account, or null to fall back to its initial. */
 function avatarImageFor(username, profile) {
+  if (isBotKey(username)) return null;
   if (isGroupKey(username)) return null;
   if (isChannelKey(username)) return null;
   const p = profile || state.profiles.get(username) || (username === state.username ? state.profile : null);
@@ -604,6 +1205,10 @@ function paintBadge(el, username) {
 function paintAvatar(el, username, size) {
   el.className = 'avatar' + (size ? ' ' + size : '');
   el.dataset.color = avatarColorFor(username);
+  if (isBotKey(username)) {
+    el.innerHTML = icon('i-robot');
+    return;
+  }
   if (isGroupKey(username)) {
     el.innerHTML = icon('i-people');
     return;
@@ -789,6 +1394,9 @@ function resetToAuth() {
   state.profiles.clear();
   state.presence.clear();
   state.lastSeen.clear();
+  state.drafts = {};
+  state.folders = [];
+  state.activeFolder = 'all';
   els.chatList.innerHTML = '';
   els.archivedList.innerHTML = '';
   els.chatBlank.hidden = false;
@@ -811,7 +1419,7 @@ async function enterMain(username) {
   els.meStreak.hidden = true;
   await refreshStatus();
   showScreen('main');
-  await Promise.all([loadChats(), loadGroups(), loadChannels(), loadContacts(), loadStreak()]);
+  await Promise.all([loadChats(), loadGroups(), loadChannels(), loadContacts(), loadStreak(), loadDrafts(), loadFolders()]);
   renderChatList();
 }
 
@@ -869,9 +1477,15 @@ async function refreshVisibleLastMessages() {
 /** One-line preview for the chat list, matching the message kind. */
 function previewOf(m) {
   if (m.deleted) return 'Message deleted';
+  const gift = giftPayloadOf(m);
+  if (gift) return `Подарок: ${gift.name || '🎁'}`;
+  const poll = pollPayloadOf(m);
+  if (poll) return `Опрос: ${poll.q}`;
+  if (pollVoteOf(m)) return 'Голос в опросе';
   if (m.kind === 'image') return 'Photo';
   if (m.kind === 'voice') return 'Voice message';
   if (m.kind === 'file') return (m.attachment && m.attachment.name) || 'File';
+  if (gamePayloadOf(m)) return 'Игра';
   return m.text || '';
 }
 
@@ -900,6 +1514,122 @@ async function loadContacts() {
 /** Persist the contact list into this account's server-side settings. */
 async function saveContacts() {
   try { await api.saveSettings({ contacts: state.contacts }); } catch { /* best effort */ }
+}
+
+/**
+ * Drafts: the text left in the composer per chat. They live in this account's
+ * server-side settings, so a draft follows the account to another device, and
+ * they are only ever sent to the relay as part of that settings document — the
+ * relay never sees a draft as a message.
+ */
+async function loadDrafts() {
+  try {
+    const s = await api.getSettings();
+    state.drafts = (s && s.drafts && typeof s.drafts === 'object' && !Array.isArray(s.drafts))
+      ? { ...s.drafts } : {};
+  } catch { /* offline: keep what we have */ }
+}
+
+function draftFor(key) {
+  return state.drafts[key] || '';
+}
+
+function saveDraftsNow() {
+  state.draftSaveTimer = null;
+  api.saveSettings({ drafts: state.drafts }).catch(() => {});
+}
+
+/** Record a draft and schedule one coalesced settings write. */
+function setDraft(key, text) {
+  if (!key) return;
+  const next = (text || '').trim() ? text : '';
+  if (next) state.drafts[key] = next; else delete state.drafts[key];
+  if (state.draftSaveTimer) clearTimeout(state.draftSaveTimer);
+  state.draftSaveTimer = setTimeout(saveDraftsNow, 600);
+}
+
+/* ------------------------------- folders ------------------------------- */
+
+/** Every folder the account has, with the built-in "all" tab in front. */
+function folderList() {
+  return [FOLDERS.allFolder(), ...state.folders];
+}
+
+/** One chat described the way the folder rules need it. */
+function folderDesc(key) {
+  const chat = state.chats.get(key);
+  return {
+    key,
+    kind: FOLDERS.kindOf(key, isBotKey(key)),
+    unread: chat ? (chat.unread || 0) : 0
+  };
+}
+
+/** The active folder object, falling back to "all" if it was removed. */
+function activeFolder() {
+  const found = folderList().find((f) => f.id === state.activeFolder);
+  if (found) return found;
+  state.activeFolder = 'all';
+  return folderList()[0];
+}
+
+/** Keys of the chats that belong in the active folder, archived excluded. */
+function keysInActiveFolder(keys) {
+  const folder = activeFolder();
+  const descs = keys.filter((k) => !state.chats.get(k).archived).map(folderDesc);
+  if (folder.id === 'all') {
+    // A chat owned by an exclusive folder leaves the "all" list, like Telegram.
+    const hidden = FOLDERS.exclusiveKeys(state.folders, descs);
+    return descs.filter((d) => !hidden.has(d.key)).map((d) => d.key);
+  }
+  return FOLDERS.filter(folder, descs).map((d) => d.key);
+}
+
+async function loadFolders() {
+  try {
+    const s = await api.getSettings();
+    state.folders = FOLDERS.normalizeAll(s && s.folders);
+  } catch { /* offline: keep what we have */ }
+}
+
+/** Persist the folder list into this account's server-side settings. */
+function saveFolders() {
+  api.saveSettings({ folders: state.folders }).catch(() => {});
+  renderFolderTabs();
+  renderChatList();
+}
+
+/** The row of folder tabs above the chat list. */
+function renderFolderTabs() {
+  if (!els.folderTabs) return;
+  const folders = folderList();
+  els.folderTabs.hidden = folders.length < 2;
+  els.folderTabs.innerHTML = '';
+  for (const folder of folders) {
+    const descs = Array.from(state.chats.keys())
+      .filter((k) => !state.chats.get(k).archived)
+      .map(folderDesc);
+    const unread = FOLDERS.unreadIn(folder, descs);
+    const tab = document.createElement('button');
+    tab.type = 'button';
+    tab.className = 'folder-tab' + (folder.id === state.activeFolder ? ' active' : '');
+    tab.dataset.folder = folder.id;
+    tab.innerHTML = `<span class="folder-tab-name">${escapeHtml(folder.name)}</span>`
+      + (unread ? `<span class="folder-tab-badge">${unread > 99 ? '99+' : unread}</span>` : '');
+    tab.addEventListener('click', () => {
+      state.activeFolder = folder.id;
+      renderFolderTabs();
+      renderChatList();
+    });
+    // Right-click a custom tab to edit it, the way Telegram does.
+    if (!folder.system) {
+      tab.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        openFolderEditor(folder.id);
+      });
+    }
+    els.folderTabs.appendChild(tab);
+  }
 }
 
 /** Load every channel the account subscribes to and seed a chat row for each. */
@@ -939,7 +1669,8 @@ function chatRowSignature(chat) {
   const peer = peerUsername(key);
   const tick = isVerified(peer) ? (badgeImageFor(peer) || 'check') : '';
   return [displayNameFor(key), tick, avatarImageFor(key) || '', chat.lastTs || 0,
-    chat.last || '', chat.unread || 0, chat.muted ? 1 : 0, chat.pinned ? 1 : 0].join('\u0000');
+    chat.last || '', chat.unread || 0, chat.muted ? 1 : 0, chat.pinned ? 1 : 0,
+    state.drafts[key] || ''].join('\u0000');
 }
 
 function chatItemEl(key) {
@@ -969,6 +1700,13 @@ function chatItemEl(key) {
   chat.tick = tick;
   chat.tickImage = tickImage;
 
+  // A draft replaces the last-message preview, the way Telegram shows it.
+  const draft = state.drafts[key];
+  const lastLine = draft
+    ? `<span class="draft-tag">Черновик:</span> ${escapeHtml(draft)}`
+    : escapeHtml(chat.last || 'No messages yet');
+  const lastCls = 'chat-item-last' + (draft ? ' draft' : '');
+
   li.innerHTML = `
     <div class="avatar small" data-color="${escapeHtml(avatarColorFor(key))}">${avatarInner}</div>
     <div class="chat-item-body">
@@ -976,7 +1714,7 @@ function chatItemEl(key) {
         <span class="chat-item-name"><span class="chat-item-name-text">${escapeHtml(name)}</span>${tick}</span>
         <span class="chat-item-time">${chat.lastTs ? escapeHtml(timeLabel(chat.lastTs)) : ''}</span>
       </div>
-      <div class="chat-item-last">${escapeHtml(chat.last || 'No messages yet')}</div>
+      <div class="${lastCls}">${lastLine}</div>
     </div>
     <div class="chat-item-flags">${flags}${badge}</div>
   `;
@@ -992,7 +1730,7 @@ function chatItemEl(key) {
  */
 function renderChatListNow() {
   const keys = Array.from(state.chats.keys());
-  const active = sortedKeys(keys.filter((k) => !state.chats.get(k).archived));
+  const active = sortedKeys(keysInActiveFolder(keys));
   const archived = sortedKeys(keys.filter((k) => state.chats.get(k).archived));
 
   paintChatSection(els.chatList, active);
@@ -1004,6 +1742,8 @@ function renderChatListNow() {
     els.drawerArchivedCount.hidden = archived.length === 0;
     els.drawerArchivedCount.textContent = String(archived.length);
   }
+
+  renderFolderTabs();
 
   const total = active.length + archived.length;
   els.chatEmpty.hidden = total > 0;
@@ -1055,6 +1795,14 @@ function paintChatSection(container, keys) {
 
 function renderMessageBody(m) {
   if (m.deleted) return '<span class="deleted-text">This message was deleted</span>';
+  const poll = pollPayloadOf(m);
+  if (poll) return '<div class="poll-mount"></div>';
+  const gift = giftPayloadOf(m);
+  if (gift) {
+    return `<div class="gift-bubble"><span class="gift-bubble-emoji">${escapeHtml(gift.emoji || '🎁')}</span>
+      <span class="gift-bubble-name">${escapeHtml(gift.name || 'Подарок')}</span>
+      <span class="gift-bubble-cost">${Number(gift.cost) || 0} ⭐</span></div>`;
+  }
   if (m.kind && m.attachment) {
     const cap = m.text ? `<div class="caption">${messageTextHtml(m.text)}</div>` : '';
     return `<div class="att-wrap" data-kind="${escapeHtml(m.kind)}"></div>${cap}`;
@@ -1085,6 +1833,14 @@ function quoteHtml(m) {
 }
 
 function messageEl(m) {
+  // The live game board is a pseudo-message pinned under the transcript.
+  if (m && m.__gameBoard) {
+    const box = document.createElement('div');
+    box.className = 'msg game-msg';
+    box.dataset.id = 'game-board';
+    box.appendChild(renderGameBoard(m.__gameBoard));
+    return box;
+  }
   const el = document.createElement('div');
   const hit = state.searchQuery && state.searchHits.includes(m.id);
   const current = hit && state.searchHits[state.searchIndex] === m.id;
@@ -1111,6 +1867,9 @@ function messageEl(m) {
     if (m.kind === 'image') renderImageAttachment(m, wrap);
     else renderFileAttachment(m, wrap, m.kind);
   }
+
+  const pollMount = el.querySelector('.poll-mount');
+  if (pollMount) pollMount.replaceWith(pollElement(m));
 
   el.addEventListener('contextmenu', (e) => {
     e.preventDefault();
@@ -1203,12 +1962,21 @@ async function openChat(key) {
   closeChatSearch();
   if (state.selecting) exitSelectMode();
 
-  els.peerName.textContent = key === SAVED ? 'Saved Messages' : displayNameFor(key);
+  els.peerName.textContent = displayNameFor(key);
   paintBadge(els.peerBadge, key);
   paintAvatar(els.peerAvatar, key);
   updatePeerSub();
   updateComposerForChannel(key);
+  // Restore the draft left in this chat, unless the composer is read-only.
+  els.composerInput.value = els.composerInput.disabled ? '' : draftFor(key);
   renderChatList();
+
+  if (isBotKey(key)) {
+    // A bot chat has no server history; its transcript is local. Open it as-is.
+    renderMessages();
+    els.composerInput.focus();
+    return;
+  }
 
   if (!chat.loaded) {
     try {
@@ -1262,6 +2030,10 @@ function renderMessagesNow() {
   const frag = document.createDocumentFragment();
   let lastDay = null;
   for (const m of chat.messages) {
+    // Game positions are hidden from the transcript: the live board below shows
+    // the position they carry, so a bubble per move would only be noise. A poll
+    // vote is likewise hidden: it only moves the tally shown on the poll card.
+    if (gamePayloadOf(m) || pollVoteOf(m)) continue;
     const day = dayLabel(m.ts);
     if (day !== lastDay) {
       const sep = document.createElement('div');
@@ -1273,8 +2045,19 @@ function renderMessagesNow() {
     frag.appendChild(messageEl(m));
   }
   els.messages.appendChild(frag);
+  renderGameBoardInto(chat);
   if (atBottom || state.forceScrollBottom) els.messages.scrollTop = els.messages.scrollHeight;
   state.forceScrollBottom = false;
+}
+
+/**
+ * The live game board is drawn once, pinned under the transcript, rather than
+ * once per move message. A game is one evolving object; a board per message
+ * would both flood the chat and show a stale position in every older bubble.
+ */
+function renderGameBoardInto(chat) {
+  if (!chat || !chat.game || !GAMES) return;
+  els.messages.appendChild(messageEl({ __gameBoard: chat.game }));
 }
 
 /* A burst of events (a fan-out, a history load, a reaction) must not repaint the
@@ -1312,6 +2095,10 @@ function appendMessageEl(m) {
   }
   const atBottom = els.messages.scrollHeight - els.messages.scrollTop - els.messages.clientHeight < 60;
   els.messages.appendChild(messageEl(m));
+  // The live board is pinned to the very end, so a message that arrives while a
+  // game is open must land above it, not below.
+  const board = els.messages.querySelector('.game-msg');
+  if (board && board !== els.messages.lastElementChild) els.messages.appendChild(board);
   if (atBottom || state.forceScrollBottom) els.messages.scrollTop = els.messages.scrollHeight;
   state.forceScrollBottom = false;
   return true;
@@ -1323,6 +2110,12 @@ function updatePeerSub() {
   if (key === SAVED) {
     els.peerSub.textContent = 'Notes and files only you can read';
     els.peerSub.classList.remove('typing');
+    return;
+  }
+  if (isBotKey(key)) {
+    const b = botFor(key);
+    els.peerSub.classList.remove('typing');
+    els.peerSub.textContent = (b && b.subtitle) || 'bot';
     return;
   }
   if (isGroupKey(key)) {
@@ -1492,6 +2285,22 @@ function channelSubNames(channelId) {
 async function sendCurrentMessage(text) {
   const key = state.activePeer;
   const chat = ensureChat(key);
+
+  // A bot chat is local: echo the message and answer on this device. Nothing
+  // leaves the machine, so the relay never sees a bot conversation.
+  if (isBotKey(key)) {
+    const ts = Date.now();
+    chat.messages.push({ id: 'bot-me-' + ts, text, ts, mine: true, reactions: [] });
+    chat.last = text;
+    chat.lastTs = ts;
+    state.forceScrollBottom = true;
+    renderMessages();
+    renderChatList();
+    noteLocalSend();
+    botReply(key, text, chat);
+    return;
+  }
+
   const replyTo = state.replyTo;
 
   const optimistic = {
@@ -1576,13 +2385,22 @@ els.composer.addEventListener('submit', async (e) => {
   }
 
   els.composerInput.value = '';
+  setDraft(state.activePeer, '');
+  renderChatList();
   await sendCurrentMessage(text);
 });
 
-/* typing indicator (throttled) */
+/* typing indicator (throttled) + draft persistence */
 let typingSentAt = 0;
 els.composerInput.addEventListener('input', () => {
-  if (!state.activePeer || state.activePeer === SAVED || isMultiKey(state.activePeer)) return;
+  if (!state.activePeer) return;
+  // The composer text is this chat's draft: it survives switching away and
+  // follows the account to another device.
+  if (!els.composerInput.disabled) {
+    setDraft(state.activePeer, els.composerInput.value);
+    renderChatList();
+  }
+  if (state.activePeer === SAVED || isMultiKey(state.activePeer)) return;
   const now = Date.now();
   if (now - typingSentAt < 2500) return;
   typingSentAt = now;
@@ -1988,6 +2806,62 @@ els.btnSocialAdd.addEventListener('click', () => {
   renderSocialEditor();
 });
 
+/* ------------------------------ nicknames ------------------------------ */
+// Extra display names under the profile name. Only the owner account may hold
+// an unbounded list, and only administrators get the panel to edit anyone's;
+// the relay enforces both, the client only reflects them.
+let nicknamePending = []; // the names being edited in the profile form
+
+/** Paint the nickname chips under the profile name; hidden when there are none. */
+function renderProfileNicknames(nicknames) {
+  const list = Array.isArray(nicknames) ? nicknames : [];
+  els.profileNicknames.innerHTML = '';
+  els.profileNicknames.hidden = list.length === 0;
+  for (const n of list) {
+    if (typeof n !== 'string' || !n.trim()) continue;
+    const chip = document.createElement('span');
+    chip.className = 'nickname-chip';
+    chip.innerHTML = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-star"></use></svg><span></span>';
+    chip.querySelector('span').textContent = n;
+    els.profileNicknames.appendChild(chip);
+  }
+}
+
+/** Redraw the rows in the edit form from `nicknamePending`. */
+function renderNicknameEditor() {
+  els.profileNicknameRows.innerHTML = '';
+  nicknamePending.forEach((name, i) => {
+    const row = document.createElement('div');
+    row.className = 'social-row nickname-row';
+    row.innerHTML = `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-star"></use></svg>
+      <span class="nickname-row-name"></span>
+      <button class="btn-ghost btn-compact" type="button" title="Убрать"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"></use></svg></button>`;
+    row.querySelector('.nickname-row-name').textContent = name;
+    row.querySelector('button').addEventListener('click', () => {
+      nicknamePending.splice(i, 1);
+      renderNicknameEditor();
+    });
+    els.profileNicknameRows.appendChild(row);
+  });
+}
+
+els.btnNicknameAdd.addEventListener('click', () => {
+  const name = (els.profileNicknameInput.value || '').trim().replace(/\s+/g, ' ');
+  if (!name) return;
+  if (name.length > 32) {
+    showError(els.profileError, 'Никнейм слишком длинный (до 32 символов)');
+    return;
+  }
+  if (nicknamePending.some((n) => n.toLowerCase() === name.toLowerCase())) {
+    showError(els.profileError, 'Такой никнейм уже есть');
+    return;
+  }
+  showError(els.profileError, null);
+  nicknamePending.push(name);
+  els.profileNicknameInput.value = '';
+  renderNicknameEditor();
+});
+
 async function showProfile(username, { self = false } = {}) {
   state.profileTarget = username;
   state.editingProfile = false;
@@ -2021,6 +2895,7 @@ async function showProfile(username, { self = false } = {}) {
   els.profileViewUsername.textContent = atUsername(p.username);
   els.profileViewBio.textContent = p.bio || '—';
   renderProfileSocials(p.socials);
+  renderProfileNicknames(p.nicknames);
   const presenceText = peerPresenceText(p.username);
   els.profilePresence.textContent = isSelf ? 'Это вы' : (presenceText || 'не в сети');
   els.profilePresence.classList.toggle('online', !isSelf && !!info.online);
@@ -2208,6 +3083,13 @@ els.btnProfileEdit.addEventListener('click', () => {
     ? state.profile.socials.map((s) => ({ network: s.network, url: s.url }))
     : [];
   renderSocialEditor();
+  // The nickname editor is the owner's privilege, mirroring the relay.
+  const owner = !!(state.profile && state.profile.owner);
+  els.nicknamesField.hidden = !owner;
+  nicknamePending = owner && Array.isArray(state.profile && state.profile.nicknames)
+    ? state.profile.nicknames.slice()
+    : [];
+  renderNicknameEditor();
   showError(els.profileError, null);
   els.profileName.focus();
 });
@@ -2230,7 +3112,8 @@ els.profileForm.addEventListener('submit', async (e) => {
       bio: els.profileBio.value,
       avatarColor: selected ? selected.dataset.color : undefined,
       avatarImage: avatarPending === undefined ? undefined : avatarPending,
-      socials: socialPending
+      socials: socialPending,
+      nicknames: state.profile && state.profile.owner ? nicknamePending : undefined
     });
     state.profile = p;
     state.profiles.set(p.username, p);
@@ -2414,6 +3297,15 @@ async function loadAdminPanel() {
   }
 }
 
+/** A short "· ник: A, B" suffix for the admin list, when the account has any. */
+function nicknameSummary(nicknames) {
+  const list = Array.isArray(nicknames) ? nicknames : [];
+  if (!list.length) return '';
+  const shown = list.slice(0, 3).join(', ');
+  const more = list.length > 3 ? ` +${list.length - 3}` : '';
+  return ` · <span class="admin-nick-summary">${escapeHtml(shown + more)}</span>`;
+}
+
 /** Draw the user list, honouring the search box. */
 function renderAdminUsers() {
   const query = (els.adminUsersSearch.value || '').trim().toLowerCase();
@@ -2442,7 +3334,7 @@ function renderAdminUsers() {
       <div class="avatar small" data-color="${escapeHtml(u.avatarColor || 'mint')}">${avatarInnerHtml(u.username, u)}</div>
       <div class="admin-user-body">
         <div class="admin-user-name">${escapeHtml(u.displayName || u.username)} ${flags}</div>
-        <div class="admin-user-sub">@${escapeHtml(u.username)} · ${u.sent} сообщ.</div>
+        <div class="admin-user-sub"><span class="admin-at" data-user="${escapeHtml(u.username)}" title="Наведите, чтобы менять никнеймы">@${escapeHtml(u.username)}</span> · ${u.sent} сообщ.${nicknameSummary(u.nicknames)}</div>
       </div>
       <div class="admin-user-actions">
         <button class="admin-act${u.verified ? ' on' : ''}" data-act="verify" data-user="${escapeHtml(u.username)}" title="${u.verified ? 'Снять галочку' : 'Дать галочку'}">${icon('i-check')}</button>
@@ -2692,6 +3584,169 @@ els.adminUsers.addEventListener('click', async (e) => {
 
 els.adminUsersSearch.addEventListener('input', renderAdminUsers);
 els.btnAdminRefresh.addEventListener('click', () => loadAdminPanel());
+
+/* ------------------- admin: nickname editor popup ------------------- */
+// Hovering an @handle in the admin list opens a small popup where an admin can
+// add, rename or remove that account's nicknames. The relay enforces who may do
+// this; the popup only appears for an administrator.
+let nickPop = null;       // the open popup element
+let nickPopUser = null;   // whose nicknames it is editing
+let nickPopTimer = null;  // the close delay, so moving the mouse in is possible
+
+function nicknamesFor(username) {
+  const u = (state.adminUsers || []).find((x) => x.username === username);
+  return u && Array.isArray(u.nicknames) ? u.nicknames.slice() : [];
+}
+
+function closeNickPop() {
+  if (nickPopTimer) { clearTimeout(nickPopTimer); nickPopTimer = null; }
+  if (nickPop) { nickPop.remove(); nickPop = null; }
+  nickPopUser = null;
+}
+
+/** Keep the popup open while the pointer is over it, close it a beat later. */
+function scheduleNickPopClose() {
+  if (nickPopTimer) clearTimeout(nickPopTimer);
+  nickPopTimer = setTimeout(closeNickPop, 180);
+}
+
+function openNickPop(anchor, username) {
+  if (nickPopTimer) { clearTimeout(nickPopTimer); nickPopTimer = null; }
+  if (nickPopUser === username && nickPop) return;
+  closeNickPop();
+  nickPopUser = username;
+  const pop = document.createElement('div');
+  pop.className = 'nick-pop';
+  pop.addEventListener('mouseenter', () => { if (nickPopTimer) { clearTimeout(nickPopTimer); nickPopTimer = null; } });
+  pop.addEventListener('mouseleave', scheduleNickPopClose);
+  document.body.appendChild(pop);
+  nickPop = pop;
+  renderNickPop();
+  const r = anchor.getBoundingClientRect();
+  const left = Math.min(r.left, window.innerWidth - 300);
+  const top = Math.min(r.bottom + 6, window.innerHeight - 40);
+  pop.style.left = Math.max(8, left) + 'px';
+  pop.style.top = Math.max(8, top) + 'px';
+}
+
+function renderNickPop() {
+  if (!nickPop || !nickPopUser) return;
+  const list = nicknamesFor(nickPopUser);
+  nickPop.innerHTML = '';
+  const title = document.createElement('div');
+  title.className = 'nick-pop-title';
+  title.textContent = `Никнеймы @${nickPopUser}`;
+  nickPop.appendChild(title);
+
+  const listBox = document.createElement('div');
+  listBox.className = 'nick-pop-list';
+  if (!list.length) {
+    const empty = document.createElement('div');
+    empty.className = 'nick-pop-empty';
+    empty.textContent = 'Пока нет.';
+    listBox.appendChild(empty);
+  }
+  list.forEach((name, i) => {
+    const item = document.createElement('div');
+    item.className = 'nick-pop-item';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = 32;
+    input.value = name;
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); saveNicknameEdit(i, input.value); }
+      if (e.key === 'Escape') { e.preventDefault(); closeNickPop(); }
+    });
+    input.addEventListener('blur', () => {
+      if (input.value.trim() && input.value.trim() !== name) saveNicknameEdit(i, input.value);
+    });
+    const del = document.createElement('button');
+    del.className = 'admin-act danger';
+    del.title = 'Убрать';
+    del.innerHTML = icon('i-trash');
+    del.addEventListener('click', () => removeNickname(i));
+    item.appendChild(input);
+    item.appendChild(del);
+    listBox.appendChild(item);
+  });
+  nickPop.appendChild(listBox);
+
+  const addRow = document.createElement('div');
+  addRow.className = 'nick-pop-add';
+  const addInput = document.createElement('input');
+  addInput.type = 'text';
+  addInput.maxLength = 32;
+  addInput.placeholder = 'Новый никнейм';
+  addInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addNickname(addInput.value); }
+    if (e.key === 'Escape') { e.preventDefault(); closeNickPop(); }
+  });
+  const addBtn = document.createElement('button');
+  addBtn.className = 'btn-secondary btn-compact';
+  addBtn.type = 'button';
+  addBtn.textContent = 'Добавить';
+  addBtn.addEventListener('click', () => addNickname(addInput.value));
+  addRow.appendChild(addInput);
+  addRow.appendChild(addBtn);
+  nickPop.appendChild(addRow);
+}
+
+async function addNickname(raw) {
+  const name = (raw || '').trim();
+  if (!name || !nickPopUser) return;
+  const user = nickPopUser;
+  try {
+    await api.adminAction({ action: 'nicknameAdd', username: user, nickname: name });
+    await loadAdminPanel();
+    if (nickPopUser === user) renderNickPop();
+    toast('Никнейм добавлен');
+  } catch (err) {
+    toast(err.message || 'Не удалось добавить никнейм');
+  }
+}
+
+async function removeNickname(index) {
+  if (!nickPopUser) return;
+  const user = nickPopUser;
+  try {
+    await api.adminAction({ action: 'nicknameRemove', username: user, index });
+    await loadAdminPanel();
+    if (nickPopUser === user) renderNickPop();
+  } catch (err) {
+    toast(err.message || 'Не удалось убрать никнейм');
+  }
+}
+
+async function saveNicknameEdit(index, raw) {
+  if (!nickPopUser) return;
+  const name = (raw || '').trim();
+  if (!name) return;
+  const user = nickPopUser;
+  try {
+    await api.adminAction({ action: 'nicknameSet', username: user, nickname: name, index });
+    await loadAdminPanel();
+    if (nickPopUser === user) renderNickPop();
+    toast('Никнейм изменён');
+  } catch (err) {
+    toast(err.message || 'Не удалось изменить никнейм');
+  }
+}
+
+els.adminUsers.addEventListener('mouseover', (e) => {
+  const at = e.target.closest && e.target.closest('.admin-at');
+  if (at) openNickPop(at, at.dataset.user);
+});
+els.adminUsers.addEventListener('mouseout', (e) => {
+  const at = e.target.closest && e.target.closest('.admin-at');
+  if (at) scheduleNickPopClose();
+});
+// A click anywhere outside the popup dismisses it.
+document.addEventListener('mousedown', (e) => {
+  if (!nickPop) return;
+  if (nickPop.contains(e.target)) return;
+  if (e.target.closest && e.target.closest('.admin-at')) return;
+  closeNickPop();
+});
 
 els.btnAdminAnnounce.addEventListener('click', async () => {
   const text = els.adminAnnounceInput.value.trim();
@@ -3110,8 +4165,15 @@ api.onEvent((evt) => {
     case 'message': {
       const key = chatKey(evt.from);
       const chat = ensureChat(key);
+      const payload = gamePayloadOf({ text: evt.text });
+      if (payload) {
+        // A game position from a peer. Adopt it, flipping the seat so their
+        // side becomes the far side on this device.
+        applyPeerGame(chat, evt.from, payload);
+        break;
+      }
       const m = {
-        id: evt.id, text: evt.text, ts: evt.ts, mine: false,
+        id: evt.id, text: evt.text, ts: evt.ts, mine: false, from: evt.from,
         replyTo: evt.replyTo || null, reactions: [],
         kind: evt.kind || null, attachment: evt.attachment || null
       };
@@ -3120,15 +4182,14 @@ api.onEvent((evt) => {
         if (orig) m.quote = { from: orig.mine ? state.username : evt.from, text: orig.text, mine: orig.mine };
       }
       chat.messages.push(m);
-      chat.last = m.kind === 'image' ? 'Photo'
-        : m.kind === 'voice' ? 'Voice message'
-        : m.kind === 'file' ? ((m.attachment && m.attachment.name) || 'File')
-        : evt.text;
+      chat.last = previewOf(m);
       chat.lastTs = evt.ts;
       if (state.activePeer === key) {
         // A single live message lands at the end, so append it directly and
-        // fall back to a rebuild only when the list is filtered.
-        if (!appendMessageEl(m)) renderMessages();
+        // fall back to a rebuild only when the list is filtered. A vote is not
+        // a bubble of its own; it just re-tallies the poll it points at.
+        if (pollVoteOf(m)) renderMessagesImmediate();
+        else if (!appendMessageEl(m)) renderMessages();
         updatePinnedBar();
         api.markRead(peerUsername(key)).catch(() => {});
       } else {
@@ -3184,7 +4245,7 @@ api.onEvent((evt) => {
       const key = groupKey(evt.groupId);
       const chat = ensureChat(key);
       const m = {
-        id: evt.id, text: evt.text, ts: evt.ts, mine: evt.from === state.username,
+        id: evt.id, text: evt.text, ts: evt.ts, mine: evt.from === state.username, from: evt.from,
         replyTo: evt.replyTo || null, reactions: [],
         kind: evt.kind || null, attachment: evt.attachment || null
       };
@@ -3196,7 +4257,10 @@ api.onEvent((evt) => {
       chat.last = previewOf(m);
       chat.lastTs = evt.ts;
       if (state.activePeer === key) {
-        renderMessages();
+        // A vote is not a bubble; it only re-tallies the poll card, so repaint
+        // at once even in a background window.
+        if (pollVoteOf(m)) renderMessagesImmediate();
+        else renderMessages();
         api.markRead(peerUsername(key)).catch(() => {});
       } else {
         chat.unread += 1;
@@ -3261,7 +4325,7 @@ api.onEvent((evt) => {
       const key = channelKey(evt.channelId);
       const chat = ensureChat(key);
       const m = {
-        id: evt.id, text: evt.text, ts: evt.ts, mine: evt.from === state.username,
+        id: evt.id, text: evt.text, ts: evt.ts, mine: evt.from === state.username, from: evt.from,
         replyTo: evt.replyTo || null, reactions: [],
         kind: evt.kind || null, attachment: evt.attachment || null
       };
@@ -3416,6 +4480,28 @@ async function sendWithAttachment(att) {
   const replyTo = state.replyTo;
   const caption = els.composerInput.value.trim();
   els.composerInput.value = '';
+
+  // A bot chat is local: keep the sticker on this device and let the bot answer
+  // without a round trip through the relay.
+  if (isBotKey(key)) {
+    const ts = Date.now();
+    chat.messages.push({
+      id: 'bot-me-' + ts, text: caption, ts, mine: true, reactions: [],
+      kind: att.kind,
+      attachment: { kind: att.kind, name: att.name, mime: att.mime, size: att.bytes.length, duration: att.duration },
+      previewUrl: att.preview || null
+    });
+    chat.last = att.kind === 'image' ? 'Фото' : att.name;
+    chat.lastTs = ts;
+    state.forceScrollBottom = true;
+    renderMessages();
+    renderChatList();
+    noteLocalSend();
+    if (botIdOf(key) === BOT_STICKERS) {
+      setTimeout(() => pushBotMessage(key, 'Классный стикер! 😄'), 350);
+    }
+    return;
+  }
 
   const optimistic = {
     id: 'tmp-' + Date.now(), text: caption, ts: Date.now(), mine: true,
@@ -3676,6 +4762,8 @@ function setPanelMode(mode) {
   });
   els.emojiMode.hidden = mode !== 'emoji';
   els.stickerMode.hidden = mode !== 'stickers';
+  els.gamesMode.hidden = mode !== 'games';
+  if (mode === 'games') buildGamePanel();
 }
 
 els.panelSwitch.addEventListener('click', (e) => {
@@ -3694,6 +4782,8 @@ els.attachMenu.addEventListener('click', async (e) => {
   if (!btn) return;
   const kind = btn.dataset.attach;
   els.attachBackdrop.hidden = true;
+  if (kind === 'gift') { openGifts(); return; }
+  if (kind === 'poll') { openPollComposer(); return; }
   const file = await pickFile(kind === 'image' ? 'image/*' : undefined);
   if (file) await attachFile(kind === 'image' ? 'image' : 'file', file);
 });
@@ -4110,7 +5200,9 @@ els.drawer.addEventListener('click', (e) => {
   else if (action === 'create') openCreateMenu();
   else if (action === 'channels') openDiscover();
   else if (action === 'contacts') openContacts();
+  else if (action === 'bots') openBots();
   else if (action === 'saved') startChatWith(state.username);
+  else if (action === 'folders') openFolders();
   else if (action === 'settings') els.btnSettings.click();
   else if (action === 'new-chat') { els.search.value = ''; els.btnSearchClear.hidden = true; els.search.focus(); }
   else if (action === 'archived') {
@@ -4210,6 +5302,439 @@ els.accountsBackdrop.addEventListener('click', (e) => {
   if (e.target === els.accountsBackdrop) els.accountsBackdrop.hidden = true;
 });
 
+/* -------------------------------- bots -------------------------------- */
+function openBots() {
+  els.botsList.innerHTML = '';
+  for (const bot of BOTS.values()) {
+    const row = document.createElement('div');
+    row.className = 'menu-item';
+    row.dataset.bot = bot.id;
+    row.innerHTML = `
+      <span class="avatar tiny" data-color="${escapeHtml(bot.color)}">${icon('i-robot')}</span>
+      <span class="drawer-label">${escapeHtml(bot.title)}<br><small class="drawer-sub">${escapeHtml(bot.subtitle)}</small></span>
+    `;
+    row.addEventListener('click', () => {
+      els.botsBackdrop.hidden = true;
+      openBotChat(bot.id);
+    });
+    els.botsList.appendChild(row);
+  }
+  els.botsBackdrop.hidden = false;
+}
+
+els.btnBotsClose.addEventListener('click', () => { els.botsBackdrop.hidden = true; });
+els.botsBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.botsBackdrop) els.botsBackdrop.hidden = true;
+});
+
+/* -------------------------------- gifts -------------------------------- */
+// A gift is a small, fixed catalogue of emoji, sent as an ordinary encrypted
+// message. The relay stores only the ciphertext, exactly like any other
+// message, so the relay never learns that a gift was sent or which one.
+const GIFTS = [
+  { id: 'rose', emoji: '🌹', name: 'Роза', cost: 1 },
+  { id: 'teddy', emoji: '🧸', name: 'Мишка', cost: 5 },
+  { id: 'cake', emoji: '🎂', name: 'Торт', cost: 5 },
+  { id: 'heart', emoji: '💝', name: 'Сердце', cost: 10 },
+  { id: 'ring', emoji: '💍', name: 'Кольцо', cost: 25 },
+  { id: 'trophy', emoji: '🏆', name: 'Кубок', cost: 25 },
+  { id: 'diamond', emoji: '💎', name: 'Алмаз', cost: 50 },
+  { id: 'rocket', emoji: '🚀', name: 'Ракета', cost: 50 },
+  { id: 'crown', emoji: '👑', name: 'Корона', cost: 100 },
+  { id: 'star', emoji: '🌟', name: 'Звезда', cost: 100 }
+];
+
+function giftById(id) { return GIFTS.find((g) => g.id === id) || null; }
+
+/** A gift message carries this payload as its (encrypted) text. */
+function giftPayloadOf(m) {
+  if (!m || !m.text || m.text[0] !== '{') return null;
+  try {
+    const obj = JSON.parse(m.text);
+    if (obj && typeof obj.gift === 'string') return obj;
+  } catch { /* not a gift payload */ }
+  return null;
+}
+
+function openGifts() {
+  const key = state.activePeer;
+  if (!key || isGroupKey(key) || isChannelKey(key) || isBotKey(key) || key === SAVED) {
+    toast('Подарок можно отправить собеседнику в личном чате');
+    return;
+  }
+  els.giftsNote.textContent = `Подарок для ${displayNameFor(key)}`;
+  els.giftsGrid.innerHTML = '';
+  for (const gift of GIFTS) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'gift-card';
+    card.dataset.gift = gift.id;
+    card.innerHTML = `<span class="gift-emoji">${gift.emoji}</span>
+      <span class="gift-name">${escapeHtml(gift.name)}</span>
+      <span class="gift-cost">${gift.cost} ⭐</span>`;
+    card.addEventListener('click', async () => {
+      els.giftsBackdrop.hidden = true;
+      await sendGift(gift);
+    });
+    els.giftsGrid.appendChild(card);
+  }
+  els.giftsBackdrop.hidden = false;
+}
+
+async function sendGift(gift) {
+  const key = state.activePeer;
+  if (!key) return;
+  const payload = JSON.stringify({ gift: gift.id, name: gift.name, emoji: gift.emoji, cost: gift.cost });
+  const chat = ensureChat(key);
+  const optimistic = {
+    id: 'tmp-gift-' + Date.now(), text: payload, ts: Date.now(), mine: true,
+    pending: true, reactions: []
+  };
+  chat.messages.push(optimistic);
+  chat.last = `Подарок: ${gift.name}`;
+  chat.lastTs = optimistic.ts;
+  state.forceScrollBottom = true;
+  renderMessages();
+  renderChatList();
+  try {
+    const res = await api.send({ to: peerUsername(key), text: payload });
+    optimistic.id = res.id;
+    optimistic.pending = false;
+    noteLocalSend();
+    renderMessages();
+    renderChatList();
+  } catch (err) {
+    optimistic.pending = false;
+    optimistic.failed = true;
+    renderMessages();
+    toast(err.message || 'Не удалось отправить подарок');
+  }
+}
+
+els.btnGiftsClose.addEventListener('click', () => { els.giftsBackdrop.hidden = true; });
+els.giftsBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.giftsBackdrop) els.giftsBackdrop.hidden = true;
+});
+
+/* -------------------------------- polls -------------------------------- */
+// A poll is an ordinary encrypted message whose text is a small JSON document,
+// and every vote is another one. The relay stores ciphertext only, so it never
+// learns the question, the options, or who voted for what. The vote tally is
+// computed on each device from the votes it can read.
+
+function pollPayloadOf(m) {
+  return m && POLLS ? POLLS.decode(m.text) : null;
+}
+
+function pollVoteOf(m) {
+  return m && POLLS ? POLLS.decodeVote(m.text) : null;
+}
+
+/** The poll id is the id of the message that introduced it. */
+function pollOfChat(chat, id) {
+  if (!chat) return null;
+  const m = chat.messages.find((x) => x.id === id);
+  return m ? pollPayloadOf(m) : null;
+}
+
+/** Every vote cast in this chat for one poll, as { voter -> indices }. */
+function pollVotes(chat, id) {
+  const votes = {};
+  for (const m of chat.messages) {
+    const v = pollVoteOf(m);
+    if (!v || v.pv !== id) continue;
+    const voter = m.mine ? state.username : (m.from || chat.key);
+    votes[voter] = v.i;
+  }
+  return votes;
+}
+
+function pollElement(m) {
+  const poll = pollPayloadOf(m);
+  const box = document.createElement('div');
+  box.className = 'poll';
+  box.dataset.poll = m.id;
+  const chat = activeChat();
+  const votes = pollVotes(chat, m.id);
+  const tally = POLLS.tally(poll, votes);
+  const me = m.mine ? state.username : (m.from || (chat && chat.key));
+  const mine = votes[me] || [];
+  const channel = state.activePeer && isChannelKey(state.activePeer)
+    ? state.channels.get(channelIdOf(state.activePeer)) : null;
+  const canVote = !poll.closed && chat && !chat.muted && !(channel && !channel.isOwner);
+
+  box.innerHTML = `<div class="poll-head">
+      <span class="poll-kind">${poll.m ? 'Опрос · несколько ответов' : 'Опрос'}</span>
+      <span class="poll-question">${escapeHtml(poll.q)}</span>
+    </div>`;
+
+  poll.o.forEach((text, i) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'poll-option' + (mine.includes(i) ? ' chosen' : '');
+    row.dataset.option = String(i);
+    const rowTally = tally.rows[i] || { count: 0, share: 0 };
+    const winner = tally.winner === i;
+    row.innerHTML = `
+      <span class="poll-bar"></span>
+      <span class="poll-option-body">
+        <span class="poll-check${poll.m ? ' multi' : ''}">${mine.includes(i) ? icon('i-check') : ''}</span>
+        <span class="poll-option-text">${escapeHtml(text)}${winner ? ' ' + icon('i-star', 'poll-win') : ''}</span>
+        <span class="poll-option-count">${rowTally.count}</span>
+      </span>`;
+    // The bar width is set through the CSSOM, not a style attribute: the page's
+    // Content-Security-Policy is `style-src 'self'`, which forbids inline styles.
+    row.querySelector('.poll-bar').style.width = `${(rowTally.share * 100).toFixed(1)}%`;
+    if (canVote) row.addEventListener('click', () => votePoll(m.id, i));
+    else row.disabled = true;
+    box.appendChild(row);
+  });
+
+  const foot = document.createElement('div');
+  foot.className = 'poll-foot';
+  foot.textContent = `${tally.voters} ${plural(tally.voters, 'голос', 'голоса', 'голосов')}${poll.anon ? ' · анонимный' : ''}`;
+  box.appendChild(foot);
+  return box;
+}
+
+async function votePoll(pollId, optionIndex) {
+  const key = state.activePeer;
+  const chat = activeChat();
+  if (!key || !chat || isChannelKey(key)) return;
+  const poll = pollOfChat(chat, pollId);
+  if (!poll || poll.closed) return;
+  const me = state.username;
+  const current = pollVotes(chat, pollId)[me] || [];
+  const next = POLLS.toggle(poll, current, optionIndex);
+  const text = POLLS.encodeVote(pollId, next);
+  const optimistic = { id: 'tmp-vote-' + Date.now(), text, ts: Date.now(), mine: true, pending: true, reactions: [] };
+  chat.messages.push(optimistic);
+  renderMessagesImmediate();
+  try {
+    if (isGroupKey(key)) {
+      const res = await api.sendGroup({ groupId: groupIdOf(key), text, members: groupMemberNames(groupIdOf(key)) });
+      optimistic.id = res.id;
+    } else {
+      const res = await api.send({ to: peerUsername(key), text });
+      optimistic.id = res.id;
+    }
+    optimistic.pending = false;
+    noteLocalSend();
+  } catch (err) {
+    optimistic.pending = false;
+    optimistic.failed = true;
+    toast(err.message || 'Не удалось проголосовать');
+  }
+  renderMessagesImmediate();
+  renderChatList();
+}
+
+function openPollComposer() {
+  const key = state.activePeer;
+  if (!key || isBotKey(key) || key === SAVED || isChannelKey(key)) {
+    toast('Опрос можно отправить собеседнику или в группу');
+    return;
+  }
+  els.pollQuestion.value = '';
+  els.pollError.hidden = true;
+  els.pollMultiple.checked = false;
+  els.pollAnon.checked = true;
+  els.pollOptions.innerHTML = '';
+  addPollOptionInput();
+  addPollOptionInput();
+  els.pollBackdrop.hidden = false;
+  els.pollQuestion.focus();
+}
+
+function addPollOptionInput() {
+  if (els.pollOptions.children.length >= POLLS.MAX_OPTIONS) return;
+  const row = document.createElement('div');
+  row.className = 'poll-option-input';
+  row.innerHTML = `<input type="text" class="contact-input" spellcheck="false" placeholder="Вариант" maxlength="${POLLS.MAX_OPTION}" />
+    <button class="icon-btn" type="button" data-remove-option title="Удалить">${icon('i-close')}</button>`;
+  row.querySelector('[data-remove-option]').addEventListener('click', () => {
+    if (els.pollOptions.children.length > 2) row.remove();
+  });
+  els.pollOptions.appendChild(row);
+}
+
+async function createPoll() {
+  const options = Array.from(els.pollOptions.querySelectorAll('input')).map((i) => i.value);
+  const poll = POLLS.make(els.pollQuestion.value, options, {
+    multiple: els.pollMultiple.checked,
+    anon: els.pollAnon.checked
+  });
+  const check = POLLS.validate(poll);
+  if (!check.ok) {
+    els.pollError.textContent = check.error;
+    els.pollError.hidden = false;
+    return;
+  }
+  els.pollBackdrop.hidden = true;
+  await sendPoll(poll);
+}
+
+async function sendPoll(poll) {
+  const key = state.activePeer;
+  if (!key) return;
+  const text = POLLS.encode(poll);
+  const chat = ensureChat(key);
+  const optimistic = { id: 'tmp-poll-' + Date.now(), text, ts: Date.now(), mine: true, pending: true, reactions: [] };
+  chat.messages.push(optimistic);
+  chat.last = `Опрос: ${poll.q}`;
+  chat.lastTs = optimistic.ts;
+  state.forceScrollBottom = true;
+  renderMessagesImmediate();
+  renderChatList();
+  try {
+    if (isGroupKey(key)) {
+      const res = await api.sendGroup({ groupId: groupIdOf(key), text, members: groupMemberNames(groupIdOf(key)) });
+      optimistic.id = res.id;
+    } else {
+      const res = await api.send({ to: peerUsername(key), text });
+      optimistic.id = res.id;
+    }
+    optimistic.pending = false;
+    noteLocalSend();
+  } catch (err) {
+    optimistic.pending = false;
+    optimistic.failed = true;
+    toast(err.message || 'Не удалось отправить опрос');
+  }
+  renderMessagesImmediate();
+  renderChatList();
+}
+
+els.btnPollAdd.addEventListener('click', addPollOptionInput);
+els.btnPollCreate.addEventListener('click', createPoll);
+els.btnPollClose.addEventListener('click', () => { els.pollBackdrop.hidden = true; });
+els.pollBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.pollBackdrop) els.pollBackdrop.hidden = true;
+});
+
+/* ---------------------------- folders ("папки") ---------------------------- */
+
+function openFolders() {
+  state.folderEditing = null;
+  els.folderEditor.hidden = true;
+  els.folderError.hidden = true;
+  renderFolderManager();
+  els.folderBackdrop.hidden = false;
+}
+
+function renderFolderManager() {
+  els.folderList.innerHTML = '';
+  els.folderEmpty.hidden = state.folders.length > 0;
+  for (const folder of state.folders) {
+    const row = document.createElement('div');
+    row.className = 'folder-row' + (folder.id === state.folderEditing ? ' active' : '');
+    const kinds = FOLDERS.KINDS.filter((k) => folder.kinds[k]);
+    const summary = [
+      kinds.length ? `${kinds.length} тип(а)` : 'без типов',
+      folder.unreadOnly ? 'только непрочитанные' : '',
+      folder.include.length ? `+${folder.include.length}` : ''
+    ].filter(Boolean).join(' · ');
+    row.innerHTML = `
+      <span class="folder-row-ico">${icon('i-folder')}</span>
+      <span class="folder-row-body">
+        <span class="folder-row-name">${escapeHtml(folder.name)}</span>
+        <span class="folder-row-sub">${escapeHtml(summary)}</span>
+      </span>`;
+    row.addEventListener('click', () => openFolderEditor(folder.id));
+    els.folderList.appendChild(row);
+  }
+}
+
+function openFolderEditor(id) {
+  state.folderEditing = id;
+  const folder = state.folders.find((f) => f.id === id);
+  els.folderEditor.hidden = false;
+  els.folderError.hidden = true;
+  els.btnFolderDelete.hidden = !folder;
+  if (folder) {
+    els.folderName.value = folder.name;
+    els.folderUnread.checked = folder.unreadOnly;
+    els.folderExclusive.checked = !!folder.exclusive;
+    for (const box of els.folderKinds.querySelectorAll('input[data-kind]')) {
+      box.checked = !!folder.kinds[box.dataset.kind];
+    }
+  } else {
+    els.folderName.value = '';
+    els.folderUnread.checked = false;
+    els.folderExclusive.checked = false;
+    for (const box of els.folderKinds.querySelectorAll('input[data-kind]')) {
+      box.checked = box.dataset.kind === 'private';
+    }
+  }
+  renderFolderManager();
+  els.folderName.focus();
+}
+
+function readFolderForm() {
+  const kinds = {};
+  for (const box of els.folderKinds.querySelectorAll('input[data-kind]')) {
+    kinds[box.dataset.kind] = box.checked;
+  }
+  const existing = state.folders.find((f) => f.id === state.folderEditing);
+  return FOLDERS.normalize({
+    id: existing ? existing.id : undefined,
+    name: els.folderName.value,
+    kinds,
+    unreadOnly: els.folderUnread.checked,
+    exclusive: els.folderExclusive.checked,
+    include: existing ? existing.include : [],
+    exclude: existing ? existing.exclude : []
+  });
+}
+
+function saveFolder() {
+  const folder = readFolderForm();
+  if (!folder) {
+    els.folderError.textContent = 'Введите название папки';
+    els.folderError.hidden = false;
+    return;
+  }
+  folder.exclusive = els.folderExclusive.checked;
+  const index = state.folders.findIndex((f) => f.id === folder.id);
+  if (index >= 0) state.folders[index] = folder;
+  else {
+    if (state.folders.length >= FOLDERS.MAX_FOLDERS) {
+      els.folderError.textContent = `Не больше ${FOLDERS.MAX_FOLDERS} папок`;
+      els.folderError.hidden = false;
+      return;
+    }
+    state.folders.push(folder);
+  }
+  if (state.activeFolder !== 'all' && !state.folders.some((f) => f.id === state.activeFolder)) {
+    state.activeFolder = 'all';
+  }
+  saveFolders();
+  renderFolderManager();
+  els.folderEditor.hidden = true;
+  state.folderEditing = null;
+  toast(`Папка «${folder.name}» сохранена`);
+}
+
+function deleteFolder() {
+  const id = state.folderEditing;
+  if (!id) return;
+  state.folders = state.folders.filter((f) => f.id !== id);
+  if (state.activeFolder === id) state.activeFolder = 'all';
+  saveFolders();
+  renderFolderManager();
+  els.folderEditor.hidden = true;
+  state.folderEditing = null;
+  toast('Папка удалена');
+}
+
+els.btnFolderNew.addEventListener('click', () => openFolderEditor(null));
+els.btnFolderSave.addEventListener('click', saveFolder);
+els.btnFolderDelete.addEventListener('click', deleteFolder);
+els.btnFolderClose.addEventListener('click', () => { els.folderBackdrop.hidden = true; });
+els.folderBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.folderBackdrop) els.folderBackdrop.hidden = true;
+});
+
 async function switchToAccount(username) {
   try {
     const res = await api.switchAccount(username);
@@ -4230,6 +5755,9 @@ async function restartSession() {
   state.lastSeen.clear();
   state.groups.clear();
   state.channels.clear();
+  state.drafts = {};
+  state.folders = [];
+  state.activeFolder = 'all';
   state.activePeer = null;
   els.chatList.innerHTML = '';
   els.archivedList.innerHTML = '';

@@ -204,7 +204,10 @@ for (const sql of [
   'ALTER TABLE users ADD COLUMN profile_hidden INTEGER NOT NULL DEFAULT 0',
   // Social links shown on the profile (a JSON array of {network, url}). Stored as
   // text on the relay, which never fetches them.
-  'ALTER TABLE users ADD COLUMN socials TEXT'
+  'ALTER TABLE users ADD COLUMN socials TEXT',
+  // Extra display names ("никнеймы"), a JSON array of strings. Only the owner
+  // account may have more than a handful, and only it may edit anyone's.
+  'ALTER TABLE users ADD COLUMN nicknames TEXT'
 ]) {
   try { db.exec(sql); } catch { /* column already present */ }
 }
@@ -245,6 +248,7 @@ const q = {
   ),
   setAvatarImage: db.prepare('UPDATE users SET avatar_image = ?, updated_at = ? WHERE username = ?'),
   setSocials: db.prepare('UPDATE users SET socials = ?, updated_at = ? WHERE username = ?'),
+  setNicknames: db.prepare('UPDATE users SET nicknames = ?, updated_at = ? WHERE username = ?'),
   setLastSeen: db.prepare('UPDATE users SET last_seen = ? WHERE username = ?'),
   setPrivacy: db.prepare('UPDATE users SET last_seen_hidden = ?, profile_hidden = ? WHERE username = ?'),
   searchUsers: db.prepare(
@@ -428,7 +432,7 @@ const q = {
   deleteUserMemberships: db.prepare('DELETE FROM group_members WHERE username = ?'),
   adminListUsers: db.prepare(
     `SELECT u.username, u.display_name, u.bio, u.avatar_color, u.avatar_image, u.created_at,
-            u.is_admin, u.verified, u.banned, u.badge_image,
+            u.is_admin, u.verified, u.banned, u.badge_image, u.nicknames,
             (SELECT COUNT(*) FROM messages m WHERE m.sender = u.username) AS sent
        FROM users u ORDER BY u.created_at ASC`
   ),
@@ -594,6 +598,63 @@ function parseSocials(text) {
 }
 
 /**
+ * Extra display names ("никнеймы") a profile can show under the main name.
+ *
+ * The owner account is allowed an unbounded list; everyone else is capped, so
+ * the unbounded case stays a privilege rather than a way to bloat a profile
+ * broadcast for every viewer. This is enforced here, on the relay, and never
+ * trusted from the client.
+ */
+const MAX_NICKNAMES = 3;
+const OWNER_USERNAME = (process.env.SLEEPHY_OWNER || [...ADMINS][0] || '').toLowerCase();
+const NICKNAME_MAX = 32;
+
+function isOwner(username) {
+  return !!username && username.toLowerCase() === OWNER_USERNAME;
+}
+
+function nicknameLimit(username) {
+  return isOwner(username) ? Infinity : MAX_NICKNAMES;
+}
+
+function cleanNicknames(value, username) {
+  if (value === null) return { value: null };
+  if (!Array.isArray(value)) return { error: 'Nicknames must be a list' };
+  const limit = nicknameLimit(username);
+  const out = [];
+  const seen = new Set();
+  for (const raw of value) {
+    if (typeof raw !== 'string') return { error: 'Malformed nickname' };
+    const name = raw.trim().replace(/\s+/g, ' ');
+    if (name.length === 0) continue;
+    if (name.length > NICKNAME_MAX) return { error: 'Nickname is too long' };
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+    if (out.length >= limit) break;
+  }
+  return { value: out.length ? JSON.stringify(out) : null };
+}
+
+function parseNicknames(text) {
+  if (!text) return [];
+  try {
+    const arr = JSON.parse(text);
+    return Array.isArray(arr) ? arr.filter((n) => typeof n === 'string') : [];
+  } catch { return []; }
+}
+
+/** One nickname from an admin, validated strictly (no silent truncation). */
+function cleanNickname(value) {
+  if (typeof value !== 'string') return { error: 'Nickname is required' };
+  const name = value.trim().replace(/\s+/g, ' ');
+  if (!name) return { error: 'Nickname is required' };
+  if (name.length > NICKNAME_MAX) return { error: 'Nickname is too long' };
+  return { value: name };
+}
+
+/**
  * A badge picture arrives as a small data: URL from the admin's device. Only
  * raster images are accepted, and the size is capped so a single account cannot
  * bloat the database or every profile broadcast.
@@ -710,6 +771,8 @@ function publicProfile(user, viewer) {
     avatarColor: hidden ? 'mint' : (user.avatar_color || 'mint'),
     // Social links are part of the profile, so hiding the profile hides them.
     socials: hidden ? [] : parseSocials(user.socials),
+    // Extra display names shown under the main name. Also part of the profile.
+    nicknames: hidden ? [] : parseNicknames(user.nicknames),
     // A profile picture set by the user, shown instead of their initial.
     avatarImage: hidden ? null : (user.avatar_image || null),
     // When the account was last connected, for "last seen" under the name.
@@ -722,6 +785,9 @@ function publicProfile(user, viewer) {
     streak: streak.count,
     streakActive: streak.active,
     admin: !!user.is_admin,
+    // Whether the *viewer* may add, remove or rename this account's nicknames.
+    // Only administrators get the tooltip that does that.
+    canEditNicknames: isAdmin(viewer),
     // Named in ADMINS but not yet flagged: the relay still treats them as an
     // admin, so the client must show the panel. The flag is set on next login.
     adminByConfig: ADMINS.has(user.username),
@@ -729,7 +795,10 @@ function publicProfile(user, viewer) {
     // controls reflect what the relay is enforcing. Never sent to anyone else.
     privacy: isSelf
       ? { lastSeenHidden: !!user.last_seen_hidden, profileHidden: !!user.profile_hidden }
-      : undefined
+      : undefined,
+    // The owner account may set its own nickname list; tell its own devices so
+    // the editor appears. Not sent to anyone else.
+    owner: isSelf ? isOwner(user.username) : undefined
   };
 }
 
@@ -1124,6 +1193,13 @@ function handleProfileSet(ws, msg, rid) {
     const parsed = cleanSocials(msg.socials);
     if (parsed.error) return bad(ws, rid, parsed.error);
     q.setSocials.run(parsed.value, Date.now(), ws.username);
+  }
+  // Nicknames are a privilege: only the owner account may set its own list from
+  // the profile form. Everyone else is edited by an administrator.
+  if (msg.nicknames !== undefined && isOwner(ws.username)) {
+    const parsed = cleanNicknames(msg.nicknames, ws.username);
+    if (parsed.error) return bad(ws, rid, parsed.error);
+    q.setNicknames.run(parsed.value, Date.now(), ws.username);
   }
   const updated = publicProfile(q.getUser.get(ws.username));
   reply(ws, rid, { t: 'profile.saved', profile: updated });
@@ -2075,6 +2151,7 @@ function handleAdminUsers(ws, msg, rid) {
       admin: !!r.is_admin || ADMINS.has(r.username),
       verified: !!r.verified,
       badgeImage: r.badge_image || null,
+      nicknames: parseNicknames(r.nicknames),
       banned: !!r.banned,
       online: isOnline(r.username)
     }))
@@ -2160,6 +2237,40 @@ function handleAdminAction(ws, msg, rid) {
       }
       q.setAdmin.run(user.is_admin ? 0 : 1, now, target);
       break;
+    case 'nicknameAdd':
+    case 'nicknameRemove':
+    case 'nicknameSet': {
+      // Editing someone's nicknames is an administrator tool, so it is gated on
+      // requireAdmin above. `nicknameSet` replaces one entry by index; the other
+      // two add or drop an entry.
+      const current = parseNicknames(user.nicknames);
+      let next = current;
+      if (msg.action === 'nicknameAdd') {
+        const parsed = cleanNickname(msg.nickname);
+        if (parsed.error) return bad(ws, rid, parsed.error);
+        next = [...current, parsed.value];
+      } else if (msg.action === 'nicknameRemove') {
+        const idx = Number(msg.index);
+        if (!Number.isInteger(idx) || idx < 0 || idx >= current.length) {
+          return bad(ws, rid, 'No such nickname');
+        }
+        next = current.filter((_, i) => i !== idx);
+      } else {
+        const idx = Number(msg.index);
+        const parsed = cleanNickname(msg.nickname);
+        if (!Number.isInteger(idx) || idx < 0 || idx >= current.length) {
+          return bad(ws, rid, 'No such nickname');
+        }
+        if (parsed.error) return bad(ws, rid, parsed.error);
+        next = current.map((n, i) => (i === idx ? parsed.value : n));
+      }
+      // The list is validated for the *target*, so an admin cannot hand a normal
+      // account an unbounded list; the owner keeps the unbounded privilege.
+      const validated = cleanNicknames(next, target);
+      if (validated.error) return bad(ws, rid, validated.error);
+      q.setNicknames.run(validated.value, now, target);
+      break;
+    }
     case 'ban':
       if (target === actor) return bad(ws, rid, 'You cannot block your own account');
       q.setBanned.run(user.banned ? 0 : 1, now, target);
