@@ -17,7 +17,11 @@ and forwards ciphertext it cannot read.
   because delivering codes needs a funded SMS provider
 - **Claim a username** — it is unique, and nobody else can take it
 - **Change your username** at any time; the old one is freed immediately
-- Profile: display name, bio and avatar colour, visible to your contacts
+- Profile: display name, bio, avatar colour and **social links** (Telegram,
+  Instagram, X, GitHub, a website…), shown as chips on your profile
+- **Privacy switches, enforced by the relay**: hide your last-seen time, and
+  hide your profile (name, bio, picture and social links) from everyone but
+  yourself
 
 **Messaging**
 - Search for users by username and start a chat
