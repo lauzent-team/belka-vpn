@@ -440,6 +440,10 @@ input, textarea { user-select: text; }
 .chat-item-time { margin-left: auto; color: var(--text-faint); font-size: 11px; flex: none; }
 .chat-item-last { color: var(--text-dim); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
 .chat-item-last.draft { color: var(--text-dim); }
+/* A cross-chat search hit: the chat name leads, the snippet carries the sender. */
+.search-msg-where { color: var(--text-faint); font-weight: 600; }
+.search-msg .chat-item-last { white-space: normal; }
+#search-messages-wrap .panel-title { margin-top: 8px; }
 .draft-tag { color: var(--accent); font-weight: 600; }
 .chat-item-badge {
   background: var(--accent); color: #fff;

@@ -33,6 +33,8 @@ node test/story-relay.js # stories against a real relay: publish, per-viewer cry
 node test/ttl.js       # self-destructing messages over the relay: TTL, sweep, notify
 node test/scheduled.js # scheduled messages over the relay: hold, list, cancel, reschedule, send now, sweep
 node test/safety.js    # safety numbers: both ends agree, per pair, never stored
+node test/globalsearch.js       # the global search rules (pure): cross-chat hits, merge, grouping
+node test/globalsearch-relay.js # global search over a real relay: decrypt the slice, no leaks
 xvfb-run -a node test/ui.js            # UI tests driving the real Electron app
 xvfb-run -a node test/ui-features.js   # the newer UI features, clicked for real
 xvfb-run -a node test/ui-drawer.js     # drawer, settings, contacts, groups, accounts
@@ -45,6 +47,7 @@ xvfb-run -a node test/ui-stories.js    # the stories bar, composer and viewer, c
 xvfb-run -a node test/ui-ttl.js        # the auto-delete timer: picker, chip, countdown
 xvfb-run -a node test/ui-scheduled.js  # "send later": picker, drawer badge, list, send now, cancel
 xvfb-run -a node test/ui-safety.js     # the safety number in a peer profile, clicked for real
+xvfb-run -a node test/ui-globalsearch.js # the top box: "Сообщения" section, row, click-through
 xvfb-run -a node test/connection.js    # connection and error handling
 xvfb-run -a node test/shots.js         # regenerate shots/*.png
 ```
@@ -640,6 +643,34 @@ arriving now can change a header that is already on screen.
   devices yields one number, a different peer yields another, a substituted key
   changes it, and the number never appears in the message store. `test/ui-safety.js`
   drives the real profile overlay, including the tick surviving a reopen.
+
+## Global message search (v0.14.0)
+
+- **The relay never sees the query.** `search.global` (`handleSearchGlobal`)
+  returns the newest slice of *every* conversation the caller can open — direct
+  (`recentMessages`, `send_at IS NULL`, `deleted = 0`), group
+  (`groupRecentMessages`) and channel (`channelRecentMessages`) — each row
+  carrying its `chatKey`. The client decrypts the slice and matches the text on
+  the device, so a search string is never transmitted.
+- **One filter layer, reused.** The pure `src/lib/globalsearch.js`
+  (`window.SleePhyGlobalSearch`) owns `searchAcross(conversations, filter, opts)`
+  and `groupByChat`, mirroring `chatsearch.js`. The renderer runs the same filter
+  over chats already in memory *and* over the decrypted relay slice, then merges
+  by `chatKey:id` (direct and group ids come from different tables and can
+  collide) and sorts newest-first.
+- **The slice is cached, and invalidated on any message event.** `globalSearchItems`
+  holds the decrypted slice for 20s so a burst of keystrokes does not re-fetch;
+  `MESSAGE_EVENTS` (`message`, `edited`, `deleted`, `scheduled.released`, and the
+  group/channel equivalents) clears it in `api.onEvent` before the switch.
+- **Hits land in the existing top box.** `runSearch` renders the people/channels
+  as before, then `renderGlobalSearch` fills the `#search-messages` list under a
+  "Сообщения" heading. A row shows the chat, the sender (or "Вы"), a snippet and
+  the day; clicking it opens that chat and `scrollToMessage`s to the hit, paging
+  older direct history when the message is not in the loaded page.
+- **`test/globalsearch.js`** covers the pure rules (15 checks);
+  `test/globalsearch-relay.js` proves the relay slice decrypts across direct,
+  group and channel chats and never leaks a held or deleted message;
+  `test/ui-globalsearch.js` drives the real box, section, row and click-through.
 
 ## Scheduled messages (v0.13.0)
 

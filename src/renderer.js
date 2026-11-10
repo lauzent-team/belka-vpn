@@ -20,6 +20,7 @@ const GAMES = (typeof window !== 'undefined' && window.SleePhyGames) || null;
 const POLLS = (typeof window !== 'undefined' && window.SleePhyPolls) || null;
 const FOLDERS = (typeof window !== 'undefined' && window.SleePhyFolders) || null;
 const CHATSEARCH = (typeof window !== 'undefined' && window.SleePhyChatSearch) || null;
+const SEARCH = (typeof window !== 'undefined' && window.SleePhyGlobalSearch) || null;
 const STREAK = (typeof window !== 'undefined' && window.SleePhyStreak) || null;
 const STORIES = (typeof window !== 'undefined' && window.SleePhyStories) || null;
 
@@ -788,6 +789,9 @@ const els = {
   searchPanel: $('search-panel'),
   searchResults: $('search-results'),
   searchEmpty: $('search-empty'),
+  searchMessagesWrap: $('search-messages-wrap'),
+  searchMessages: $('search-messages'),
+  searchMessagesEmpty: $('search-messages-empty'),
   chatSections: $('chat-sections'),
   chatList: $('chat-list'),
   chatEmpty: $('chat-empty'),
@@ -2547,6 +2551,7 @@ els.btnSearchClear.addEventListener('click', () => {
 function closeSearchPanel() {
   els.searchPanel.hidden = true;
   els.chatSections.hidden = false;
+  if (els.searchMessagesWrap) { els.searchMessagesWrap.hidden = true; els.searchMessages.innerHTML = ''; }
 }
 
 async function runSearch(query) {
@@ -2556,6 +2561,7 @@ async function runSearch(query) {
     state.profiles.set(u.username, u);
     state.presence.set(u.username, !!u.online);
   }
+
   // An `@handle` may name a channel rather than a person. Try that too, so the
   // same box finds both, and show a channel row above the people.
   let channelHit = null;
@@ -2618,6 +2624,122 @@ async function runSearch(query) {
     });
     els.searchResults.appendChild(li);
   }
+
+  await renderGlobalSearch(query);
+}
+
+/* --------------------------- global search --------------------------- */
+// The relay returns a decrypted slice of the newest history; we cache it so a
+// burst of keystrokes does not re-fetch, and invalidate on any new message.
+let globalSearchCache = { at: 0, items: [] };
+
+function invalidateGlobalSearch() {
+  globalSearchCache = { at: 0, items: [] };
+}
+
+/** Conversations in the shape the pure search layer expects. */
+function searchConversations() {
+  return [...state.chats.values()].map((chat) => ({
+    key: chat.key, title: displayNameFor(chat.key), messages: chat.messages
+  }));
+}
+
+/** Decrypt the newest slice of every chat, then filter it on the device. */
+async function globalSearchItems() {
+  const now = Date.now();
+  if (now - globalSearchCache.at < 20000) return globalSearchCache.items;
+  let items = [];
+  try { items = await api.searchGlobal({ limit: 300 }); } catch { items = []; }
+  globalSearchCache = { at: now, items };
+  return items;
+}
+
+/** One "Сообщения" row: where it came from, who said it, a snippet, and when. */
+function globalHitRow(hit) {
+  const li = document.createElement('li');
+  li.className = 'chat-item search-msg';
+  const m = hit.message;
+  const chat = state.chats.get(hit.chatKey);
+  const who = m.mine ? 'Вы' : displayNameFor(m.from);
+  li.innerHTML = `
+    <div class="avatar small" data-color="${escapeHtml(avatarColorFor(hit.chatKey))}">${avatarInnerHtml(hit.chatKey, chat || {})}</div>
+    <div class="chat-item-body">
+      <div class="chat-item-top">
+        <span class="chat-item-name">${escapeHtml(hit.title)}</span>
+        <span class="chat-item-time">${escapeHtml(dayLabel(m.ts))}</span>
+      </div>
+      <div class="chat-item-last"><span class="search-msg-where">${escapeHtml(who)}:</span> ${escapeHtml(snippetOf(m))}</div>
+    </div>
+  `;
+  li.addEventListener('click', () => {
+    els.search.value = '';
+    els.btnSearchClear.hidden = true;
+    closeSearchPanel();
+    openMessageFromSearch(hit.chatKey, m.id);
+  });
+  return li;
+}
+
+/** Open a chat and jump to a message, pulling older history when it is not in
+ *  the page already. Group and channel history cannot be paged per message, so
+ *  those simply open the chat. */
+async function openMessageFromSearch(key, id) {
+  ensureChat(key);
+  renderChatList();
+  await openChat(key);
+  if (key === SAVED || isBotKey(key)) return;
+  const chat = state.chats.get(key);
+  if (chat && chat.loaded && !chat.messages.some((m) => m.id === id) && !isMultiKey(key)) {
+    try {
+      const items = await api.history({ with: peerUsername(key), limit: 300 });
+      chat.messages = resolveQuotes(items);
+      chat.loaded = true;
+      renderMessages();
+    } catch { /* keep what we have */ }
+  }
+  scrollToMessage(id, { smooth: false });
+}
+
+function snippetOf(m) {
+  if (m.attachment && !m.text) return `📎 ${m.attachment.name || 'Вложение'}`;
+  const text = (m.text || '').replace(/\s+/g, ' ').trim();
+  return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+}
+
+/** Render the cross-chat "Сообщения" section for the current query. */
+async function renderGlobalSearch(query) {
+  if (!els.searchMessagesWrap || !SEARCH) return;
+  const q = String(query || '').trim();
+  if (q.length < 2) {
+    els.searchMessagesWrap.hidden = true;
+    els.searchMessages.innerHTML = '';
+    return;
+  }
+
+  // Two sources: chats already open in memory, and the decrypted history slice
+  // from the relay. A hit is deduplicated by chat + message id, in-memory wins
+  // (direct and group ids come from different tables and can collide).
+  const filter = { query: q, kind: 'any', from: 'any', date: 'any', now: Date.now() };
+  const hits = SEARCH.searchAcross(searchConversations(), filter, { extrasOf: searchExtraOf, limit: 60 });
+  const seen = new Set(hits.map((h) => `${h.chatKey}:${h.message.id}`));
+
+  const items = await globalSearchItems();
+  if (els.search.value.trim() !== q) return; // the box moved on while we decrypted
+  for (const m of items) {
+    const dedupKey = `${m.chatKey}:${m.id}`;
+    if (seen.has(dedupKey)) continue;
+    const hit = SEARCH.searchAcross(
+      [{ key: m.chatKey, title: displayNameFor(m.chatKey), messages: [m] }],
+      filter, { extrasOf: searchExtraOf, limit: 1 }
+    )[0];
+    if (hit) { hits.push(hit); seen.add(dedupKey); }
+  }
+  hits.sort((a, b) => (b.message.ts || 0) - (a.message.ts || 0));
+
+  els.searchMessages.innerHTML = '';
+  els.searchMessagesWrap.hidden = hits.length === 0;
+  els.searchMessagesEmpty.hidden = hits.length > 0;
+  for (const hit of hits.slice(0, 40)) els.searchMessages.appendChild(globalHitRow(hit));
 }
 
 function startChatWith(username) {
@@ -4997,7 +5119,18 @@ async function refreshStatus() {
 }
 
 /* -------------------------------- events -------------------------------- */
+// Events that add, change or remove a message somewhere; they invalidate the
+// cached global-search history slice.
+const MESSAGE_EVENTS = new Set([
+  'message', 'edited', 'deleted', 'scheduled.released',
+  'group.message', 'group.edited', 'group.deleted',
+  'channel.message', 'channel.edited', 'channel.deletedMessage'
+]);
+
 api.onEvent((evt) => {
+  // Any event that can add or remove a message makes the cached global-search
+  // slice stale, so drop it and let the next query re-fetch.
+  if (MESSAGE_EVENTS.has(evt.type)) invalidateGlobalSearch();
   switch (evt.type) {
     case 'connection':
       updateConnIndicators(evt.state === 'online');

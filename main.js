@@ -138,6 +138,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('sleephy:pinMessage', async (_e, payload) => client.pinMessage(payload));
   ipcMain.handle('sleephy:pinnedMessages', async (_e, peer) => client.pinnedMessages({ peer }));
   ipcMain.handle('sleephy:searchMessages', async (_e, payload) => client.searchMessages(payload));
+  ipcMain.handle('sleephy:searchGlobal', async (_e, payload) => client.searchGlobal(payload));
   ipcMain.handle('sleephy:getSettings', async () => client.getSettings());
   ipcMain.handle('sleephy:saveSettings', async (_e, settings) => client.saveSettings(settings));
   ipcMain.handle('sleephy:setPrivacy', async (_e, privacy) => client.setPrivacy(privacy));

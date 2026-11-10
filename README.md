@@ -73,6 +73,11 @@ and forwards ciphertext it cannot read.
 - **In-chat search** with filters — by sender (me / them), by type (media, photo,
   voice, file, links, polls, gifts, games) and by date (today, week, month);
   matches are highlighted and the count is shown
+- **Global search** — the same top box also searches message text across every
+  chat, group and channel at once. The relay hands the device the newest slice of
+  each conversation and the text is decrypted and matched locally, so the query
+  itself never leaves the device. Results are grouped under "Сообщения", show the
+  chat and sender, and open that chat at the message
 
 **Chat management**
 - Pin, mute and archive conversations

@@ -58,6 +58,7 @@ contextBridge.exposeInMainWorld('sleephy', {
   pinMessage: (payload) => invoke('sleephy:pinMessage', payload),
   pinnedMessages: (peer) => invoke('sleephy:pinnedMessages', peer),
   searchMessages: (payload) => invoke('sleephy:searchMessages', payload),
+  searchGlobal: (payload) => invoke('sleephy:searchGlobal', payload),
   getSettings: () => invoke('sleephy:getSettings'),
   saveSettings: (settings) => invoke('sleephy:saveSettings', settings),
   setPrivacy: (privacy) => invoke('sleephy:setPrivacy', privacy),

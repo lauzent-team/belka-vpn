@@ -449,6 +449,19 @@ const q = {
         AND (sender LIKE ? OR recipient LIKE ? OR attachment LIKE ?)
       ORDER BY id DESC LIMIT ?`
   ),
+  // Global search reads the newest slice of every conversation and filters the
+  // decrypted text on the device; the relay only picks the rows. The slice is
+  // per conversation, so one busy chat cannot crowd out the others, and a held
+  // scheduled message (send_at set) is left out exactly as in history.
+  recentMessages: db.prepare(
+    `SELECT * FROM (
+       SELECT m.*, ROW_NUMBER() OVER (
+         PARTITION BY CASE WHEN sender = ? THEN recipient ELSE sender END ORDER BY id DESC
+       ) AS rn
+       FROM messages m
+       WHERE (sender = ? OR recipient = ?) AND deleted = 0 AND send_at IS NULL
+     ) WHERE rn <= ?`
+  ),
 
   /* ------------------------------- groups ------------------------------- */
   insertGroup: db.prepare('INSERT INTO groups (name, owner, created_at) VALUES (?, ?, ?)'),
@@ -472,6 +485,15 @@ const q = {
   getGroupMessage: db.prepare('SELECT * FROM group_messages WHERE id = ?'),
   groupHistory: db.prepare(
     'SELECT * FROM group_messages WHERE group_id = ? AND deleted = 0 ORDER BY id DESC LIMIT ?'
+  ),
+  // The newest slice of each group this account belongs to, for global search.
+  recentGroupMessages: db.prepare(
+    `SELECT * FROM (
+       SELECT m.*, ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY id DESC) AS rn
+       FROM group_messages m
+       WHERE group_id IN (SELECT group_id FROM group_members WHERE username = ?)
+         AND deleted = 0
+     ) WHERE rn <= ?`
   ),
   editGroupMessage: db.prepare('UPDATE group_messages SET envelope = ?, edited_at = ? WHERE id = ?'),
   deleteGroupMessage: db.prepare(
@@ -516,6 +538,15 @@ const q = {
   getChannelMessage: db.prepare('SELECT * FROM channel_messages WHERE id = ?'),
   channelHistory: db.prepare(
     'SELECT * FROM channel_messages WHERE channel_id = ? AND deleted = 0 ORDER BY id DESC LIMIT ?'
+  ),
+  // The newest slice of each channel this account follows, for global search.
+  recentChannelMessages: db.prepare(
+    `SELECT * FROM (
+       SELECT m.*, ROW_NUMBER() OVER (PARTITION BY channel_id ORDER BY id DESC) AS rn
+       FROM channel_messages m
+       WHERE channel_id IN (SELECT channel_id FROM channel_subs WHERE username = ?)
+         AND deleted = 0
+     ) WHERE rn <= ?`
   ),
   editChannelMessage: db.prepare('UPDATE channel_messages SET envelope = ?, edited_at = ? WHERE id = ?'),
   deleteChannelMessage: db.prepare(
@@ -2005,6 +2036,49 @@ function handleMessagesSearch(ws, msg, rid) {
   });
 }
 
+/**
+ * Global search: hand the client the newest slice of every conversation it can
+ * already open, and let it filter the decrypted text on the device. The relay
+ * never learns the query, so it cannot narrow the scan — it just caps how much
+ * history is sent. Per-chat search (`messages.search`) stays for the old flow.
+ */
+function handleSearchGlobal(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const limit = Math.min(Math.max(Number(msg.limit) || 300, 1), 500);
+
+  const direct = q.recentMessages.all(ws.username, ws.username, ws.username, limit).map((r) => {
+    const peer = r.sender === ws.username ? r.recipient : r.sender;
+    return {
+      id: r.id, from: r.sender, ts: r.ts, peer,
+      box: r.box, nonce: r.nonce,
+      replyTo: r.reply_to, editedAt: r.edited_at,
+      kind: r.kind || null, attachment: r.attachment || null
+    };
+  });
+
+  const groups = q.recentGroupMessages.all(ws.username, limit).map((r) => {
+    let envelope = null;
+    try { envelope = (JSON.parse(r.envelope) || {})[ws.username] || null; } catch { envelope = null; }
+    return {
+      id: r.id, groupId: r.group_id, from: r.sender, ts: r.ts, envelope,
+      replyTo: r.reply_to, editedAt: r.edited_at,
+      kind: r.kind || null, attachment: r.attachment || null
+    };
+  });
+
+  const channels = q.recentChannelMessages.all(ws.username, limit).map((r) => {
+    let envelope = null;
+    try { envelope = (JSON.parse(r.envelope) || {})[ws.username] || null; } catch { envelope = null; }
+    return {
+      id: r.id, channelId: r.channel_id, from: r.sender, ts: r.ts, envelope,
+      replyTo: r.reply_to, editedAt: r.edited_at,
+      kind: r.kind || null, attachment: r.attachment || null
+    };
+  });
+
+  reply(ws, rid, { t: 'search.global', direct, groups, channels });
+}
+
 function handleSettingsGet(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
   const row = q.getUserSettings.get(ws.username);
@@ -2980,6 +3054,7 @@ const handlers = {
   'message.pin': handleMessagePin,
   'messages.pinned': handleMessagesPinned,
   'messages.search': handleMessagesSearch,
+  'search.global': handleSearchGlobal,
   reaction: handleReaction,
   typing: handleTyping,
   'chats.list': handleChatsList,

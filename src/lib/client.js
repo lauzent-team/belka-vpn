@@ -51,6 +51,13 @@ function bareUsername(value) {
   return typeof value === 'string' ? value.trim().replace(/^@+/, '').toLowerCase() : value;
 }
 
+/** The renderer's chat key for a one-to-one chat. Mirrors `chatKey()` there:
+ *  a chat with yourself is Saved Messages, keyed "saved". */
+function chatKeyFor(self, peer) {
+  const other = bareUsername(peer);
+  return other === bareUsername(self) ? 'saved' : other;
+}
+
 class SleePhyClient {
   constructor({ userDataDir, onEvent }) {
     this.file = path.join(userDataDir, 'sleephy-identity.json');
@@ -1378,6 +1385,76 @@ class SleePhyClient {
     }
     const needle = String(query || '').toLowerCase();
     return out.filter((m) => !needle || m.text.toLowerCase().includes(needle) || m.peer.toLowerCase().includes(needle));
+  }
+
+  /**
+   * Global search: decrypt the newest slice of every conversation the account
+   * can open, then return one flat list of messages tagged with the chat they
+   * came from. The relay never sees the query; the caller filters the text
+   * with the shared chat-search rules.
+   */
+  async searchGlobal({ limit } = {}) {
+    if (!this.secretKey) throw new Error('Vault is locked');
+    const res = await this.request({ t: 'search.global', limit });
+    const out = [];
+
+    for (const m of res.direct || []) {
+      let text = '';
+      if (m.box) {
+        try {
+          const peerKey = await this.ensurePeerKey(m.peer);
+          text = await cryptoLib.decryptMessage(m.box, m.nonce, peerKey, this.secretKey);
+        } catch { text = '⚠ Message could not be decrypted'; }
+      }
+      out.push({
+        id: m.id, chatKey: chatKeyFor(this.username, m.peer), from: m.from, to: m.peer,
+        text, ts: m.ts, mine: m.from === this.username,
+        replyTo: m.replyTo || null, editedAt: m.editedAt || null,
+        kind: m.kind || null, attachment: m.attachment || null, deleted: false
+      });
+    }
+
+    for (const m of res.groups || []) {
+      let text = '';
+      if (m.envelope && m.envelope.box) {
+        try {
+          const peerKey = await this.ensurePeerKey(m.from);
+          text = await cryptoLib.decryptMessage(m.envelope.box, m.envelope.nonce, peerKey, this.secretKey);
+        } catch { text = '⚠ Message could not be decrypted'; }
+      }
+      let attachment = m.attachment ? JSON.parse(m.attachment) : null;
+      if (attachment && attachment.perMember) {
+        attachment = { ...attachment, ...(attachment.perMember[this.username] || {}), perMember: undefined };
+      }
+      out.push({
+        id: m.id, chatKey: `group:${m.groupId}`, from: m.from, groupId: m.groupId,
+        text, ts: m.ts, mine: m.from === this.username,
+        replyTo: m.replyTo || null, editedAt: m.editedAt || null,
+        kind: m.kind || null, attachment, deleted: false
+      });
+    }
+
+    for (const m of res.channels || []) {
+      let text = '';
+      if (m.envelope && m.envelope.box) {
+        try {
+          const peerKey = await this.ensurePeerKey(m.from);
+          text = await cryptoLib.decryptMessage(m.envelope.box, m.envelope.nonce, peerKey, this.secretKey);
+        } catch { text = '⚠ Message could not be decrypted'; }
+      }
+      let attachment = m.attachment ? JSON.parse(m.attachment) : null;
+      if (attachment && attachment.perMember) {
+        attachment = { ...attachment, ...(attachment.perMember[this.username] || {}), perMember: undefined };
+      }
+      out.push({
+        id: m.id, chatKey: `channel:${m.channelId}`, from: m.from, channelId: m.channelId,
+        text, ts: m.ts, mine: m.from === this.username,
+        replyTo: m.replyTo || null, editedAt: m.editedAt || null,
+        kind: m.kind || null, attachment, deleted: false
+      });
+    }
+
+    return out;
   }
 
   /* ------------------------------ settings ------------------------------ */
