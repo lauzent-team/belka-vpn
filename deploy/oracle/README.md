@@ -168,7 +168,7 @@ npm run dist:win
 Появится файл:
 
 ```
-dist/SleePhy-Setup-0.16.1.exe
+dist/SleePhy-Setup-0.16.2.exe
 ```
 
 Это и есть установщик: человек скачивает его, запускает, ставит приложение.
@@ -178,7 +178,7 @@ dist/SleePhy-Setup-0.16.1.exe
 
 ```bash
 # на вашем компьютере
-scp dist/SleePhy-Setup-0.16.1.exe root@ВАШ_IP:/opt/sleephy/dist/
+scp dist/SleePhy-Setup-0.16.2.exe root@ВАШ_IP:/opt/sleephy/dist/
 ```
 
 Тогда `https://relay.вашдомен.ру` покажет страницу скачивания с кнопкой.

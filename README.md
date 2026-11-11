@@ -179,7 +179,7 @@ overrides it.
 ## Build a Windows installer
 
 ```bash
-npm run dist:win      # -> dist/SleePhy-Setup-0.16.1.exe
+npm run dist:win      # -> dist/SleePhy-Setup-0.16.2.exe
 ```
 
 Building a Windows `.exe` from Linux/macOS uses Wine; the CI workflow does this
