@@ -871,3 +871,27 @@ arriving now can change a header that is already on screen.
 - **`SLEEPHY_ADMINS` defaults to `pidoras`.** Anyone who registers that name
   becomes an admin on a relay where the env var is unset. Always set the variable
   to a private name in production.
+
+## Sockets, crash guards and the "closed before established" error (v0.16.3)
+
+- **A socket in `CONNECTING` cannot be closed politely.** `ws` answers
+  `close()` (and `terminate()`) on a handshake that has not finished by aborting
+  it and emitting `error` with "WebSocket was closed before the connection was
+  established". `teardownSocket()` used to call `removeAllListeners()` first, so
+  that `error` had no listener and became an **uncaught exception that killed the
+  Electron main process** — the user saw a raw "A JavaScript error occurred in
+  the main process" dialog on every launch and every quit. The fix keeps one
+  no-op `error` listener on the socket being torn down. Do not remove it; a
+  listener attached *before* `close()` is what absorbs the abort.
+- **Both crash sites came from the same line.** Launch ran `connect()` from
+  `sleephy:connect`, quit ran `disconnect()`; both reach `teardownSocket()`. One
+  fix covers both, which is why the two reported dialogs had identical stacks.
+- **`main.js` now has `uncaughtException` / `unhandledRejection` handlers.** The
+  relay had them from the start (`server/index.js`) but the desktop app did not,
+  so any stray error closed every window with a stack trace. The guard logs and
+  keeps running; it is a safety net, not a substitute for fixing the cause.
+- **Test the teardown without Electron.** `test/socket-teardown.js` drives
+  `SleePhyClient` directly in plain Node (the client does not require `electron`)
+  against a dead port, so it reproduces the crash in milliseconds. It also
+  asserts a live socket still connects, so the fix cannot be "swallow
+  everything".

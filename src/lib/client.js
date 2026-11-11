@@ -284,6 +284,13 @@ class SleePhyClient {
       const old = this.ws;
       this.ws = null;
       old.removeAllListeners();
+      // `ws` reports an aborted handshake by emitting `error` on the socket, and
+      // a socket that is still CONNECTING cannot be closed politely: close()
+      // aborts the handshake and raises that error. With no listener left it
+      // became an uncaught exception that killed the main process, which is what
+      // showed "WebSocket was closed before the connection was established" on
+      // every launch and every quit. Keep one listener to absorb it.
+      old.on('error', () => { /* the handshake was cancelled on purpose */ });
       try { old.close(); } catch { /* already closed */ }
     }
   }

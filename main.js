@@ -13,6 +13,17 @@ let tray = null;
 // messages and the tray icon stays reachable.
 let isQuitting = false;
 
+// A crash in the main process closes every window with a raw stack trace, which
+// tells the user nothing and loses the messenger. Log and keep running: a stray
+// error from a socket or a notification must not take the app down. Errors that
+// really are fatal still surface in the log.
+process.on('uncaughtException', (err) => {
+  console.error('[main] uncaught exception:', err && err.stack ? err.stack : err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[main] unhandled rejection:', reason);
+});
+
 /** The app icon, as packaged. */
 function appIconPath() {
   const candidates = [
