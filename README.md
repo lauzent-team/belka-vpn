@@ -179,7 +179,7 @@ overrides it.
 ## Build a Windows installer
 
 ```bash
-npm run dist:win      # -> dist/SleePhy-Setup-0.16.2.exe
+npm run dist:win      # -> dist/SleePhy-Setup-0.16.4.exe
 ```
 
 Building a Windows `.exe` from Linux/macOS uses Wine; the CI workflow does this
@@ -187,15 +187,19 @@ on a native Windows runner instead. See `.github/workflows/build.yml`.
 
 ## Your own music and ringtones
 
-The **Бурмалда FM** player and the call ringtones read from a folder beside the
-app's data, so they keep working after the app is installed (an installed app's
-own files are read-only):
+The **Бурмалда FM** player ships with a built-in broadcast, so it plays the
+moment the app is installed — no setup. Opening the tab starts the station and
+it repeats forever until you close the tab or quit the app.
+
+Your own tracks take priority. The player reads from a folder beside the app's
+data, so they keep working after the app is installed (an installed app's own
+files are read-only):
 
 - Windows: `%APPDATA%\SleePhy\media\fm\` and `...\media\ringtones\`
 - Linux: `~/.config/SleePhy/media/fm/` and `.../media/ringtones/`
 
-Open Бурмалда FM once and the app creates the folder with a starter
-`playlist.json`. Drop audio files in and list them:
+Put audio files in `media/fm/` and list them in `playlist.json`; while that list
+is not empty it replaces the built-in broadcast:
 
 ```json
 { "tracks": ["night-air.mp3", { "file": "dawn.ogg", "title": "Рассвет", "artist": "Бурмалда" }] }
