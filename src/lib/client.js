@@ -44,6 +44,17 @@ function resolveDefaultServer() {
 
 const DEFAULT_SERVER = resolveDefaultServer();
 
+// Hosts that only existed while a development sandbox was running. One build
+// shipped such a host as its default, and because a chosen address is
+// remembered, that dead address outlived the build: upgrading kept the app
+// pointed at a host that no longer resolves, so it sat offline forever while
+// the bundled default had long since moved to a real relay.
+const LEGACY_SERVER_RE = /^wss?:\/\/[^/]*\.prod-runtime\.all-hands\.dev(?::\d+)?(?:\/|$)/i;
+
+function isLegacyServer(url) {
+  return typeof url === 'string' && LEGACY_SERVER_RE.test(url);
+}
+
 // People write usernames as `@alice`. The leading `@` is presentation, not part
 // of the name, so it is stripped wherever a name enters the client. The stored
 // form stays bare and matches the server's primary key.
@@ -104,13 +115,17 @@ class SleePhyClient {
   readServerUrl() {
     try {
       const data = JSON.parse(fs.readFileSync(this.serverFile, 'utf8'));
-      if (data && typeof data.server === 'string' && data.server) return data.server;
+      // A remembered address from a dead sandbox is treated as absent, so the
+      // bundled default takes over instead of leaving the app offline.
+      if (data && typeof data.server === 'string' && data.server && !isLegacyServer(data.server)) {
+        return data.server;
+      }
     } catch { /* no saved address */ }
     return null;
   }
 
   writeServerUrl(url) {
-    if (!url) return;
+    if (!url || isLegacyServer(url)) return;
     try {
       fs.mkdirSync(path.dirname(this.serverFile), { recursive: true });
       fs.writeFileSync(this.serverFile, JSON.stringify({ server: url }), { mode: 0o600 });

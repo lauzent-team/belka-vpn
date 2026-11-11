@@ -955,3 +955,25 @@ arriving now can change a header that is already on screen.
   current directory, not a temp path; one run dropped a stray `client.js` in the
   repo root and a truncated `package.json` into a commit. Extract to an explicit
   path and delete it afterwards.
+
+## The dead sandbox address and the stuck sign-in screen (v0.16.5)
+
+- **One build shipped a development sandbox host as its default relay**
+  (`work-1-….prod-runtime.all-hands.dev`). Because `connect()` remembers the
+  address in `sleephy-server.json`, that dead host **outlived the build**: an
+  upgrade kept the app pointed at a host that no longer resolves, so it sat
+  offline with a grey connection dot while the bundled default had long since
+  moved to the real relay. `readServerUrl()` now ignores any
+  `*.prod-runtime.all-hands.dev` address and `writeServerUrl()` refuses to store
+  one, so the bundled default takes over. `test/server-migration.js` covers it.
+- **A user who pastes a working address still saw the app die**, because that
+  build predates the teardown fix (v0.16.3) and the `uncaughtException` guard in
+  `main.js`: switching the server while the old socket was still CONNECTING ran
+  `removeAllListeners()` then `close()`, `ws` emitted `error` with no listener,
+  and the main process exited. The window stayed up showing "Входим…" with a grey
+  dot, which is exactly the reported symptom.
+- **`server-default.json` is read from `path.join(__dirname,'..','..')`**, i.e.
+  the app root, and `package.json` `build.files` includes it. Keep that path in
+  sync if the file ever moves.
+- **Never point a shipped build at an ephemeral dev host.** It is not enough to
+  fix the default later — the saved address has to be filtered too.
