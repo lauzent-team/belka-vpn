@@ -179,7 +179,7 @@ overrides it.
 ## Build a Windows installer
 
 ```bash
-npm run dist:win      # -> dist/SleePhy-Setup-0.16.0.exe
+npm run dist:win      # -> dist/SleePhy-Setup-0.16.1.exe
 ```
 
 Building a Windows `.exe` from Linux/macOS uses Wine; the CI workflow does this
@@ -340,15 +340,23 @@ YOOMONEY_RECEIVER=your-wallet-id YOOMONEY_SECRET=your-notify-secret \
   node server/pay-adapter.js
 
 SLEEPHY_PAY_PROVIDER=yoomoney \
-SLEEPHY_PAY_ADAPTER=http://127.0.0.1:8791/your-token \
+SLEEPHY_PAY_ADAPTER=http://127.0.0.1:8791 \
+SLEEPHY_PAY_ADAPTER_TOKEN=your-token \
   node server/index.js
 ```
 
+The relay appends `/create`, `/verify` and the token itself, so the adapter
+address is the bare host — putting the token in `SLEEPHY_PAY_ADAPTER` as well
+would make the relay ask for `/your-token/create`, which the adapter does not
+serve. The token is one value: the same one you pass to `PAY_ADAPTER_TOKEN`.
+
 Tell YooMoney to notify `https://<public-host>/notify/<your-token>`. Set
-`SLEEPHY_WELCOME_ROCKETS=0` to switch off the sign-up grant, or change its size.
-`test/payments.js` covers the whole path against the mock provider — forged
-bundles, double credits, gifting without paying and spending more than you hold
-are all refused.
+`SLEEPHY_PAY_PUBLIC_URL=https://<public-host>` so the return URL after payment
+points back at the relay. `SLEEPHY_WELCOME_ROCKETS=0` switches off the sign-up
+grant, or change its size. `test/payments.js` covers the path against the mock
+provider — forged bundles, double credits, gifting without paying and spending
+more than you hold are all refused; `test/pay-adapter.js` covers the adapter
+itself and `test/pay-flow.js` the relay-and-adapter handshake.
 
 ## What is not done yet
 

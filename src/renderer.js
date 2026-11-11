@@ -1287,7 +1287,7 @@ const state = {
   // Rockets and Premium. The relay owns the real numbers; these mirror them
   // for the interface and are refreshed from the relay on sign-in and on any
   // change, never computed locally.
-  wallet: { balance: 0, premium: { active: false, until: null }, bundles: [], gifts: {} }
+  wallet: { balance: 0, premium: { active: false, until: null }, bundles: [], gifts: {}, pending: null }
 };
 
 
@@ -5653,6 +5653,9 @@ async function startPayment(request) {
   }
   if (res.checkoutUrl) {
     await api.openExternal(res.checkoutUrl);
+    // Remember what is being paid for. The confirmation runs when the window
+    // next has focus — the moment the user is back from the browser.
+    state.wallet.pending = res.id;
     toast('Оплатите в открывшемся окне и вернитесь сюда', 6000);
     return res.id;
   }
@@ -5671,13 +5674,44 @@ async function buyBundle(rockets) {
   await startPayment({ kind: 'rockets', rockets });
 }
 
-/** Ask the relay to confirm a pending payment (after the user returns). */
+/**
+ * Ask the relay to confirm a payment. The relay does not take "I paid" on
+ * faith: it asks the adapter, and only a provider confirmation credits
+ * anything, so calling this is harmless when the payment is not there yet.
+ * Returns the wallet reply, or null when the relay could not be reached.
+ */
 async function claimPayment(id) {
   try {
     const res = await api.payClaim({ id });
     applyWallet(res);
-  } catch { /* the relay will push the wallet state when it settles */ }
+    return res;
+  } catch { return null; } // the relay also pushes the wallet when it settles
 }
+
+/**
+ * Confirm whatever payment is outstanding, once, when the user comes back.
+ * A single attempt per focus: the relay credits exactly once and the wallet
+ * push covers the rest, so there is no need to poll.
+ */
+async function settlePendingPayment() {
+  const id = state.wallet.pending;
+  if (!id || !state.username) return;
+  const res = await claimPayment(id);
+  if (!res) return; // relay away: keep the id and try on the next focus
+  state.wallet.pending = null;
+  if (res.paymentStatus === 'paid') {
+    toast('Оплата подтверждена');
+  } else {
+    toast('Оплата пока не подтверждена. Если вы только что заплатили, подождите минуту и вернитесь в это окно.', 8000);
+  }
+}
+
+// The user went to the browser to pay and has come back. Checking on focus
+// (and on regaining visibility) is enough for a flow a person drives by hand.
+window.addEventListener('focus', settlePendingPayment);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) settlePendingPayment();
+});
 
 if (els.btnBuyPremium) els.btnBuyPremium.addEventListener('click', buyPremium);
 

@@ -187,6 +187,31 @@ async function main() {
     assert.strictEqual(afterClaims, afterPay, 'no second credit');
   });
 
+  await step('a claim reports the payment status back', async () => {
+    const res = await A.client.payCreate({ kind: 'rockets', rockets: 50 });
+    const claim = await A.client.payClaim({ id: res.id });
+    assert.strictEqual(claim.paymentStatus, 'paid', 'a settled payment reports paid');
+    // A second claim still reports paid rather than silently doing nothing.
+    const again = await A.client.payClaim({ id: res.id });
+    assert.strictEqual(again.paymentStatus, 'paid', 'and stays paid');
+  });
+
+  await step('the return page is served and cannot be walked out of', async () => {
+    const get = (p) => new Promise((resolve, reject) => {
+      const req = require('http').get({ host: '127.0.0.1', port: PORT, path: p }, (r) => {
+        let body = '';
+        r.on('data', (c) => { body += c; });
+        r.on('end', () => resolve({ status: r.statusCode, body }));
+      });
+      req.on('error', reject);
+    });
+    const ok = await get('/pay/return?id=abc123');
+    assert.strictEqual(ok.status, 200, 'the return page is served');
+    assert.match(ok.body, /Оплата принята/, 'and says the payment went through');
+    const missing = await get('/pay/return/../../secret');
+    assert.strictEqual(missing.status, 404, 'a path that is not the return page is a 404');
+  });
+
   await step('an unauthenticated client gets nothing', async () => {
     const C = makeClient('c');
     await C.client.connect(URL);

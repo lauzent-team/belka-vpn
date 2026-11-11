@@ -12,7 +12,7 @@ message contents.
 
 ```bash
 npm install
-npm run server        # start the relay (ws://127.0.0.1:8787)
+npm run server        # start the relay (ws://127.0.0.1:8787, or $PORT)
 npm start             # start the desktop app
 npm run dist:win      # build the Windows installer
 node test/e2e.js      # end-to-end tests (real server, real crypto)
@@ -51,6 +51,8 @@ xvfb-run -a node test/ui-globalsearch.js # the top box: "Сообщения" sec
 xvfb-run -a node test/connection.js    # connection and error handling
 node test/premium-logic.js             # Rocket prices, Premium expiry math (pure)
 node test/payments.js                  # Rockets, Premium and gifts over a real relay
+node test/pay-adapter.js               # the provider adapter: link, signature, amount, token
+node test/pay-flow.js                  # relay + real adapter: checkout, pending, credit once
 xvfb-run -a node test/ui-premium.js    # the Rockets and Premium panes, clicked for real
 xvfb-run -a node test/shots.js         # regenerate shots/*.png
 ```
@@ -787,6 +789,21 @@ arriving now can change a header that is already on screen.
   default provider is `mock`, which settles instantly so the flow works with no
   account; `yoomoney` builds a real checkout link. The token rides in the URL path
   (`/create/<token>`), because the relay cannot send headers.
+- **`SLEEPHY_PAY_ADAPTER` is the bare host; the token goes in
+  `SLEEPHY_PAY_ADAPTER_TOKEN`.** `payAdapterEndpoint` appends `/create` (or
+  `/verify`) and then the token, so the adapter must see `/create/<token>`. Putting
+  the token in the host too (`.../8791/<token>`) makes the relay ask for
+  `/<token>/create`, which the adapter does not serve — the README had this wrong
+  and `test/pay-flow.js` caught it. Same token on both sides: `PAY_ADAPTER_TOKEN`
+  on the adapter, `SLEEPHY_PAY_ADAPTER_TOKEN` on the relay.
+- **A purchase with a real provider is `pending` until a claim confirms it.**
+  `pay.create` returns a `checkoutUrl` and the app opens it in the browser; the
+  renderer keeps the payment id in `state.wallet.pending` and calls `payClaim` on
+  the next window `focus`/`visibilitychange`. `handlePayClaim` returns a
+  `paymentStatus` (`pending`/`paid`) so the UI can tell "not yet" from "failed",
+  and `settlePayment` credits exactly once however many times it is claimed. The
+  `/pay/return` page on the relay is inert — it only tells the browser to go back;
+  it can never move money.
 - **`pay.create` returns a checkout URL; the app opens it in the system browser**
   (`openExternal` over IPC, not a renderer `window.open`). Settlement arrives on
   the relay's own `wallet` push, which every device of that user receives — so a

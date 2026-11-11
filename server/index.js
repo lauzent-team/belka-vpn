@@ -18,7 +18,11 @@ const { DatabaseSync } = require('node:sqlite');
 const STREAK = require('../src/lib/streak');
 const MONEY = require('../src/lib/money');
 
-const PORT = process.env.SLEEPHY_PORT ? Number(process.env.SLEEPHY_PORT) : 8787;
+// A host (Render, Fly, Heroku-style) hands the port in PORT; SLEEPHY_PORT wins
+// when it is set, so the same build runs on a VPS and on a platform.
+const PORT = process.env.SLEEPHY_PORT
+  ? Number(process.env.SLEEPHY_PORT)
+  : (process.env.PORT ? Number(process.env.PORT) : 8787);
 const DB_PATH = process.env.SLEEPHY_DB || path.join(__dirname, 'sleephy.db');
 const TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
 
@@ -2290,11 +2294,13 @@ async function handlePayClaim(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
   const payment = q.getPayment.get(String(msg.id || ''));
   if (!payment || payment.username !== ws.username) return bad(ws, rid, 'Платёж не найден');
-  if (payment.status !== 'pending') return reply(ws, rid, { ...walletState(ws.username), _id: rid });
+  if (payment.status !== 'pending') {
+    return reply(ws, rid, { ...walletState(ws.username), paymentStatus: payment.status, _id: rid });
+  }
 
   if (PAY_PROVIDER === 'mock' || !PAY_ADAPTER_URL) {
     settlePayment(payment.id, 'mock:' + payment.id);
-    return reply(ws, rid, { ...walletState(ws.username), _id: rid });
+    return reply(ws, rid, { ...walletState(ws.username), paymentStatus: 'paid', _id: rid });
   }
 
   const url = payAdapterEndpoint('/verify');
@@ -2314,9 +2320,9 @@ async function handlePayClaim(ws, msg, rid) {
   } catch {
     return bad(ws, rid, 'Платёжный сервис недоступен, попробуйте позже');
   }
-  if (!paid) return reply(ws, rid, { ...walletState(ws.username), _id: rid });
+  if (!paid) return reply(ws, rid, { ...walletState(ws.username), paymentStatus: 'pending', _id: rid });
   settlePayment(payment.id, ref || payment.id);
-  reply(ws, rid, { ...walletState(ws.username), _id: rid });
+  reply(ws, rid, { ...walletState(ws.username), paymentStatus: 'paid', _id: rid });
 }
 
 /** Buy a gift: debit the sender's Rockets, then let the gift message go out. */
@@ -3600,10 +3606,38 @@ const handlers = {
 };
 
 /* -------------------------------- server -------------------------------- */
+// The page a provider sends the browser to after a payment. It says only that
+// the browser made it back; the app is what asks the adapter to confirm, and
+// the confirmation is what credits anything. Nothing here can move money, so it
+// is safe to render for anyone who knows a payment id.
+function payReturnPage(id) {
+  const safe = String(id || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SleePhy — оплата</title>
+<style>
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+       background:#0f1115;color:#e8eaf0;font:16px/1.5 -apple-system,Segoe UI,Roboto,sans-serif}
+  main{max-width:26rem;padding:2.5rem;text-align:center}
+  h1{margin:0 0 .75rem;font-size:1.35rem}
+  p{margin:0;color:#9aa3b2}
+</style></head><body><main>
+<h1>Оплата принята</h1>
+<p>Вернитесь в приложение SleePhy — оно проверит платёж и зачислит покупку. Эту страницу можно закрыть.</p>
+</main></body></html>`;
+}
+
 const server = http.createServer((req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true, service: 'sleephy-relay' }));
+    return;
+  }
+  if (req.url === '/pay/return' || req.url.startsWith('/pay/return?')) {
+    const id = new URL(req.url, 'http://localhost').searchParams.get('id') || '';
+    const body = payReturnPage(id);
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(body) });
+    res.end(body);
     return;
   }
   // Serve the download page and the installer, if they were shipped alongside.
