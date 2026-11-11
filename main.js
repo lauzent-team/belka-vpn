@@ -24,6 +24,19 @@ process.on('unhandledRejection', (reason) => {
   console.error('[main] unhandled rejection:', reason);
 });
 
+/**
+ * Media shipped inside the app (read-only). Under electron-builder these land
+ * in resources/; running from the repo they sit next to main.js in build/.
+ */
+function bundledMediaDir(kind) {
+  const candidates = [
+    path.join(process.resourcesPath || '', kind),
+    path.join(__dirname, 'build', kind)
+  ];
+  return candidates.find((p) => { try { return fs.existsSync(p); } catch { return false; } })
+    || path.join(__dirname, 'build', kind);
+}
+
 /** The app icon, as packaged. */
 function appIconPath() {
   const candidates = [
@@ -308,11 +321,21 @@ app.whenReady().then(async () => {
         fs.writeFileSync(userFile, JSON.stringify(spec.template, null, 2));
       } catch { /* a read-only profile just has no media */ }
     }
-    try {
-      return { dir: userDir, manifest: JSON.parse(fs.readFileSync(userFile, 'utf8')) };
-    } catch {
-      return { dir: userDir, manifest: null };
+    let manifest = null;
+    try { manifest = JSON.parse(fs.readFileSync(userFile, 'utf8')); } catch { manifest = null; }
+    // The user's own folder wins. When it is empty, fall back to the station
+    // shipped inside the app, so Бурмалда FM is never silent out of the box.
+    const mine = manifest && Array.isArray(manifest.tracks) && manifest.tracks.length > 0;
+    if (kind !== 'ringtones' && !mine) {
+      const bundled = bundledMediaDir('fm');
+      try {
+        const bm = JSON.parse(fs.readFileSync(path.join(bundled, spec.file), 'utf8'));
+        if (bm && Array.isArray(bm.tracks) && bm.tracks.length) {
+          return { dir: bundled, manifest: bm, bundled: true };
+        }
+      } catch { /* not packaged — the station stays empty */ }
     }
+    return { dir: userDir, manifest };
   });
 
   // Groups

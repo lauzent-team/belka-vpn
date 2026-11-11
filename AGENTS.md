@@ -895,3 +895,26 @@ arriving now can change a header that is already on screen.
   against a dead port, so it reproduces the crash in milliseconds. It also
   asserts a live socket still connects, so the fix cannot be "swallow
   everything".
+
+## Бурмалда FM ships inside the app (v0.16.4)
+
+- **The station is bundled, not empty by default.** `build/fm/` holds
+  `burmalda-fm.ogg` (a 5h26m Opus track, ~70 MB) and `playlist.json`, copied into
+  `resources/fm` by the `extraResources` entry in `package.json`. Opening the tab
+  is a user gesture, so `openFm()` starts playback itself and `repeat-one` keeps
+  it going for as long as the app is open. Do not switch the default mode back to
+  `'all'`: a single bundled track would stop after one pass and look broken.
+- **The listener's own folder still wins.** `readMediaManifest('fm')` returns the
+  user's `media/fm` when its `tracks` array is non-empty, and falls back to
+  `resources/fm` only when it is empty. Ringtones are unaffected — the bundled
+  fallback is FM-only.
+- **A 70 MB resource makes the installer ~145 MB.** The audio is transcoded to
+  Opus 32 kbps stereo; keep the source out of git history if it is ever
+  re-encoded. GitHub rejects files over 100 MB, so the track must stay under that
+  or move to a release asset.
+- **`test/ui-fm.js` covers the station** (on-air by default, repeat-one default,
+  real decode, mode cycling, personal folder overriding). The `ui-calls.js` FM
+  step was trimmed to a smoke check so the two suites do not duplicate each other.
+- **`test/e2e.js` skips the `0600` check on Windows.** Windows has no POSIX mode
+  bits — `statSync().mode` always reads `0o666` there — so the assertion failed on
+  the CI runner and blocked the release job. It is skipped on `win32` only.

@@ -1292,7 +1292,9 @@ const state = {
   // peer (a group call is a mesh, so one leg each).
   call: null, // { callId, key, video, role, peers:Map, localStream, startedAt, timer }
   // Бурмалда FM: the station, its playlist and the element that plays it.
-  fm: { playlist: [], index: -1, mode: 'all', shuffle: false, playing: false, audio: null, dir: null },
+  // mode 'one' = the station repeats the current track forever, which is what
+  // Бурмалда FM is for: it plays as background and never falls silent.
+  fm: { playlist: [], index: -1, mode: 'one', shuffle: false, playing: false, audio: null, dir: null },
   // Rockets and Premium. The relay owns the real numbers; these mirror them
   // for the interface and are refreshed from the relay on sign-in and on any
   // change, never computed locally.
@@ -5924,9 +5926,16 @@ function fmAdvance(dir) {
   playFmIndex(next);
 }
 
-function openFm() {
+async function openFm() {
   els.fmOverlay.hidden = false;
-  loadFmStation();
+  await loadFmStation();
+  const fm = state.fm;
+  // Opening the tab is a user gesture, so the broadcast can start on its own;
+  // repeat-one then keeps it going for as long as the app is open.
+  if (fm.playlist.length && !fm.playing) {
+    if (fm.index < 0) fm.index = 0;
+    playFmIndex(fm.index);
+  }
 }
 function closeFm() {
   els.fmOverlay.hidden = true;

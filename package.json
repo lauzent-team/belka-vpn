@@ -1,7 +1,7 @@
 {
   "name": "sleephy",
   "productName": "SleePhy",
-  "version": "0.16.3",
+  "version": "0.16.4",
   "description": "SleePhy — end-to-end encrypted messenger with a blind relay server",
   "main": "main.js",
   "author": "SleePhy",
@@ -47,6 +47,10 @@
       {
         "from": "build/icon.png",
         "to": "icon.png"
+      },
+      {
+        "from": "build/fm",
+        "to": "fm"
       }
     ],
     "win": {

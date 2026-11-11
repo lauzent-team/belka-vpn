@@ -182,7 +182,10 @@ async function main() {
     await a.win.waitForSelector('#fm-overlay:not([hidden])', { timeout: 8000 });
     const title = (await a.win.textContent('.fm-title')).trim();
     assert.strictEqual(title, 'Бурмалда FM');
-    assert.ok(await a.win.isVisible('#fm-empty'), 'an empty station says so');
+    // The station ships inside the app, so it has something to play before the
+    // user drops in a single file of their own. test/ui-fm.js covers the rest.
+    await a.win.waitForSelector('.fm-track', { timeout: 8000 });
+    assert.ok(!(await a.win.isVisible('#fm-empty')), 'the bundled station is not empty');
   });
 
   await step('adding a track makes it playable', async () => {

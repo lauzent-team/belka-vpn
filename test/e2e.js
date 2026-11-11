@@ -179,6 +179,9 @@ async function main() {
   });
 
   await step('key file has restrictive permissions', async () => {
+    // Windows has no POSIX mode bits: statSync always reports 0o666 there, so
+    // the check only means something on a POSIX host.
+    if (process.platform === 'win32') return;
     const id = path.join(alice.dir, 'sleephy-identity.json');
     const mode = fs.statSync(id).mode & 0o777;
     assert.strictEqual(mode, 0o600, `expected 0600, got ${mode.toString(8)}`);
