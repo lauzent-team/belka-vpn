@@ -918,3 +918,23 @@ arriving now can change a header that is already on screen.
 - **`test/e2e.js` skips the `0600` check on Windows.** Windows has no POSIX mode
   bits — `statSync().mode` always reads `0o666` there — so the assertion failed on
   the CI runner and blocked the release job. It is skipped on `win32` only.
+
+## Releases, the download link and CI (v0.16.4)
+
+- **The download button must stay version-free.** `deploy/free/index.html` points
+  at `/download/latest`; the relay resolves the newest release through the GitHub
+  API (5-minute cache) and 302s to its installer, falling back to its own
+  `package.json` version when the API is unreachable. Pinning a version is what
+  left the live Amvera page offering `0.16.2` — a build with the socket bug —
+  long after `0.16.3` had shipped.
+- **`amvera.yaml` builds `deploy/free/Dockerfile`, and that Dockerfile copies
+  `deploy/free/index.html` into the image.** The page is baked in at build time,
+  so a page change only reaches Amvera after the image is rebuilt there. The
+  `/download/latest` route is what makes an un-rebuilt image harmless.
+- **The CI release job needs `permissions: contents: write` and
+  `generate_release_notes: false`.** Without the permission the attach step fails
+  with "Resource not accessible by integration"; generating notes on top of a
+  hand-written release hits the same wall. Notes are written by hand on GitHub.
+- **`test/e2e.js` is the gate that blocked every tagged build.** It asserted
+  POSIX `0600` on the identity file, which Windows reports as `0666`; the check
+  now returns early on `win32`.

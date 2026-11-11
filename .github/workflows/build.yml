@@ -6,6 +6,11 @@ on:
     tags:
       - 'v*'
 
+# Attaching the installer to a release needs write access to contents; the
+# default token is read-only on some repositories.
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -44,4 +49,7 @@ jobs:
           files: |
             dist/*.exe
             dist/*.blockmap
-          generate_release_notes: true
+          # Notes are written by hand on the release, and generating them here
+          # needs a permission scope the default token does not have.
+          generate_release_notes: false
+          fail_on_unmatched_files: true
