@@ -11,3 +11,4 @@ server/*.db-wal
 # Settled payments the payment adapter has recorded
 server/pay-store.json
 .runtime/
+.tmp-*
