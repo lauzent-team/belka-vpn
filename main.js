@@ -2,11 +2,36 @@
 
 const path = require('path');
 const fs = require('fs');
-const { app, BrowserWindow, ipcMain, shell, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, Tray, nativeImage, Notification } = require('electron');
 const { SleePhyClient } = require('./src/lib/client');
 
 let win = null;
 let client = null;
+let tray = null;
+// Set once the user really quits (tray menu, app.quit(), OS shutdown). Until
+// then the window's close button only hides it, so the app keeps receiving
+// messages and the tray icon stays reachable.
+let isQuitting = false;
+
+/** The app icon, as packaged. */
+function appIconPath() {
+  const candidates = [
+    path.join(process.resourcesPath || '', 'icon.png'),
+    path.join(__dirname, 'build', 'icon.png')
+  ];
+  return candidates.find((p) => { try { return fs.existsSync(p); } catch { return false; } }) || null;
+}
+
+/** Bring the window back from the tray, recreating it if it was really closed. */
+function showWindow() {
+  if (!win || win.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
 
 // Templates seeded into the user's writable media folder on first use.
 const FM_TEMPLATE = {
@@ -40,7 +65,7 @@ function createWindow() {
     show: false,
     backgroundColor: '#0E1116',
     title: 'SleePhy',
-    icon: path.join(__dirname, 'build', 'icon.png'),
+    icon: appIconPath() || undefined,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -51,6 +76,15 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, 'src', 'index.html'));
   win.once('ready-to-show', () => win.show());
+
+  // Closing the window puts the app in the tray instead of quitting, so
+  // messages keep arriving and notifications keep firing. With no tray to
+  // restore from, hiding would strand the app invisible, so it quits instead.
+  win.on('close', (event) => {
+    if (isQuitting || !tray) return;
+    event.preventDefault();
+    win.hide();
+  });
 
   // Calls need the microphone and camera. Electron denies both by default, so
   // grant only these two to our own window and nothing else — a page that is
@@ -103,9 +137,65 @@ function installHiddenMenu() {
   Menu.setApplicationMenu(menu);
 }
 
+/**
+ * A tray icon, so the app keeps running (and keeps notifying) after the window
+ * is closed. Creation is best-effort: a desktop without a system tray must not
+ * stop the messenger from starting.
+ */
+function createTray() {
+  if (tray) return;
+  const iconPath = appIconPath();
+  let image = iconPath ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
+  if (!image.isEmpty()) image = image.resize({ width: 16, height: 16 });
+  try {
+    tray = new Tray(image);
+  } catch {
+    tray = null;
+    return;
+  }
+  tray.setToolTip('SleePhy');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Открыть SleePhy', click: showWindow },
+    { type: 'separator' },
+    { label: 'Выйти', click: () => { isQuitting = true; app.quit(); } }
+  ]));
+  tray.on('click', showWindow);
+  tray.on('double-click', showWindow);
+}
+
+/**
+ * Show a message alert through the OS. Going through the main process (rather
+ * than the renderer's HTML5 Notification) is what makes the toast carry the
+ * app's own name and icon instead of the generic "Electron" identity.
+ */
+function showNativeNotification(title, body) {
+  if (!Notification.isSupported()) return;
+  const iconPath = appIconPath();
+  try {
+    const note = new Notification({
+      title: String(title || 'SleePhy'),
+      body: String(body || ''),
+      icon: iconPath || undefined
+    });
+    note.on('click', showWindow);
+    note.show();
+  } catch { /* a desktop without a notification service just stays silent */ }
+}
+
 app.whenReady().then(async () => {
+  // Windows attributes a toast to the app whose AppUserModelID matches the
+  // installed Start Menu shortcut. Without it the toast is titled "Electron
+  // App"; the value here is the same appId electron-builder puts on the
+  // shortcut, so the two line up.
+  if (process.platform === 'win32') app.setAppUserModelId('ru.sleephy.desktop');
   installHiddenMenu();
   client = newClient();
+  createTray();
+
+  ipcMain.handle('sleephy:notify', (_e, payload) => {
+    showNativeNotification(payload && payload.title, payload && payload.body);
+    return true;
+  });
 
   ipcMain.handle('sleephy:connect', async (_e, url) => {
     await client.connect(url);
@@ -268,7 +358,14 @@ app.whenReady().then(async () => {
   });
 });
 
+app.on('before-quit', () => { isQuitting = true; });
+
+app.on('will-quit', () => {
+  if (tray) { tray.destroy(); tray = null; }
+});
+
 app.on('window-all-closed', () => {
+  if (!isQuitting) return;
   if (client) client.disconnect();
   if (process.platform !== 'darwin') app.quit();
 });

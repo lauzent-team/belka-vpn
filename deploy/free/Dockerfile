@@ -19,6 +19,11 @@ COPY server ./server
 COPY src ./src
 COPY server-default.json ./
 
+# The relay hands out the download page from SLEEPHY_DOWNLOADS, so it has to be
+# in the image. Only the page is copied: the installer is served from the GitHub
+# release the page links to, which keeps the image small.
+COPY deploy/free/index.html ./dist/index.html
+
 # The database lives on a volume so it survives a redeploy.
 ENV SLEEPHY_DB=/data/sleephy.db
 ENV SLEEPHY_DOWNLOADS=/app/dist

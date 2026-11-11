@@ -43,6 +43,12 @@
     "extraMetadata": {
       "main": "main.js"
     },
+    "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      }
+    ],
     "win": {
       "target": [
         {

@@ -831,3 +831,43 @@ arriving now can change a header that is already on screen.
   button itself deletes the price span (this was a real bug `test/ui-premium.js`
   caught).
 
+
+## Tray, notifications and the persistent relay (v0.16.2)
+
+- **The app lives in the tray.** `main.js` creates a `Tray` on ready; the window's
+  `close` handler calls `event.preventDefault()` and hides instead of quitting,
+  so messages and notifications keep arriving with the window closed. The tray
+  menu's "Выйти" (and `before-quit`) sets `isQuitting = true`, which is the only
+  way the close handler lets the window actually close. If `Tray` construction
+  throws (no tray on the desktop), `tray` stays `null` and the close handler
+  quits instead of hiding — otherwise the app would be stranded invisible.
+- **Toasts go through the main process, not the renderer.** The renderer's
+  `notifyNewMessage` calls `window.sleephy.notify({title, body})` (IPC
+  `sleephy:notify`), and `main.js` raises the `Notification`. An HTML5
+  `new Notification()` in the renderer is attributed to "Electron App" on
+  Windows; only a main-process notification carries the app identity. The
+  renderer keeps the old path as a fallback for a missing bridge.
+- **`app.setAppUserModelId('ru.sleephy.desktop')` is what titles the toast.**
+  The value must equal the electron-builder `appId`, because Windows matches a
+  toast to the installed Start Menu shortcut by AppUserModelID. Change one and
+  the toast goes back to "Electron App".
+- **The app icon ships via `extraResources`.** `build/` is not inside the asar
+  and is not copied by default, so `extraResources` maps `build/icon.png` to
+  `resources/icon.png`. `appIconPath()` prefers the packaged copy and falls back
+  to `build/icon.png` in development; it is used for the window, the tray and the
+  notification, so all three stay branded.
+- **`app.setName()` is deliberately NOT called.** In the packaged app `name` is
+  `sleephy` while `productName` is `SleePhy`; Electron already reports the
+  productName, so `app.getName()` is `SleePhy` and the userData path is stable.
+  Calling `setName` only risks moving `app.getPath('userData')` and orphaning the
+  existing profile.
+- **The relay keeps its data only where `SLEEPHY_DB` points.** `server/index.js`
+  defaults to `server/sleephy.db`, which is *inside* the image and therefore
+  ephemeral on Amvera; the `persistenceMount: /data` volume is only useful if
+  `SLEEPHY_DB=/data/sleephy.db` is set. Without it a redeploy starts from an
+  empty `users` table and the admin panel looks "wiped" — the accounts were never
+  deleted, the relay is reading a different file. The old data is in the local
+  `server/sleephy.db` (gitignored, so it never reaches the image).
+- **`SLEEPHY_ADMINS` defaults to `pidoras`.** Anyone who registers that name
+  becomes an admin on a relay where the env var is unset. Always set the variable
+  to a private name in production.

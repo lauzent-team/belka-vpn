@@ -1339,7 +1339,11 @@ function notifyNewMessage(from, text) {
   const title = displayNameFor(from);
   toast(`${title}: ${body}`);
   try {
-    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    // The main process raises the OS notification, so the toast is titled and
+    // badged as SleePhy rather than as the bare Electron runtime.
+    if (api && typeof api.notify === 'function') {
+      api.notify({ title, body }).catch(() => {});
+    } else if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
       new Notification(title, { body, silent: state.settings.notifySound === false });
     }
   } catch { /* notifications are best effort */ }

@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('sleephy', {
   connect: (url) => invoke('sleephy:connect', url),
   status: () => invoke('sleephy:status'),
   version: () => invoke('sleephy:version'),
+  notify: (payload) => invoke('sleephy:notify', payload),
   register: (payload) => invoke('sleephy:register', payload),
   login: (payload) => invoke('sleephy:login', payload),
   requestCode: (phone) => invoke('sleephy:requestCode', phone),
