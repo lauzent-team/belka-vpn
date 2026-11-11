@@ -1210,6 +1210,15 @@ const els = {
   adminAnnounceCount: $('admin-announce-count'),
   adminAnnounceInput: $('admin-announce-input'),
   btnAdminAnnounce: $('btn-admin-announce'),
+  grantBackdrop: $('grant-backdrop'),
+  grantSub: $('grant-sub'),
+  grantRockets: $('grant-rockets'),
+  grantMonths: $('grant-months'),
+  grantRocketQuick: $('grant-rocket-quick'),
+  grantMonthQuick: $('grant-month-quick'),
+  grantError: $('grant-error'),
+  btnGrantSave: $('btn-grant-save'),
+  btnGrantCancel: $('btn-grant-cancel'),
 
   panelSwitch: $('panel-switch'),
   emojiMode: $('emoji-mode'),
@@ -3585,13 +3594,24 @@ els.btnSocialAdd.addEventListener('click', () => {
 // the relay enforces both, the client only reflects them.
 let nicknamePending = []; // the names being edited in the profile form
 
-/** Paint the nickname chips under the profile name; hidden when there are none. */
+/** Paint the nickname line under the profile name.
+ *
+ *  The display name is the account's real name and is already shown above, so
+ *  this line reads as an alternative: "или" followed by the extra names. It is
+ *  hidden entirely when the account has none. */
 function renderProfileNicknames(nicknames) {
-  const list = Array.isArray(nicknames) ? nicknames : [];
+  const list = (Array.isArray(nicknames) ? nicknames : [])
+    .filter((n) => typeof n === 'string' && n.trim());
   els.profileNicknames.innerHTML = '';
   els.profileNicknames.hidden = list.length === 0;
+  if (!list.length) return;
+
+  const or = document.createElement('span');
+  or.className = 'nickname-or';
+  or.textContent = 'или';
+  els.profileNicknames.appendChild(or);
+
   for (const n of list) {
-    if (typeof n !== 'string' || !n.trim()) continue;
     const chip = document.createElement('span');
     chip.className = 'nickname-chip';
     chip.innerHTML = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-star"></use></svg><span></span>';
@@ -4256,14 +4276,22 @@ function renderAdminUsers() {
       u.profileHidden ? '<span class="admin-tag">скрытый профиль</span>' : ''
     ].filter(Boolean).join(' ');
     const lastSeen = u.online ? 'сейчас' : (u.lastSeen ? fmtDateTime(u.lastSeen) : 'не заходил');
+    const walletBits = [];
+    if (u.rockets) walletBits.push(`${u.rockets} ${MONEY.rocketWord(u.rockets)}`);
+    if (u.premium) walletBits.push('Premium');
+    const walletLine = walletBits.length
+      ? `<div class="admin-user-meta admin-user-wallet">${escapeHtml(walletBits.join(' · '))}</div>`
+      : '';
     row.innerHTML = `
       <div class="avatar small" data-color="${escapeHtml(u.avatarColor || 'mint')}">${avatarInnerHtml(u.username, u)}</div>
       <div class="admin-user-body">
         <div class="admin-user-name">${escapeHtml(u.displayName || u.username)} ${flags}</div>
         <div class="admin-user-sub"><span class="admin-at" data-user="${escapeHtml(u.username)}" title="Наведите, чтобы менять никнеймы">@${escapeHtml(u.username)}</span>${nicknameSummary(u.nicknames)}</div>
         <div class="admin-user-meta">${u.sent} отпр. · ${u.received} получ. · ${u.groups} групп · ${u.subs} подписок · был(а): ${lastSeen}</div>
+        ${walletLine}
       </div>
       <div class="admin-user-actions">
+        <button class="admin-act" data-act="grant" data-user="${escapeHtml(u.username)}" title="Выдать ракеты и Premium">${icon('i-gem')}</button>
         <button class="admin-act${u.verified ? ' on' : ''}" data-act="verify" data-user="${escapeHtml(u.username)}" title="${u.verified ? 'Снять галочку' : 'Дать галочку'}">${icon('i-check')}</button>
         <button class="admin-act${u.badgeImage ? ' on' : ''}" data-act="badge" data-user="${escapeHtml(u.username)}" title="${u.badgeImage ? 'Заменить значок' : 'Свой значок вместо галочки'}">${icon('i-image')}</button>
         <button class="admin-act${u.admin ? ' on' : ''}" data-act="grantAdmin" data-user="${escapeHtml(u.username)}" title="${u.admin ? 'Снять админа' : 'Сделать админом'}">${icon('i-shield')}</button>
@@ -4570,6 +4598,10 @@ els.adminUsers.addEventListener('click', async (e) => {
     badgeDialogOpen(user, row && row.badgeImage);
     return;
   }
+  if (act === 'grant') {
+    grantDialogOpen(user, (state.adminUsers || []).find((u) => u.username === user));
+    return;
+  }
   if (act === 'more') {
     openAdminMorePop(btn, user);
     return;
@@ -4791,6 +4823,70 @@ document.addEventListener('mousedown', (e) => {
   if (nickPop.contains(e.target)) return;
   if (e.target.closest && e.target.closest('.admin-at')) return;
   closeNickPop();
+});
+
+/* --------------------------- grant rockets/premium --------------------------- */
+// The owner hands out Rockets and Premium from the panel. Both go through the
+// same relay code that settles a real purchase, so a granted balance and a paid
+// one are indistinguishable downstream.
+
+let grantTarget = null;
+
+/** Fill a quick-pick row with buttons that set `input` to each value. */
+function fillGrantQuick(box, input, values) {
+  box.innerHTML = '';
+  for (const v of values) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = (v > 0 ? '+' : '') + v;
+    b.addEventListener('click', () => { input.value = String(v); });
+    box.appendChild(b);
+  }
+}
+
+function grantDialogOpen(username, row) {
+  grantTarget = username;
+  const rockets = (row && row.rockets) || 0;
+  const until = row && row.premiumUntil ? fmtDateTime(row.premiumUntil) : null;
+  els.grantSub.textContent = `@${username} · сейчас ${rockets} ${MONEY.rocketWord(rockets)}`
+    + (until ? ` · Premium до ${until}` : ' · Premium нет');
+  els.grantRockets.value = '';
+  els.grantMonths.value = '';
+  showError(els.grantError, null);
+  fillGrantQuick(els.grantRocketQuick, els.grantRockets, [10, 50, 100, -10]);
+  fillGrantQuick(els.grantMonthQuick, els.grantMonths, [1, 3, 12, -1]);
+  els.grantBackdrop.hidden = false;
+  els.grantRockets.focus();
+}
+
+function grantDialogClose() {
+  els.grantBackdrop.hidden = true;
+  grantTarget = null;
+}
+
+els.btnGrantSave.addEventListener('click', async () => {
+  if (!grantTarget) return;
+  const amount = Math.trunc(Number(els.grantRockets.value || 0));
+  const months = Math.trunc(Number(els.grantMonths.value || 0));
+  if (!amount && !months) {
+    showError(els.grantError, 'Укажите ракеты или месяцы Premium');
+    return;
+  }
+  const user = grantTarget;
+  showError(els.grantError, null);
+  try {
+    if (amount) await api.adminAction({ action: 'grantRockets', username: user, amount });
+    if (months) await api.adminAction({ action: 'grantPremium', username: user, months });
+    grantDialogClose();
+    toast('Награды выданы');
+    loadAdminPanel();
+  } catch (err) {
+    showError(els.grantError, err.message || 'Не удалось выдать награды');
+  }
+});
+els.btnGrantCancel.addEventListener('click', grantDialogClose);
+els.grantBackdrop.addEventListener('click', (e) => {
+  if (e.target === els.grantBackdrop) grantDialogClose();
 });
 
 els.btnAdminAnnounce.addEventListener('click', async () => {

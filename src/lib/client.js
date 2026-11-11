@@ -1444,11 +1444,17 @@ class SleePhyClient {
     return res.items || [];
   }
 
-  async adminAction({ action, username, text, image, channelId, nickname, index }) {
+  async adminAction({ action, username, text, image, channelId, nickname, index, amount, months }) {
     const res = await this.request({
-      t: 'admin.action', action, username, text, image, channelId, nickname, index
+      t: 'admin.action', action, username, text, image, channelId, nickname, index, amount, months
     });
-    return { action: res.action, username: res.username, channelId: res.channelId };
+    return {
+      action: res.action,
+      username: res.username,
+      channelId: res.channelId,
+      wallet: res.wallet,
+      premium: res.premium
+    };
   }
 
   async pinnedMessages({ peer }) {

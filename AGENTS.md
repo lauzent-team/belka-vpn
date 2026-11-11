@@ -19,6 +19,7 @@ node test/e2e.js      # end-to-end tests (real server, real crypto)
 node test/features.js # profiles, usernames, chats, replies, reactions
 node test/groups.js   # group protocol: create, fan-out, edit, delete, membership
 node test/admin.js    # admin panel, verification, blocking, announcements
+node test/admin-grant.js # an admin granting Rockets and Premium from the panel
 node test/accounts.js # sign-out, account switching, dropping an account
 node test/session.js  # token persistence, relay restart, unlock, avatar images
 node test/peer-badges.js # a peer's checkmark and picture survive re-entry

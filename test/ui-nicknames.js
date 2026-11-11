@@ -99,6 +99,18 @@ async function main() {
     );
     const chips = await owner.win.$$eval('#profile-nicknames .nickname-chip span', (els) => els.map((e) => e.textContent));
     assert.deepStrictEqual(chips, ['Главный', 'Boss']);
+    // The line reads "или" first, so the real name above it is the primary one.
+    const orText = await owner.win.$eval('#profile-nicknames .nickname-or', (e) => e.textContent);
+    assert.strictEqual(orText, 'или', 'the nicknames are introduced by "или"');
+    // And it sits between the display name and the @handle.
+    const order = await owner.win.$$eval(
+      '.profile-hero-meta > *',
+      (els) => els.map((e) => e.className || e.tagName)
+    );
+    const nameAt = order.findIndex((c) => /name-row/.test(c));
+    const nickAt = order.findIndex((c) => /profile-nicknames/.test(c));
+    const handleAt = order.findIndex((c) => /profile-handle/.test(c));
+    assert.ok(nameAt < nickAt && nickAt < handleAt, `order should be name, nicknames, handle — got ${order.join(' | ')}`);
     await owner.win.click('#btn-profile-close');
   });
 

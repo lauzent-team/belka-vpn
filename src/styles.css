@@ -321,6 +321,27 @@ input, textarea { user-select: text; }
 }
 .nickname-chip .ico { width: 13px; height: 13px; color: var(--accent); }
 .nickname-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The profile name with its nicknames: original first, then "или", then the
+   rest — so a reader sees the real name before any alias. */
+.profile-name-block { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.profile-nicknames-inline {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--text-dim); padding: 1px 0;
+}
+.nickname-or { font-size: 12px; color: var(--text-dim); opacity: .8; }
+.nickname-inline { color: var(--text-soft); font-weight: 600; }
+.nickname-inline::after { content: ','; color: var(--text-dim); }
+.nickname-inline:last-child::after { content: ''; }
+
+/* Quick-fill chips in the admin grant dialog. */
+.grant-quick { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 4px; }
+.grant-quick button {
+  padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  background: var(--bg-3); border: 1px solid var(--border); color: var(--text-soft); cursor: pointer;
+}
+.grant-quick button:hover { border-color: var(--accent); color: var(--text); }
+.admin-user-wallet { color: var(--accent); }
 .nickname-row .nickname-row-name { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nickname-row input {
   flex: 1; min-width: 0; background: var(--surface-2); color: var(--text);

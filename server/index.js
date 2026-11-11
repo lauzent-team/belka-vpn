@@ -664,7 +664,8 @@ const q = {
   adminListUsers: db.prepare(
     `SELECT u.username, u.display_name, u.bio, u.avatar_color, u.avatar_image, u.created_at,
             u.is_admin, u.verified, u.banned, u.badge_image, u.nicknames, u.last_seen,
-            u.has_password, u.phone, u.profile_hidden, u.last_seen_hidden,
+            u.has_password, u.phone, u.profile_hidden, u.last_seen_hidden, u.premium_until,
+            (SELECT COALESCE(w.balance, 0) FROM wallets w WHERE w.username = u.username) AS rockets,
             (SELECT COUNT(*) FROM messages m WHERE m.sender = u.username) AS sent,
             (SELECT COUNT(*) FROM messages m WHERE m.recipient = u.username) AS received,
             (SELECT COUNT(*) FROM group_members gm WHERE gm.username = u.username) AS groups,
@@ -2342,18 +2343,45 @@ function handleGiftSend(ws, msg, rid) {
   reply(ws, rid, { t: 'gift.ok', gift: msg.gift, to, balance: next, _id: rid });
 }
 
-/** The owner can hand out Rockets, e.g. to seed a promotion or refund someone. */
+/** The owner can hand out Rockets and Premium, e.g. to seed a promotion or
+ *  refund someone. `rockets` and `premiumMonths` are independent: either, both
+ *  or — when nothing is asked for — nothing happens. */
 function handleAdminGrant(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
   if (!isAdmin(ws.username)) return bad(ws, rid, 'Not allowed');
   const target = String(msg.username || '').toLowerCase();
-  if (!q.getUser.get(target)) return bad(ws, rid, 'No such user');
-  const amount = Math.trunc(Number(msg.amount));
-  if (!Number.isFinite(amount) || amount === 0) return bad(ws, rid, 'Укажите число ракет');
-  const next = moveRockets(target, amount, 'admin', ws.username);
+  const user = q.getUser.get(target);
+  if (!user) return bad(ws, rid, 'No such user');
+
+  const amount = Math.trunc(Number(msg.amount || 0));
+  const months = Math.trunc(Number(msg.premiumMonths || 0));
+  const hasRockets = Number.isFinite(amount) && amount !== 0;
+  const hasPremium = Number.isFinite(months) && months !== 0;
+  if (!hasRockets && !hasPremium) return bad(ws, rid, 'Укажите ракеты или месяцы Premium');
+
+  let balance = rocketBalance(target);
+  if (hasRockets) {
+    balance = moveRockets(target, amount, 'admin', ws.username);
+    logAdmin(ws.username, 'grant', target, `${amount} rockets`);
+  }
+  if (hasPremium) {
+    // A negative count takes time away; the result is floored at "now" so an
+    // admin cannot leave a subscription in the past and confuse the UI.
+    const until = MONEY.extendPremium(premiumUntil(user), Date.now(), months, PREMIUM_MONTH_MS);
+    q.setPremiumUntil.run(Math.max(until, 0), Date.now(), target);
+    logAdmin(ws.username, 'grantPremium', target, `${months} months`);
+  }
+
+  const updated = q.getUser.get(target);
   deliverToUser(target, walletState(target));
-  logAdmin(ws.username, 'grant', target, `${amount} rockets`);
-  reply(ws, rid, { t: 'admin.ok', action: 'grant', username: target, balance: next, _id: rid });
+  reply(ws, rid, {
+    t: 'admin.ok',
+    action: 'grant',
+    username: target,
+    balance,
+    premium: premiumState(updated),
+    _id: rid
+  });
 }
 
 function handleChatsList(ws, msg, rid) {
@@ -3300,7 +3328,10 @@ function handleAdminUsers(ws, msg, rid) {
       badgeImage: r.badge_image || null,
       nicknames: parseNicknames(r.nicknames),
       banned: !!r.banned,
-      online: isOnline(r.username)
+      online: isOnline(r.username),
+      rockets: r.rockets || 0,
+      premiumUntil: r.premium_until || null,
+      premium: premiumUntil(r) > 0
     }))
   });
 }
@@ -3435,6 +3466,31 @@ function handleAdminAction(ws, msg, rid) {
       if (validated.error) return bad(ws, rid, validated.error);
       q.setNicknames.run(validated.value, now, target);
       break;
+    }
+    case 'grantRockets':
+    case 'grantPremium': {
+      // Premium and Rockets are settled through the same code path the panel
+      // uses, so an admin grant and a real purchase cannot drift apart.
+      const months = Math.trunc(Number(msg.months || 0));
+      const amount = Math.trunc(Number(msg.amount || 0));
+      if (msg.action === 'grantPremium') {
+        if (!Number.isFinite(months) || months === 0) return bad(ws, rid, 'Укажите месяцы Premium');
+        const until = MONEY.extendPremium(premiumUntil(user), now, months, PREMIUM_MONTH_MS);
+        q.setPremiumUntil.run(Math.max(until, 0), now, target);
+        logAdmin(actor, 'grantPremium', target, `${months} months`);
+      } else {
+        if (!Number.isFinite(amount) || amount === 0) return bad(ws, rid, 'Укажите число ракет');
+        moveRockets(target, amount, 'admin', actor);
+        logAdmin(actor, 'grant', target, `${amount} rockets`);
+      }
+      deliverToUser(target, walletState(target));
+      return reply(ws, rid, {
+        t: 'admin.ok',
+        action: msg.action,
+        username: target,
+        wallet: walletState(target),
+        premium: premiumState(q.getUser.get(target))
+      });
     }
     case 'ban':
       if (target === actor) return bad(ws, rid, 'You cannot block your own account');

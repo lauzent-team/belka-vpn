@@ -68,8 +68,9 @@ async function main() {
   const suffix = Math.random().toString(36).slice(2, 6);
   const admin = await launch('admin');
   const other = await launch('other');
+  const otherName = `panelu_${suffix}`;
   await signIn(admin.win, URL, { username: ADMIN });
-  await signIn(other.win, URL, { username: `panelu_${suffix}` });
+  await signIn(other.win, URL, { username: otherName });
 
   await step('the admin panel opens with the four tabs', async () => {
     await openAdmin(admin.win);
@@ -135,6 +136,26 @@ async function main() {
     await admin.win.keyboard.press('Escape');
     await admin.win.mouse.click(5, 5);
     await wait(150);
+  });
+
+  await step('an admin grants Rockets and Premium from the panel', async () => {
+    await openAdmin(admin.win);
+    await admin.win.click('.admin-tab[data-tab="users"]');
+    await admin.win.waitForSelector('#admin-users .admin-user [data-act="grant"]', { timeout: 8000 });
+    // Grant to the non-admin account, addressed by its own row.
+    const row = admin.win.locator(`#admin-users .admin-user:has(.admin-at[data-user="${otherName}"])`);
+    const before = Number((await row.locator('.admin-user-wallet').textContent()).match(/\d+/)[0]);
+    await row.locator('[data-act="grant"]').click();
+    await admin.win.waitForSelector('#grant-backdrop:not([hidden])', { timeout: 8000 });
+    await admin.win.fill('#grant-rockets', '120');
+    await admin.win.fill('#grant-months', '2');
+    await admin.win.click('#btn-grant-save');
+    await admin.win.waitForSelector('#grant-backdrop', { state: 'hidden', timeout: 8000 });
+    // The target's row now advertises the balance and the subscription.
+    await row.locator('.admin-user-wallet').waitFor({ state: 'visible', timeout: 8000 });
+    const wallet = await row.locator('.admin-user-wallet').textContent();
+    assert.strictEqual(Number(wallet.match(/\d+/)[0]), before + 120, `expected ${before + 120} Rockets, got ${wallet}`);
+    assert.ok(/Premium/.test(wallet), `the row should mark Premium, got ${wallet}`);
   });
 
   await step('the panel works for a non-admin too, by hiding the section', async () => {

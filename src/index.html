@@ -453,8 +453,8 @@
                 <span class="verified-badge verified-badge-lg" id="profile-badge" hidden
                       title="Проверенный аккаунт"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-check"></use></svg></span>
               </span>
-              <span class="profile-handle" id="profile-handle">@—</span>
               <div class="profile-nicknames" id="profile-nicknames" hidden></div>
+              <span class="profile-handle" id="profile-handle">@—</span>
               <span class="profile-presence" id="profile-presence"></span>
               <span class="profile-streak" id="profile-streak" hidden>
                 <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-fire"></use></svg>
@@ -1206,6 +1206,34 @@
             <button class="btn-primary" id="btn-badge-save">Сохранить</button>
             <button class="btn-ghost" id="btn-badge-remove" hidden>Убрать значок</button>
             <button class="btn-ghost" id="btn-badge-cancel">Отмена</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========================= GRANT (rockets / premium) ========================= -->
+    <div class="modal-backdrop" id="grant-backdrop" hidden>
+      <div class="modal modal-confirm">
+        <header class="modal-head">
+          <h3>Выдать награды</h3>
+        </header>
+        <div class="modal-body">
+          <p class="confirm-text" id="grant-sub">—</p>
+          <label class="field">
+            <span class="field-label">Ракеты</span>
+            <input id="grant-rockets" type="number" inputmode="numeric" step="1" placeholder="0" />
+          </label>
+          <div class="grant-quick" id="grant-rocket-quick"></div>
+          <label class="field">
+            <span class="field-label">Premium, месяцев</span>
+            <input id="grant-months" type="number" inputmode="numeric" step="1" placeholder="0" />
+          </label>
+          <div class="grant-quick" id="grant-month-quick"></div>
+          <p class="setting-note">Положительное число добавляет, отрицательное отнимает. Ноль оставляет как есть.</p>
+          <p class="auth-error" id="grant-error" hidden></p>
+          <div class="profile-actions">
+            <button class="btn-primary" id="btn-grant-save">Выдать</button>
+            <button class="btn-ghost" id="btn-grant-cancel">Отмена</button>
           </div>
         </div>
       </div>
