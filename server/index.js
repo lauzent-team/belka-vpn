@@ -31,6 +31,57 @@ const TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
 const DOWNLOAD_DIR = process.env.SLEEPHY_DOWNLOADS || path.join(__dirname, '..', 'dist');
 const DOWNLOAD_NAME = /^(index\.html|SleePhy-Setup-[\w.-]+\.exe)$/;
 
+// The download page points its button at /download/latest rather than pinning a
+// version, so a relay that is redeployed without a fresh page still hands out
+// the newest installer. Pinned links are what left the live page offering
+// 0.16.2 after 0.16.3 had shipped.
+const GITHUB_REPO = process.env.SLEEPHY_REPO || 'lauzent-team/belka-vpn';
+const INSTALLER_RE = /^SleePhy-Setup-[\w.-]+\.exe$/;
+const RELEASE_CACHE_MS = 5 * 60 * 1000;
+let latestInstaller = null; // { url, name, at }
+
+/**
+ * Resolve the newest installer's download URL. GitHub's API is the source of
+ * truth; if it is unreachable or rate-limited we fall back to the version this
+ * build was cut from, which is what the tag convention produces.
+ */
+async function resolveLatestInstaller() {
+  const now = Date.now();
+  if (latestInstaller && now - latestInstaller.at < RELEASE_CACHE_MS) return latestInstaller;
+
+  const headers = { 'user-agent': 'sleephy-relay', accept: 'application/vnd.github+json' };
+  if (process.env.GITHUB_TOKEN) headers.authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+
+  let releases = null;
+  try {
+    const r = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=20`, {
+      headers,
+      signal: AbortSignal.timeout(8000)
+    });
+    if (r.ok) releases = await r.json();
+  } catch { /* offline or blocked — use the fallback below */ }
+
+  if (Array.isArray(releases)) {
+    for (const rel of releases) {
+      if (rel.draft) continue;
+      const asset = (rel.assets || []).find((a) => INSTALLER_RE.test(a.name || ''));
+      if (asset && asset.browser_download_url) {
+        latestInstaller = { url: asset.browser_download_url, name: asset.name, at: now };
+        return latestInstaller;
+      }
+    }
+  }
+
+  const version = require('../package.json').version;
+  const name = `SleePhy-Setup-${version}.exe`;
+  latestInstaller = {
+    url: `https://github.com/${GITHUB_REPO}/releases/download/v${version}/${name}`,
+    name,
+    at: now
+  };
+  return latestInstaller;
+}
+
 // The first admin. Listed by name, never by password: the server only ever holds
 // a verifier, so there is no way to hand out an account and no way to recover one.
 // Extra names can be added with SLEEPHY_ADMINS="alice,bob".
@@ -3696,6 +3747,19 @@ const server = http.createServer((req, res) => {
     res.end(body);
     return;
   }
+  // One stable link for "the current installer". It redirects to whatever the
+  // latest release holds, so it cannot go stale the way a pinned version can.
+  if (req.url === '/download/latest' || req.url.startsWith('/download/latest?')) {
+    resolveLatestInstaller().then((target) => {
+      res.writeHead(302, { location: target.url, 'cache-control': 'no-store' });
+      res.end();
+    }).catch(() => {
+      res.writeHead(302, { location: `https://github.com/${GITHUB_REPO}/releases/latest` });
+      res.end();
+    });
+    return;
+  }
+
   // Serve the download page and the installer, if they were shipped alongside.
   const name = req.url === '/' ? 'index.html' : req.url.slice(1);
   if (DOWNLOAD_NAME.test(name)) {
