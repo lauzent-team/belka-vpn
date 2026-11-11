@@ -938,3 +938,20 @@ arriving now can change a header that is already on screen.
 - **`test/e2e.js` is the gate that blocked every tagged build.** It asserted
   POSIX `0600` on the identity file, which Windows reports as `0666`; the check
   now returns early on `win32`.
+
+## The toolchain must be declared, and CI must use it (v0.16.4)
+
+- **`electron`, `electron-builder` and `playwright-core` belong in
+  `devDependencies`.** They were installed locally but never declared, so `npm ci`
+  in CI installed only `ws` and `libsodium-wrappers`; the build then died with
+  "Cannot compute electron version from installed node modules". Any tool a
+  script or test invokes must be in `devDependencies`, or CI cannot run it.
+- **The workflow calls `npm run dist:win`, not `npx electron-builder`.** `npx`
+  fetched whatever version was current (26.x) instead of the pinned 24.13.3, so
+  the CI build and the local build could disagree. Add `-- --publish never` too:
+  the workflow attaches files with `action-gh-release`, and electron-builder
+  otherwise auto-publishes under CI detection.
+- **Beware `npx asar extract-file`.** It writes the extracted file into the
+  current directory, not a temp path; one run dropped a stray `client.js` in the
+  repo root and a truncated `package.json` into a commit. Extract to an explicit
+  path and delete it afterwards.

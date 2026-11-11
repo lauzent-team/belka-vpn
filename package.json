@@ -7,8 +7,78 @@
   "author": "SleePhy",
   "license": "MIT",
   "private": true,
+  "scripts": {
+    "start": "electron .",
+    "server": "node server/index.js",
+    "sms-adapter": "node server/sms-adapter.js",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux"
+  },
   "dependencies": {
     "libsodium-wrappers": "^0.7.15",
     "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "electron": "31.7.7",
+    "electron-builder": "24.13.3",
+    "playwright-core": "^1.65.0"
+  },
+  "build": {
+    "appId": "ru.sleephy.desktop",
+    "productName": "SleePhy",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "server-default.json",
+      "package.json",
+      "!server/**/*",
+      "!dist/**/*"
+    ],
+    "extraMetadata": {
+      "main": "main.js"
+    },
+    "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "build/fm",
+        "to": "fm"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "SleePhy-Setup-${version}.exe",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "SleePhy"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Network",
+      "icon": "build/icon.png"
+    }
   }
 }
