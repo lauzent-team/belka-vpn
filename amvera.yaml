@@ -1,0 +1,21 @@
+# Amvera deployment for the SleePhy relay.
+#
+# This file has to sit at the repository root: Amvera only reads amvera.yaml
+# from the root of the Code folder. It builds the image with the same Dockerfile
+# we test locally, so the build never touches the Electron toolchain and no
+# dev dependencies are downloaded.
+
+meta:
+  environment: docker
+  toolchain:
+    name: docker
+
+build:
+  dockerfile: deploy/free/Dockerfile
+
+run:
+  containerPort: 8787
+  persistenceMount: /data
+
+# The Dockerfile already sets SLEEPHY_DB=/data/sleephy.db, so the database
+# lands on the mounted volume and survives a redeploy.
