@@ -923,12 +923,16 @@
 
             <!-- ------------------- PREMIUM ------------------- -->
             <section class="settings-pane" data-pane="premium">
-              <div class="promo-hero promo-premium">
-                <span class="promo-badge">В разработке</span>
+              <div class="promo-hero promo-premium" id="premium-hero">
+                <span class="promo-badge" id="premium-badge">Не активна</span>
                 <h4>SleePhy Premium</h4>
-                <p>Подписка, которая расширит возможности мессенджера.</p>
+                <p id="premium-sub">Подписка, которая расширит возможности мессенджера.</p>
               </div>
-              <span class="settings-pane-title">Что появится</span>
+              <div class="wallet-strip">
+                <span class="wallet-strip-label">Статус</span>
+                <span class="wallet-strip-value" id="premium-status">—</span>
+              </div>
+              <span class="settings-pane-title">Что входит</span>
               <ul class="promo-list">
                 <li>Файлы большего размера</li>
                 <li>Уникальные темы и обои</li>
@@ -936,28 +940,37 @@
                 <li>Расширенная история сообщений</li>
                 <li>Ускоренная загрузка медиа</li>
               </ul>
-              <p class="setting-note">
-                Раздел ещё не работает: здесь появится оформление подписки, когда
-                функция будет готова.
+              <button class="btn-primary" id="btn-buy-premium"><span id="premium-cta">Оформить за</span> <span id="premium-price">199</span> ₽ / мес</button>
+              <p class="setting-note" id="premium-note">
+                Оплата проходит на стороне платёжного сервиса. Реквизиты карты
+                мессенджер не видит.
               </p>
             </section>
 
             <!-- ------------------- ROCKETS ------------------- -->
             <section class="settings-pane" data-pane="rockets">
               <div class="promo-hero promo-rockets">
-                <span class="promo-badge">В разработке</span>
+                <span class="promo-badge" id="rockets-badge">Внутренняя валюта</span>
                 <h4>SleePhy Rockets</h4>
-                <p>Внутренняя валюта — как звёзды в Telegram.</p>
+                <p>Ракеты — как звёзды в Telegram: подарки, поддержка авторов и подписка.</p>
               </div>
-              <span class="settings-pane-title">Что появятся</span>
+              <div class="wallet-balance">
+                <span class="wallet-balance-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-rocket"></use></svg></span>
+                <span class="wallet-balance-num" id="rockets-balance">0</span>
+                <span class="wallet-balance-unit">ракет</span>
+              </div>
+              <span class="settings-pane-title">Пополнить</span>
+              <div class="rocket-bundles" id="rocket-bundles"></div>
+              <span class="settings-pane-title">Куда потратить</span>
               <ul class="promo-list">
+                <li>Подарки собеседникам в личных чатах</li>
                 <li>Поддержка авторов и каналов</li>
                 <li>Платные реакции на сообщения</li>
-                <li>Подарки за активность</li>
                 <li>Оплата подписки Premium</li>
               </ul>
-              <p class="setting-note">
-                Баланс и покупки пока недоступны — раздел в разработке.
+              <p class="setting-note" id="rockets-note">
+                1 ракета — 0.89 ₽. Покупка проходит на стороне платёжного
+                сервиса; мессенджер видит только номер платежа.
               </p>
             </section>
 
@@ -1686,6 +1699,7 @@
   <script src="lib/globalsearch.js"></script>
   <script src="lib/calls.js"></script>
   <script src="lib/fm.js"></script>
+  <script src="lib/money.js"></script>
   <script src="lib/stories.js"></script>
   <script src="renderer.js"></script>
 </body>

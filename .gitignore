@@ -8,4 +8,6 @@ out/
 server/*.db
 server/*.db-shm
 server/*.db-wal
+# Settled payments the payment adapter has recorded
+server/pay-store.json
 .runtime/

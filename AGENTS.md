@@ -49,6 +49,9 @@ xvfb-run -a node test/ui-scheduled.js  # "send later": picker, drawer badge, lis
 xvfb-run -a node test/ui-safety.js     # the safety number in a peer profile, clicked for real
 xvfb-run -a node test/ui-globalsearch.js # the top box: "Сообщения" section, row, click-through
 xvfb-run -a node test/connection.js    # connection and error handling
+node test/premium-logic.js             # Rocket prices, Premium expiry math (pure)
+node test/payments.js                  # Rockets, Premium and gifts over a real relay
+xvfb-run -a node test/ui-premium.js    # the Rockets and Premium panes, clicked for real
 xvfb-run -a node test/shots.js         # regenerate shots/*.png
 ```
 
@@ -749,3 +752,51 @@ arriving now can change a header that is already on screen.
   pre-existing.
 - **`test/ui-calls.js` exercises real WebRTC** with `--use-fake-device-for-media-stream`
   and drives the FM station against the launched profile's own `media/fm` folder.
+
+## Rockets, Premium and payments (v0.16.0)
+
+- **The relay is the only authority on money.** `src/lib/money.js` is pure
+  arithmetic shared by the relay and the renderer, but it *computes* prices; it
+  never decides them. The relay holds the price table (`ROCKET_PRICE_KOPECKS`,
+  `PREMIUM_PRICE_KOPECKS`, the fixed `ROCKET_BUNDLES` list and `GIFT_CATALOGUE`)
+  and recomputes the amount on every request. A client that names a bundle the
+  relay does not list, or a gift the catalogue does not price, is refused — the
+  amount is never taken from the request.
+- **Money is credited exactly once, keyed by the provider's reference.**
+  `payments.provider_ref` is unique; `settlePayment(id, ref)` is the single place
+  that credits a wallet or extends Premium, and it no-ops when the row is already
+  `paid`. A duplicate notification, a retry, or a claim after a restart all land
+  on the same row. `wallet.get`/`pay.claim` re-read it rather than trusting the
+  request.
+- **Premium extends, it does not restart.** `MONEY.extendPremium(until, now)` adds
+  a month to the later of "now" and the current expiry, so buying again while
+  subscribed stacks. `premium_until` lives on the user row; `premiumState` derives
+  the active flag from it.
+- **Rockets move through `moveRockets(username, delta, reason, detail)`** — it
+  writes the new balance and one `rocket_ledger` row in the same call, so the
+  ledger is the audit trail and never drifts from `wallets.balance`. `gift.send`
+  debits first, then lets the gift message go; an unaffordable gift is refused
+  before anything is sent.
+- **The sign-up grant is a ledger row, not a special balance.** `WELCOME_ROCKETS`
+  (default 10) is credited in `handleRegister` via `moveRockets(..., 'welcome')`.
+  Tests that assert exact balances set `SLEEPHY_WELCOME_ROCKETS=0`.
+- **The provider secret never reaches the relay or the app.**
+  `server/pay-adapter.js` mirrors `sms-adapter.js`: the relay posts
+  `{id,amount}` and the adapter talks to the provider, holds the secret, and
+  checks the provider's confirmed amount matches before reporting `paid`. The
+  default provider is `mock`, which settles instantly so the flow works with no
+  account; `yoomoney` builds a real checkout link. The token rides in the URL path
+  (`/create/<token>`), because the relay cannot send headers.
+- **`pay.create` returns a checkout URL; the app opens it in the system browser**
+  (`openExternal` over IPC, not a renderer `window.open`). Settlement arrives on
+  the relay's own `wallet` push, which every device of that user receives — so a
+  balance paid on one device shows on the others.
+- **Wallet state is pushed, not polled.** `walletState(username)` is the one
+  shape; `deliverToUser` sends it as a `wallet` event after any change, and
+  `src/lib/client.js` turns it into `{type:'wallet', balance, premium, settled}`.
+  The renderer's `applyWallet` is the only place that updates the panes.
+- **The Premium CTA keeps its price in a child span.** `renderWallet` writes
+  `#premium-cta` and `#premium-price` separately; setting `textContent` on the
+  button itself deletes the price span (this was a real bug `test/ui-premium.js`
+  caught).
+

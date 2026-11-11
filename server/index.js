@@ -16,6 +16,7 @@ const path = require('path');
 const { WebSocketServer } = require('ws');
 const { DatabaseSync } = require('node:sqlite');
 const STREAK = require('../src/lib/streak');
+const MONEY = require('../src/lib/money');
 
 const PORT = process.env.SLEEPHY_PORT ? Number(process.env.SLEEPHY_PORT) : 8787;
 const DB_PATH = process.env.SLEEPHY_DB || path.join(__dirname, 'sleephy.db');
@@ -33,6 +34,48 @@ const ADMINS = new Set(
   (process.env.SLEEPHY_ADMINS || 'pidoras')
     .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
 );
+
+/* --------------------------- payments --------------------------- */
+// The prices live here, on the relay, and nowhere else. A client can *ask* to
+// buy 500 Rockets, but it cannot say what they cost: the relay picks the price
+// from this table and, if the provider later confirms a different amount, the
+// credit is refused. This is the only way a top-up cannot be forged.
+const ROCKET_PRICE_KOPECKS = Number(process.env.SLEEPHY_ROCKET_PRICE_KOPECKS) || 89;
+const PREMIUM_PRICE_KOPECKS = Number(process.env.SLEEPHY_PREMIUM_PRICE_KOPECKS) || 19900;
+const PREMIUM_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
+// Rocket bundles a user may buy, in whole Rockets. Fixed so the price of any
+// bundle is unambiguous; `rockets * unit price` would let a client invent one.
+const ROCKET_BUNDLES = [50, 100, 250, 500, 1000, 2500];
+// A small gift on sign-up, so the very first gift a new user sends works and
+// the shelf is not a wall of locked cards. It is a one-time grant, not a
+// balance: it is written to the ledger so the accounting stays honest.
+const WELCOME_ROCKETS = Number(process.env.SLEEPHY_WELCOME_ROCKETS ?? 10);
+// The gift catalogue, priced in Rockets. It lives on the relay so the debit is
+// authoritative — the renderer's copy is only for drawing the shelf. A gift is
+// still sent as an ordinary encrypted message; the relay only moves Rockets.
+const GIFT_CATALOGUE = {
+  rose: { emoji: '🌹', name: 'Роза', cost: 1 },
+  teddy: { emoji: '🧸', name: 'Мишка', cost: 5 },
+  cake: { emoji: '🎂', name: 'Торт', cost: 5 },
+  heart: { emoji: '💝', name: 'Сердце', cost: 10 },
+  ring: { emoji: '💍', name: 'Кольцо', cost: 25 },
+  trophy: { emoji: '🏆', name: 'Кубок', cost: 25 },
+  diamond: { emoji: '💎', name: 'Алмаз', cost: 50 },
+  rocket: { emoji: '🚀', name: 'Ракета', cost: 50 },
+  crown: { emoji: '👑', name: 'Корона', cost: 100 },
+  star: { emoji: '🌟', name: 'Звезда', cost: 100 }
+};
+
+// Where top-ups are collected. `mock` settles instantly and is the default so
+// the app works out of the box; `yoomoney` asks the adapter to build a real
+// payment link. The adapter (server/pay-adapter.js) is the only part that
+// talks to the provider and holds the secret.
+const PAY_PROVIDER = (process.env.SLEEPHY_PAY_PROVIDER || 'mock').toLowerCase();
+const PAY_ADAPTER_URL = process.env.SLEEPHY_PAY_ADAPTER || '';
+const PAY_ADAPTER_TOKEN = process.env.SLEEPHY_PAY_ADAPTER_TOKEN || '';
+// Public base of the relay, used to build the return URL a provider redirects
+// to. Only needed when a real provider is configured.
+const PAY_PUBLIC_URL = process.env.SLEEPHY_PAY_PUBLIC_URL || '';
 
 /* ----------------------------- storage ----------------------------- */
 const db = new DatabaseSync(DB_PATH);
@@ -220,6 +263,46 @@ db.exec(`
     ts       INTEGER NOT NULL,
     PRIMARY KEY (story_id, viewer)
   );
+  -- Rockets: the in-app currency. One balance per account, in whole Rockets.
+  -- A fresh row is created on first read, so there is no separate "create".
+  CREATE TABLE IF NOT EXISTS wallets (
+    username   TEXT PRIMARY KEY,
+    balance    INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+  );
+  -- Every movement of Rockets, so a balance can always be explained and a
+  -- purchase can never be credited twice. provider_ref is the payment
+  -- provider's own identifier for a top-up; the UNIQUE index on it is what
+  -- makes crediting idempotent even if a claim is retried.
+  CREATE TABLE IF NOT EXISTS rocket_ledger (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    username     TEXT NOT NULL,
+    delta        INTEGER NOT NULL,
+    reason       TEXT NOT NULL,
+    detail       TEXT,
+    provider_ref TEXT,
+    ts           INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_ledger_user ON rocket_ledger(username, id);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_ref ON rocket_ledger(provider_ref) WHERE provider_ref IS NOT NULL;
+  -- A top-up intent: created when the user asks to buy Rockets, settled when
+  -- the provider confirms payment. amount_rub is what the user pays, in
+  -- kopecks, and rockets is what the relay will credit: both fixed here,
+  -- never taken from the client.
+  CREATE TABLE IF NOT EXISTS payments (
+    id         TEXT PRIMARY KEY,
+    username   TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    amount_rub INTEGER NOT NULL,
+    rockets    INTEGER,
+    months     INTEGER,
+    status     TEXT NOT NULL DEFAULT 'pending',
+    provider   TEXT,
+    provider_ref TEXT,
+    created_at INTEGER NOT NULL,
+    paid_at    INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(username, id);
 `);
 
 // Columns added after the first release. Existing databases are upgraded in
@@ -274,7 +357,10 @@ for (const sql of [
   'ALTER TABLE messages ADD COLUMN send_at INTEGER',
   // Set when the sender removes a message from the scheduled list, so the row
   // is hidden on every one of their devices without being wiped.
-  'ALTER TABLE messages ADD COLUMN scheduled_hidden INTEGER NOT NULL DEFAULT 0'
+  'ALTER TABLE messages ADD COLUMN scheduled_hidden INTEGER NOT NULL DEFAULT 0',
+  // When a Premium subscription runs out (ms), or NULL for "no subscription".
+  // The relay is the only authority on this: a client cannot claim Premium.
+  'ALTER TABLE users ADD COLUMN premium_until INTEGER'
 ]) {
   try { db.exec(sql); } catch { /* column already present */ }
 }
@@ -659,7 +745,31 @@ const q = {
       WHERE a.viewer = ? AND s.expires_at > ?
       ORDER BY s.id DESC LIMIT 500`
   ),
-  isStoryViewer: db.prepare('SELECT 1 AS ok FROM story_audience WHERE story_id = ? AND viewer = ?')
+  isStoryViewer: db.prepare('SELECT 1 AS ok FROM story_audience WHERE story_id = ? AND viewer = ?'),
+
+  /* -------------------------- rockets and premium -------------------------- */
+  getWallet: db.prepare('SELECT * FROM wallets WHERE username = ?'),
+  insertWallet: db.prepare('INSERT OR IGNORE INTO wallets (username, balance, updated_at) VALUES (?, 0, ?)'),
+  setWalletBalance: db.prepare('UPDATE wallets SET balance = ?, updated_at = ? WHERE username = ?'),
+  insertLedger: db.prepare(
+    `INSERT INTO rocket_ledger (username, delta, reason, detail, provider_ref, ts)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ),
+  ledgerForUser: db.prepare('SELECT * FROM rocket_ledger WHERE username = ? ORDER BY id DESC LIMIT 50'),
+  ledgerByRef: db.prepare('SELECT * FROM rocket_ledger WHERE provider_ref = ?'),
+  insertPayment: db.prepare(
+    `INSERT INTO payments (id, username, kind, amount_rub, rockets, months, status, provider, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+  ),
+  getPayment: db.prepare('SELECT * FROM payments WHERE id = ?'),
+  setPaymentPaid: db.prepare(
+    `UPDATE payments SET status = 'paid', provider_ref = ?, paid_at = ? WHERE id = ? AND status = 'pending'`
+  ),
+  paymentsForUser: db.prepare('SELECT * FROM payments WHERE username = ? ORDER BY id DESC LIMIT 50'),
+  setPremiumUntil: db.prepare('UPDATE users SET premium_until = ?, updated_at = ? WHERE username = ?'),
+  deleteUserWallet: db.prepare('DELETE FROM wallets WHERE username = ?'),
+  deleteUserLedger: db.prepare('DELETE FROM rocket_ledger WHERE username = ?'),
+  deleteUserPayments: db.prepare('DELETE FROM payments WHERE username = ?')
 };
 
 /* Statements used only by the username rename, which rewrites every reference. */
@@ -680,7 +790,10 @@ const renameStmts = {
   streaks: db.prepare('UPDATE streaks SET username = ? WHERE username = ?'),
   stories: db.prepare('UPDATE stories SET author = ? WHERE author = ?'),
   storyViews: db.prepare('UPDATE story_views SET viewer = ? WHERE viewer = ?'),
-  storyAudience: db.prepare('UPDATE story_audience SET viewer = ? WHERE viewer = ?')
+  storyAudience: db.prepare('UPDATE story_audience SET viewer = ? WHERE viewer = ?'),
+  wallets: db.prepare('UPDATE wallets SET username = ? WHERE username = ?'),
+  ledger: db.prepare('UPDATE rocket_ledger SET username = ? WHERE username = ?'),
+  payments: db.prepare('UPDATE payments SET username = ? WHERE username = ?')
 };
 
 /* --------------------------- password KDF --------------------------- */
@@ -1020,6 +1133,9 @@ function publicProfile(user, viewer) {
     verified: !!user.verified,
     // A custom badge picture replaces the plain checkmark when present.
     badgeImage: user.badge_image || null,
+    // Whether this account has an active Premium subscription. Public, like a
+    // checkmark, so a Premium badge can show next to the name.
+    premium: premiumUntil(user) > 0,
     // Days in a row the account has sent something, and whether today counts.
     streak: streak.count,
     streakActive: streak.active,
@@ -1333,6 +1449,7 @@ function handleRegister(ws, msg, rid) {
   const now = Date.now();
   q.insertUser.run(username, useSalt, useVerifier, publicKey, null, null, null, now, now, 1);
   if (ADMINS.has(username)) q.setAdmin.run(1, now, username);
+  if (WELCOME_ROCKETS > 0) moveRockets(username, WELCOME_ROCKETS, 'welcome', 'welcome bonus');
 
   const token = issueToken(username);
   ws.username = username;
@@ -1508,6 +1625,9 @@ function handleUsernameSet(ws, msg, rid) {
     renameStmts.stories.run(next, prev);
     renameStmts.storyViews.run(next, prev);
     renameStmts.storyAudience.run(next, prev);
+    renameStmts.wallets.run(next, prev);
+    renameStmts.ledger.run(next, prev);
+    renameStmts.payments.run(next, prev);
     // The pair must stay sorted (`a` < `b`). Renaming can flip that, so rebuild
     // each affected row in place instead of patching one column.
     for (const row of q.dialogStreaksFor.all(prev, prev)) {
@@ -2000,6 +2120,234 @@ function handleCallHangup(ws, msg, rid) {
     calls.delete(id);
     callFanout(call, ws.username, { t: 'call.ended', callId: id, from: ws.username });
   }
+}
+
+/* --------------------------- rockets and premium --------------------------- */
+// Rockets are the in-app currency; Premium is a subscription. Both are settled
+// here, on the relay, because a client is not trusted with money. Every balance
+// change goes through `moveRockets`, and every top-up is keyed by the provider's
+// own reference so a retried confirmation credits once.
+
+function rocketBalance(username) {
+  q.insertWallet.run(username, Date.now());
+  const row = q.getWallet.get(username);
+  return row ? row.balance : 0;
+}
+
+/** Move Rockets and record why. Returns the new balance. */
+function moveRockets(username, delta, reason, detail) {
+  const now = Date.now();
+  q.insertWallet.run(username, now);
+  const next = rocketBalance(username) + delta;
+  q.setWalletBalance.run(next, now, username);
+  q.insertLedger.run(username, delta, reason, detail || null, null, now);
+  return next;
+}
+
+function premiumUntil(user) {
+  const until = user && user.premium_until ? Number(user.premium_until) : 0;
+  return until > Date.now() ? until : 0;
+}
+
+function premiumState(user) {
+  const until = premiumUntil(user);
+  return {
+    active: until > 0,
+    until: until || null,
+    priceRub: MONEY.rubles(PREMIUM_PRICE_KOPECKS),
+    months: 1
+  };
+}
+
+/** The wallet and Premium state a client is allowed to see about itself. */
+function walletState(username) {
+  const user = q.getUser.get(username);
+  return {
+    t: 'wallet',
+    balance: rocketBalance(username),
+    premium: premiumState(user),
+    bundles: MONEY.priceBundles(ROCKET_PRICE_KOPECKS, ROCKET_BUNDLES),
+    gifts: GIFT_CATALOGUE
+  };
+}
+
+function handleWalletGet(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  reply(ws, rid, { ...walletState(ws.username), _id: rid });
+}
+
+/** How a provider is reached, or `null` when no real one is configured. */
+function payAdapterEndpoint(pathname) {
+  if (!PAY_ADAPTER_URL) return null;
+  const base = PAY_ADAPTER_URL.replace(/\/$/, '');
+  const url = new URL(base + pathname);
+  if (PAY_ADAPTER_TOKEN) url.pathname += '/' + PAY_ADAPTER_TOKEN;
+  return url;
+}
+
+/**
+ * Ask the adapter to create a payment. Returns the checkout URL to open, or
+ * null when the provider is not configured (the caller then settles locally).
+ * A failure here is not fatal: the user is told to try again, and no Rockets
+ * have moved.
+ */
+async function providerCreatePayment(payment) {
+  const url = payAdapterEndpoint('/create');
+  if (!url) return null;
+  const body = JSON.stringify({
+    id: payment.id,
+    amount: payment.amount_rub,
+    label: payment.kind === 'premium' ? 'SleePhy Premium' : 'SleePhy Rockets',
+    returnUrl: PAY_PUBLIC_URL ? `${PAY_PUBLIC_URL}/pay/return?id=${payment.id}` : ''
+  });
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body
+  });
+  if (!res.ok) throw new Error('provider create failed');
+  const data = await res.json();
+  return typeof data.checkoutUrl === 'string' ? data.checkoutUrl : null;
+}
+
+/** Create a pending top-up (Rockets or Premium) and a way to pay for it. */
+async function handlePayCreate(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const kind = msg.kind === 'premium' ? 'premium' : 'rockets';
+  let amount;
+  let rockets = null;
+  let months = null;
+
+  if (kind === 'premium') {
+    amount = PREMIUM_PRICE_KOPECKS;
+    months = 1;
+  } else {
+    const wanted = Number(msg.rockets);
+    if (!MONEY.isKnownBundle(ROCKET_BUNDLES, wanted)) return bad(ws, rid, 'Неизвестный пакет');
+    rockets = Math.trunc(wanted);
+    amount = MONEY.bundlePrice(ROCKET_PRICE_KOPECKS, rockets);
+  }
+
+  const id = crypto.randomBytes(12).toString('base64url');
+  q.insertPayment.run(id, ws.username, kind, amount, rockets, months, PAY_PROVIDER, Date.now());
+
+  // With no real provider the payment is settled here and now, which is what
+  // makes the app usable before any credentials exist. With one, the client is
+  // handed a checkout URL and the credit waits for the provider's confirmation.
+  if (PAY_PROVIDER === 'mock' || !PAY_ADAPTER_URL) {
+    settlePayment(id, 'mock:' + id);
+    reply(ws, rid, { t: 'payment', id, kind, amountRub: MONEY.rubles(amount), status: 'paid', ...walletState(ws.username), _id: rid });
+    return;
+  }
+
+  let checkoutUrl = null;
+  try {
+    checkoutUrl = await providerCreatePayment(q.getPayment.get(id));
+  } catch {
+    reply(ws, rid, { t: 'error', message: 'Платёжный сервис недоступен, попробуйте позже' });
+    return;
+  }
+  reply(ws, rid, { t: 'payment', id, kind, amountRub: MONEY.rubles(amount), status: 'pending', checkoutUrl, _id: rid });
+}
+
+/**
+ * Settle a pending payment exactly once. `providerRef` is the provider's own
+ * identifier; the UNIQUE index on the ledger is what makes a repeated
+ * confirmation a no-op instead of a second credit.
+ */
+function settlePayment(paymentId, providerRef) {
+  const payment = q.getPayment.get(paymentId);
+  if (!payment || payment.status !== 'pending') return null;
+  const now = Date.now();
+  const changed = q.setPaymentPaid.run(providerRef, now, paymentId).changes;
+  if (!changed) return null; // another confirmation won the race
+
+  if (payment.kind === 'premium') {
+    const user = q.getUser.get(payment.username);
+    // Extend from the later of "now" and the current expiry, so buying while
+    // still subscribed adds a month instead of throwing the rest away.
+    const until = MONEY.extendPremium(premiumUntil(user), now, payment.months || 1, PREMIUM_MONTH_MS);
+    q.setPremiumUntil.run(until, now, payment.username);
+  } else {
+    q.insertWallet.run(payment.username, now);
+    const balance = rocketBalance(payment.username) + (payment.rockets || 0);
+    q.setWalletBalance.run(balance, now, payment.username);
+    q.insertLedger.run(payment.username, payment.rockets || 0, 'topup', paymentId, providerRef, now);
+  }
+
+  const state = walletState(payment.username);
+  deliverToUser(payment.username, { ...state, t: 'wallet', paymentId, settled: true });
+  return state;
+}
+
+/**
+ * A client saying "I have paid". The relay does not take that on faith: it asks
+ * the adapter to confirm the payment with the provider first. Only a
+ * confirmation credits anything. With the mock provider there is nothing to
+ * confirm, so the pending payment settles immediately.
+ */
+async function handlePayClaim(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const payment = q.getPayment.get(String(msg.id || ''));
+  if (!payment || payment.username !== ws.username) return bad(ws, rid, 'Платёж не найден');
+  if (payment.status !== 'pending') return reply(ws, rid, { ...walletState(ws.username), _id: rid });
+
+  if (PAY_PROVIDER === 'mock' || !PAY_ADAPTER_URL) {
+    settlePayment(payment.id, 'mock:' + payment.id);
+    return reply(ws, rid, { ...walletState(ws.username), _id: rid });
+  }
+
+  const url = payAdapterEndpoint('/verify');
+  let paid = false;
+  let ref = '';
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: payment.id, amount: payment.amount_rub })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      paid = data.paid === true;
+      ref = typeof data.ref === 'string' ? data.ref : '';
+    }
+  } catch {
+    return bad(ws, rid, 'Платёжный сервис недоступен, попробуйте позже');
+  }
+  if (!paid) return reply(ws, rid, { ...walletState(ws.username), _id: rid });
+  settlePayment(payment.id, ref || payment.id);
+  reply(ws, rid, { ...walletState(ws.username), _id: rid });
+}
+
+/** Buy a gift: debit the sender's Rockets, then let the gift message go out. */
+function handleGiftSend(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const gift = GIFT_CATALOGUE[String(msg.gift || '')];
+  if (!gift) return bad(ws, rid, 'Такого подарка нет');
+  const to = msg.to;
+  if (typeof to !== 'string' || !q.getUser.get(to)) return bad(ws, rid, 'No such user');
+  if (to === ws.username) return bad(ws, rid, 'Cannot gift yourself');
+
+  const balance = rocketBalance(ws.username);
+  if (balance < gift.cost) {
+    return reply(ws, rid, { t: 'error', message: 'Недостаточно ракет', need: gift.cost, balance });
+  }
+  const next = moveRockets(ws.username, -gift.cost, 'gift', `${msg.gift} -> ${to}`);
+  reply(ws, rid, { t: 'gift.ok', gift: msg.gift, to, balance: next, _id: rid });
+}
+
+/** The owner can hand out Rockets, e.g. to seed a promotion or refund someone. */
+function handleAdminGrant(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  if (!isAdmin(ws.username)) return bad(ws, rid, 'Not allowed');
+  const target = String(msg.username || '').toLowerCase();
+  if (!q.getUser.get(target)) return bad(ws, rid, 'No such user');
+  const amount = Math.trunc(Number(msg.amount));
+  if (!Number.isFinite(amount) || amount === 0) return bad(ws, rid, 'Укажите число ракет');
+  const next = moveRockets(target, amount, 'admin', ws.username);
+  deliverToUser(target, walletState(target));
+  logAdmin(ws.username, 'grant', target, `${amount} rockets`);
+  reply(ws, rid, { t: 'admin.ok', action: 'grant', username: target, balance: next, _id: rid });
 }
 
 function handleChatsList(ws, msg, rid) {
@@ -3154,6 +3502,9 @@ function deleteUserData(username) {
     q.deleteUserStories.run(username);
     q.deleteUserStoryViews.run(username);
     q.deleteUserStoryAudience.run(username);
+    q.deleteUserWallet.run(username);
+    q.deleteUserLedger.run(username);
+    q.deleteUserPayments.run(username);
     q.deleteUser.run(username);
     db.exec('COMMIT');
   } catch {
@@ -3198,6 +3549,11 @@ const handlers = {
   'call.signal': handleCallSignal,
   'call.decline': handleCallDecline,
   'call.hangup': handleCallHangup,
+  'wallet.get': handleWalletGet,
+  'pay.create': handlePayCreate,
+  'pay.claim': handlePayClaim,
+  'gift.send': handleGiftSend,
+  'admin.grant': handleAdminGrant,
   'chats.list': handleChatsList,
   'chat.settings': handleChatSettings,
   'chat.ttl': handleChatTtl,

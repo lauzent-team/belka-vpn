@@ -173,6 +173,24 @@ app.whenReady().then(async () => {
   ipcMain.handle('sleephy:callDecline', async (_e, payload) => client.callDecline(payload));
   ipcMain.handle('sleephy:callHangup', async (_e, payload) => client.callHangup(payload));
 
+  // Rockets and Premium. The relay settles the money; these only carry the call.
+  ipcMain.handle('sleephy:wallet', async () => client.wallet());
+  ipcMain.handle('sleephy:payCreate', async (_e, payload) => client.payCreate(payload));
+  ipcMain.handle('sleephy:payClaim', async (_e, payload) => client.payClaim(payload));
+  ipcMain.handle('sleephy:giftSend', async (_e, payload) => client.giftSend(payload));
+
+  // Open a checkout link in the system browser. Only http(s) is allowed, so a
+  // provider response can never ask the shell to run a local file or a custom
+  // protocol handler.
+  ipcMain.handle('sleephy:openExternal', async (_e, url) => {
+    if (typeof url !== 'string') return false;
+    let parsed;
+    try { parsed = new URL(url); } catch { return false; }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    await shell.openExternal(url);
+    return true;
+  });
+
   // Local media assets: the FM playlist and the ringtone list. These live in a
   // writable folder under userData, so a user can drop in their own music and
   // ringtones after the app is installed; the folder is seeded from a template

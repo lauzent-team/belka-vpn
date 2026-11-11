@@ -23,6 +23,7 @@ const CHATSEARCH = (typeof window !== 'undefined' && window.SleePhyChatSearch) |
 const SEARCH = (typeof window !== 'undefined' && window.SleePhyGlobalSearch) || null;
 const CALLS = (typeof window !== 'undefined' && window.SleePhyCalls) || null;
 const FM = (typeof window !== 'undefined' && window.SleePhyFM) || null;
+const MONEY = (typeof window !== 'undefined' && window.SleePhyMoney) || null;
 const STREAK = (typeof window !== 'undefined' && window.SleePhyStreak) || null;
 const STORIES = (typeof window !== 'undefined' && window.SleePhyStories) || null;
 
@@ -859,6 +860,17 @@ const els = {
   giftsGrid: $('gifts-grid'),
   giftsNote: $('gifts-note'),
   btnGiftsClose: $('btn-gifts-close'),
+  // Premium and Rockets.
+  premiumBadge: $('premium-badge'),
+  premiumSub: $('premium-sub'),
+  premiumStatus: $('premium-status'),
+  premiumPrice: $('premium-price'),
+  premiumCta: $('premium-cta'),
+  premiumNote: $('premium-note'),
+  btnBuyPremium: $('btn-buy-premium'),
+  rocketsBalance: $('rockets-balance'),
+  rocketBundles: $('rocket-bundles'),
+  rocketsNote: $('rockets-note'),
   storiesBar: $('stories-bar'),
   storyAdd: $('btn-story-add'),
   storyAddAvatar: $('story-add-avatar'),
@@ -1271,7 +1283,11 @@ const state = {
   // peer (a group call is a mesh, so one leg each).
   call: null, // { callId, key, video, role, peers:Map, localStream, startedAt, timer }
   // Бурмалда FM: the station, its playlist and the element that plays it.
-  fm: { playlist: [], index: -1, mode: 'all', shuffle: false, playing: false, audio: null, dir: null }
+  fm: { playlist: [], index: -1, mode: 'all', shuffle: false, playing: false, audio: null, dir: null },
+  // Rockets and Premium. The relay owns the real numbers; these mirror them
+  // for the interface and are refreshed from the relay on sign-in and on any
+  // change, never computed locally.
+  wallet: { balance: 0, premium: { active: false, until: null }, bundles: [], gifts: {} }
 };
 
 
@@ -1769,7 +1785,7 @@ async function enterMain(username) {
     if (els.drawerVer) els.drawerVer.textContent = label;
   }).catch(() => {});
   showScreen('main');
-  await Promise.all([loadChats(), loadGroups(), loadChannels(), loadContacts(), loadStreak(), loadDrafts(), loadFolders(), loadStories(), loadVerifiedPeers(), refreshScheduled()]);
+  await Promise.all([loadChats(), loadGroups(), loadChannels(), loadContacts(), loadStreak(), loadDrafts(), loadFolders(), loadStories(), loadVerifiedPeers(), refreshScheduled(), loadWallet()]);
   renderStoriesBar();
   renderChatList();
 }
@@ -5551,6 +5567,120 @@ els.btnCallScreen.addEventListener('click', async () => {
   } catch { /* the user dismissed the picker */ }
 });
 
+/* =========================== ROCKETS AND PREMIUM =========================== */
+// The relay owns the money: it decides what a bundle costs, whether a payment
+// went through, and what the balance is. Everything here draws that state and
+// asks the relay to change it; nothing is computed locally.
+
+async function loadWallet() {
+  try {
+    const res = await api.wallet();
+    applyWallet(res);
+  } catch { /* not signed in yet, or the relay is away */ }
+}
+
+/** Fold a wallet state (from a call or a push) into the interface. */
+function applyWallet(res) {
+  if (!res) return;
+  if (typeof res.balance === 'number') state.wallet.balance = res.balance;
+  if (res.premium) state.wallet.premium = res.premium;
+  if (Array.isArray(res.bundles) && res.bundles.length) state.wallet.bundles = res.bundles;
+  if (res.gifts && Object.keys(res.gifts).length) state.wallet.gifts = res.gifts;
+  renderWallet();
+  if (!els.giftsBackdrop.hidden) renderGiftShelf();
+}
+
+function premiumUntilLabel(until) {
+  if (!until) return '';
+  const d = new Date(until);
+  return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+function renderWallet() {
+  const w = state.wallet;
+  const premium = w.premium || { active: false, until: null };
+  if (els.rocketsBalance) els.rocketsBalance.textContent = String(w.balance);
+  if (els.rocketsNote && MONEY) {
+    const unit = w.bundles.length && w.bundles[0].rockets
+      ? w.bundles[0].priceRub / w.bundles[0].rockets
+      : null;
+    els.rocketsNote.textContent = unit
+      ? `1 ракета — ${unit.toFixed(2)} ₽. Покупка проходит на стороне платёжного сервиса; мессенджер видит только номер платежа.`
+      : 'Покупка проходит на стороне платёжного сервиса; мессенджер видит только номер платежа.';
+  }
+  if (els.premiumBadge) {
+    els.premiumBadge.textContent = premium.active ? 'Активна' : 'Не активна';
+    els.premiumBadge.classList.toggle('on', premium.active);
+  }
+  if (els.premiumStatus) {
+    els.premiumStatus.textContent = premium.active
+      ? `Активна до ${premiumUntilLabel(premium.until)}`
+      : 'Подписка не оформлена';
+  }
+  if (els.premiumPrice && premium.priceRub) els.premiumPrice.textContent = String(premium.priceRub);
+  if (els.premiumCta) {
+    els.premiumCta.textContent = premium.active ? 'Продлить за' : 'Оформить за';
+  }
+  if (els.rocketBundles) {
+    els.rocketBundles.replaceChildren();
+    for (const b of w.bundles) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'rocket-bundle';
+      btn.dataset.rockets = String(b.rockets);
+      btn.innerHTML = `<span class="rocket-bundle-num">${b.rockets}</span>` +
+        `<span class="rocket-bundle-unit">${MONEY ? MONEY.rocketWord(b.rockets) : 'ракет'}</span>` +
+        `<span class="rocket-bundle-price">${b.priceRub} ₽</span>`;
+      btn.addEventListener('click', () => buyBundle(b.rockets));
+      els.rocketBundles.append(btn);
+    }
+  }
+}
+
+/**
+ * Pay for something. The relay hands back a checkout URL when a real provider
+ * is configured; that opens in the system browser, and the relay is told to
+ * confirm once the user is back. With the mock provider the relay settles it
+ * immediately and there is nothing to open.
+ */
+async function startPayment(request) {
+  let res;
+  try {
+    res = await api.payCreate(request);
+  } catch (err) {
+    toast(err.message || 'Не удалось создать платёж');
+    return null;
+  }
+  if (res.checkoutUrl) {
+    await api.openExternal(res.checkoutUrl);
+    toast('Оплатите в открывшемся окне и вернитесь сюда', 6000);
+    return res.id;
+  }
+  applyWallet(res);
+  toast(res.kind === 'premium' ? 'Premium активирован' : 'Ракеты зачислены');
+  return res.id;
+}
+
+async function buyPremium() {
+  if (!state.username) return;
+  await startPayment({ kind: 'premium' });
+}
+
+async function buyBundle(rockets) {
+  if (!state.username) return;
+  await startPayment({ kind: 'rockets', rockets });
+}
+
+/** Ask the relay to confirm a pending payment (after the user returns). */
+async function claimPayment(id) {
+  try {
+    const res = await api.payClaim({ id });
+    applyWallet(res);
+  } catch { /* the relay will push the wallet state when it settles */ }
+}
+
+if (els.btnBuyPremium) els.btnBuyPremium.addEventListener('click', buyPremium);
+
 /* ============================= БУРМАЛДА FM ============================= */
 // A local station: the playlist is a JSON manifest beside the audio files, so
 // nothing has to change in code when the user adds tracks. With no manifest the
@@ -5775,6 +5905,13 @@ api.onEvent((evt) => {
       onIncomingCall(evt);
       break;
     }
+
+    case 'wallet':
+      // The relay pushed a new balance or subscription state. This can arrive
+      // from another device or after a provider confirmation, so it is the one
+      // place that updates what the settings panes show.
+      applyWallet(evt);
+      break;
 
     case 'call.answered': {
       const call = state.call;
@@ -7190,7 +7327,20 @@ const GIFTS = [
   { id: 'star', emoji: '🌟', name: 'Звезда', cost: 100 }
 ];
 
-function giftById(id) { return GIFTS.find((g) => g.id === id) || null; }
+function giftById(id) {
+  return giftCatalogue().find((g) => g.id === id) || GIFTS.find((g) => g.id === id) || null;
+}
+
+/**
+ * The shelf to draw. The relay's catalogue wins once it has been fetched, so
+ * the price shown is the price charged; GIFTS is only the offline fallback.
+ */
+function giftCatalogue() {
+  const fromServer = state.wallet.gifts || {};
+  const ids = Object.keys(fromServer);
+  if (!ids.length) return GIFTS;
+  return ids.map((id) => ({ id, ...fromServer[id] }));
+}
 
 /** A gift message carries this payload as its (encrypted) text. */
 function giftPayloadOf(m) {
@@ -7208,28 +7358,53 @@ function openGifts() {
     toast('Подарок можно отправить собеседнику в личном чате');
     return;
   }
-  els.giftsNote.textContent = `Подарок для ${displayNameFor(key)}`;
+  els.giftsNote.textContent = `Подарок для ${displayNameFor(key)} · ${state.wallet.balance} 🚀`;
+  renderGiftShelf();
+  els.giftsBackdrop.hidden = false;
+}
+
+function renderGiftShelf() {
+  if (!els.giftsGrid) return;
   els.giftsGrid.innerHTML = '';
-  for (const gift of GIFTS) {
+  const balance = state.wallet.balance;
+  for (const gift of giftCatalogue()) {
     const card = document.createElement('button');
     card.type = 'button';
-    card.className = 'gift-card';
+    card.className = 'gift-card' + (balance < gift.cost ? ' gift-card-locked' : '');
     card.dataset.gift = gift.id;
     card.innerHTML = `<span class="gift-emoji">${gift.emoji}</span>
       <span class="gift-name">${escapeHtml(gift.name)}</span>
-      <span class="gift-cost">${gift.cost} ⭐</span>`;
+      <span class="gift-cost">${gift.cost} 🚀</span>`;
     card.addEventListener('click', async () => {
       els.giftsBackdrop.hidden = true;
       await sendGift(gift);
     });
     els.giftsGrid.appendChild(card);
   }
-  els.giftsBackdrop.hidden = false;
 }
 
 async function sendGift(gift) {
   const key = state.activePeer;
   if (!key) return;
+  const to = peerUsername(key);
+  // The relay debits the Rockets first and only then is the message sent, so a
+  // gift can never go out without being paid for. The relay also decides the
+  // price, so a tampered shelf cannot buy a gift cheaply.
+  let res;
+  try {
+    res = await api.giftSend({ to, gift: gift.id });
+  } catch (err) {
+    const msg = err.message || '';
+    if (msg.includes('Недостаточно')) {
+      toast(`Не хватает ракет: нужно ${gift.cost}, у вас ${state.wallet.balance}`);
+    } else {
+      toast(msg || 'Не удалось отправить подарок');
+    }
+    return;
+  }
+  state.wallet.balance = res.balance;
+  renderWallet();
+
   const payload = JSON.stringify({ gift: gift.id, name: gift.name, emoji: gift.emoji, cost: gift.cost });
   const chat = ensureChat(key);
   const optimistic = {
@@ -7243,8 +7418,8 @@ async function sendGift(gift) {
   renderMessages();
   renderChatList();
   try {
-    const res = await api.send({ to: peerUsername(key), text: payload });
-    optimistic.id = res.id;
+    const sent = await api.send({ to, text: payload });
+    optimistic.id = sent.id;
     optimistic.pending = false;
     noteLocalSend();
     renderMessages();

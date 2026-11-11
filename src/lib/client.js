@@ -428,6 +428,18 @@ class SleePhyClient {
       this.emit({ type: 'call.left', callId: msg.callId, from: msg.from });
       return;
     }
+    if (msg.t === 'wallet') {
+      // Pushed when a payment settles, possibly from another device or after a
+      // provider confirmation arrives later than the request that started it.
+      this.emit({
+        type: 'wallet',
+        balance: Number(msg.balance) || 0,
+        premium: msg.premium || { active: false, until: null },
+        settled: !!msg.settled,
+        paymentId: msg.paymentId || null
+      });
+      return;
+    }
     if (msg.t === 'announcement') {
       this.emit({ type: 'announcement', from: msg.from, text: msg.text, ts: msg.ts });
       return;
@@ -854,6 +866,36 @@ class SleePhyClient {
 
   async callHangup({ callId }) {
     try { await this.request({ t: 'call.hangup', callId }); } catch { /* best effort */ }
+  }
+
+  /* ------------------------- rockets and premium ------------------------- */
+  // The relay is the authority on money: it decides what things cost and
+  // whether a payment really went through. These methods only carry the
+  // request; they never compute a price or a balance.
+
+  async wallet() {
+    const res = await this.request({ t: 'wallet.get' });
+    return {
+      balance: Number(res.balance) || 0,
+      premium: res.premium || { active: false, until: null },
+      bundles: Array.isArray(res.bundles) ? res.bundles : [],
+      gifts: res.gifts || {}
+    };
+  }
+
+  /** Start a top-up. With a mock provider it returns already paid. */
+  async payCreate({ kind, rockets }) {
+    return this.request({ t: 'pay.create', kind, rockets });
+  }
+
+  /** Tell the relay a payment was made; it verifies with the provider. */
+  async payClaim({ id }) {
+    return this.request({ t: 'pay.claim', id });
+  }
+
+  /** Buy a gift. The relay debits the Rockets; the message itself is separate. */
+  async giftSend({ to, gift }) {
+    return this.request({ t: 'gift.send', to, gift });
   }
 
   async receiveMessage(msg) {

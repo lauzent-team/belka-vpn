@@ -60,13 +60,26 @@ and forwards ciphertext it cannot read.
 - **Channels** — one-to-many broadcasts you can discover and follow
 - **Bots** and **mini-games** (tic-tac-toe, battleship) played in a chat, one
   move per encrypted message
-- **Gifts** — a small sticker-like present in a chat
+- **Gifts** — a small sticker-like present in a chat, paid for with **Rockets**
 - **Polls** — a question with options, single- or multiple-choice, sent as an
   ordinary encrypted message; the tally is local and updates on both devices
 - **Stories** — a 24-hour post (a caption, a picture, or both) shared with your
   contacts and the people you have talked to. Each viewer gets their own
   encrypted copy, so the relay stores only ciphertext and never learns the text,
   the picture or who watched what. The author sees a view count, not a list
+
+**Rockets and Premium**
+- **SleePhy Rockets** — an in-app currency bought in fixed bundles. The relay
+  holds the price list, so a client cannot invent a bundle or a price; a top-up
+  is credited exactly once per provider confirmation, and every movement is
+  written to a ledger. New accounts get a small welcome grant so the first gift
+  works. Rockets are spent on **gifts** (see above)
+- **SleePhy Premium** — a monthly subscription. The relay records the expiry;
+  buying again while still subscribed **extends** it rather than restarting the
+  clock. The subscriber's profile shows a Premium mark. Payment goes through a
+  provider (see below); the app never sees card details
+- The wallet and Premium state live on the relay and are pushed to every device,
+  so a balance settled on one device shows on the other
 
 **Calls and music**
 - **Calls** — one-to-one and **group** audio and video calls, with a ring card,
@@ -166,7 +179,7 @@ overrides it.
 ## Build a Windows installer
 
 ```bash
-npm run dist:win      # -> dist/SleePhy-Setup-0.15.0.exe
+npm run dist:win      # -> dist/SleePhy-Setup-0.16.0.exe
 ```
 
 Building a Windows `.exe` from Linux/macOS uses Wine; the CI workflow does this
@@ -229,6 +242,9 @@ node test/calls-logic.js                  # call labels, ringtone choice, partic
 node test/calls.js                        # call signaling over a real relay (13 checks)
 xvfb-run -a node test/ui-calls.js         # real calls and the FM station, clicked for real (12 checks)
 node test/fm-logic.js                     # playlist, shuffle and repeat rules (17 checks)
+node test/premium-logic.js                # Rocket prices, Premium expiry math (11 checks)
+node test/payments.js                     # Rockets, Premium and gifts over a real relay (15 checks)
+xvfb-run -a node test/ui-premium.js       # the Rockets and Premium panes, clicked for real (8 checks)
 ```
 
 The end-to-end suite verifies, among other things, that the plaintext never
@@ -298,6 +314,42 @@ message (`{code}` is replaced), or `SMS_PROVIDER=generic` with
 `SMS_GENERIC_URL` to use a different gateway. `test/sms-adapter.js` covers all of
 this against a fake provider, so it runs without sending anything.
 
+### Taking payment for Rockets and Premium
+
+Out of the box the relay uses a **mock** provider: a top-up settles instantly
+and no money moves. That is what the tests use, and it is enough to try the
+whole flow. For real money the relay talks to the same kind of adapter as the
+SMS flow, so the provider secret never reaches the relay or the app:
+
+```
+app ──pay.create──▶ relay ──{id,amount}──▶ pay-adapter ──provider──▶ YooMoney
+   ◀──checkoutUrl──           ◀──checkoutUrl──
+app ──opens the link in the system browser──▶ provider
+provider ──notify──▶ pay-adapter ──▶ relay settles the payment once
+```
+
+The relay decides every price from its own table (`SLEEPHY_ROCKET_PRICE_KOPECKS`,
+`SLEEPHY_PREMIUM_PRICE_KOPECKS`, and the fixed bundle list). The adapter only
+carries the amount and checks that the provider confirms the same figure; a
+confirmation for a different amount is refused, and a payment is credited
+exactly once.
+
+```bash
+YOOMONEY_RECEIVER=your-wallet-id YOOMONEY_SECRET=your-notify-secret \
+  PAY_PROVIDER=yoomoney PAY_ADAPTER_TOKEN=$(openssl rand -hex 16) \
+  node server/pay-adapter.js
+
+SLEEPHY_PAY_PROVIDER=yoomoney \
+SLEEPHY_PAY_ADAPTER=http://127.0.0.1:8791/your-token \
+  node server/index.js
+```
+
+Tell YooMoney to notify `https://<public-host>/notify/<your-token>`. Set
+`SLEEPHY_WELCOME_ROCKETS=0` to switch off the sign-up grant, or change its size.
+`test/payments.js` covers the whole path against the mock provider — forged
+bundles, double credits, gifting without paying and spending more than you hold
+are all refused.
+
 ## What is not done yet
 
 This is an honest list. The app should not be described as more secure than it is.
@@ -326,6 +378,11 @@ This is an honest list. The app should not be described as more secure than it i
 - **The relay has no rate limiting or abuse protection** — needed before it
   faces the public internet. The SMS adapter throttles code requests, but nothing
   yet limits messages, searches or failed logins.
+- **Payments are not live out of the box.** The default provider is `mock`, which
+  settles instantly and moves no money. Taking real payment means running
+  `server/pay-adapter.js` against a provider and pointing the relay at it; there
+  is no refund or chargeback flow, and the welcome Rocket grant is a local
+  policy, not a paid balance.
 - **Accounts cannot be recovered.** Lose the password, lose the keys.
 
 ## Layout
@@ -333,10 +390,12 @@ This is an honest list. The app should not be described as more secure than it i
 ```
 server/index.js        WebSocket relay + accounts, profiles and chats (node:sqlite)
 server/sms-adapter.js  relay JSON -> provider API, with per-number throttling
+server/pay-adapter.js  relay JSON -> payment provider (YooMoney/generic/mock)
 src/lib/crypto.js      libsodium + scrypt helpers (main process)
 src/lib/client.js      connection, identity, encryption (main process)
 src/lib/calls.js       call labels, ringtone choice, participant text
 src/lib/fm.js          Бурмалда FM playlist and play-order rules
+src/lib/money.js       Rocket and Premium arithmetic (relay + renderer share it)
 main.js                Electron main process and IPC
 preload.js             the only renderer bridge (window.sleephy)
 src/index.html|css|js  interface
