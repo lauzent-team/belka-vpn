@@ -1,0 +1,24 @@
+# Caddy in front of the SleePhy relay. Caddy gets and renews the TLS
+# certificate for you, so there is no certbot step and no renewal cron.
+#
+#   sudo cp deploy/oracle/Caddyfile /etc/caddy/Caddyfile
+#   sudo sed -i 's/relay.example.com/YOUR_DOMAIN/' /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# The app connects over wss:// to this host. Caddy upgrades the WebSocket
+# automatically; nothing extra is needed for it.
+
+relay.example.com {
+	# The payment adapter listens on 127.0.0.1:8791 and only the provider's
+	# webhook is allowed to reach it. Everything else on the adapter (create,
+	# verify) stays private, so an attacker cannot probe the payment logic.
+	handle /notify/* {
+		reverse_proxy 127.0.0.1:8791
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:12000
+	}
+
+	encode gzip
+}

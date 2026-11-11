@@ -1,0 +1,24 @@
+[Unit]
+Description=SleePhy relay (blind message relay + download host)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sleephy
+WorkingDirectory=/opt/sleephy
+# Secrets (the adapter token) live in this file, not in the unit, so the unit
+# can be shown to anyone. See relay.env.example.
+EnvironmentFile=/etc/sleephy/relay.env
+ExecStart=/usr/bin/node /opt/sleephy/server/index.js
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sleephy
+StateDirectory=sleephy
+
+[Install]
+WantedBy=multi-user.target

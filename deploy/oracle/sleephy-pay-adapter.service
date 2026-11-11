@@ -1,0 +1,24 @@
+[Unit]
+Description=SleePhy payment adapter (holds the provider secret)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sleephy
+WorkingDirectory=/opt/sleephy
+# The YooMoney receiver, secret and OAuth token live here, readable only by the
+# service user. See pay-adapter.env.example.
+EnvironmentFile=/etc/sleephy/pay-adapter.env
+ExecStart=/usr/bin/node /opt/sleephy/server/pay-adapter.js
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sleephy
+StateDirectory=sleephy
+
+[Install]
+WantedBy=multi-user.target

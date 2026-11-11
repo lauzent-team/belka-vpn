@@ -259,7 +259,12 @@ SLEEPHY_PORT=8787 SLEEPHY_DB=/var/lib/sleephy/sleephy.db node server/index.js
 ```
 
 Put it behind TLS (`wss://`) in production — the app accepts any WebSocket URL
-in Settings → Server address.
+in Settings → Server address. The relay listens on `$PORT` when `SLEEPHY_PORT`
+is unset, so a platform host can place it; `SLEEPHY_PORT` always wins.
+
+For a step-by-step deployment on a real server — service units, a Caddy config
+that gets the certificate for you, and a Russian-language guide that covers the
+no-foreign-card case — see [`deploy/oracle/`](deploy/oracle/README.md).
 
 ### Sending login codes by SMS (not enabled)
 

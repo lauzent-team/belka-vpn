@@ -417,6 +417,13 @@ arriving now can change a header that is already on screen.
   supervisor runs the code as it was when it started; a shipped client that talks
   to a stale relay sees `undefined` for new fields. `deploy/healthcheck.sh` only
   starts a relay when none answers, so kill the supervisor and relay first.
+- **A real deployment lives in `deploy/oracle/`.** It is separate from the sandbox
+  supervisor above: systemd units (`sleephy-relay.service`, and a second unit for
+  `pay-adapter.js` so the provider secret stays in its own process), a `Caddyfile`
+  that terminates TLS and proxies `/notify/*` to the adapter while keeping
+  `/create` and `/verify` private, `install.sh`, and env-file templates. The guide
+  is in Russian because that is the user's language. Only ports 80/443 open;
+  12000 and 8791 stay on localhost.
 
 ## Privacy and social links (v0.8.0)
 
