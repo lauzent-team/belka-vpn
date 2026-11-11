@@ -1,0 +1,12 @@
+# Keep the build context small and out of the relay image.
+node_modules
+dist
+.runtime
+.git
+*.db
+*.db-shm
+*.db-wal
+server/pay-store.json
+test
+shots
+*.log

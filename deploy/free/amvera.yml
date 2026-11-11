@@ -1,0 +1,27 @@
+# Amvera deployment for the SleePhy relay.
+#
+# Copy this to the repository root (Amvera reads it from there) and push:
+#   git push amvera master
+#
+# Amvera keeps the container running continuously, which is what a WebSocket
+# relay needs — there is no sleep-on-idle behaviour on this platform.
+
+meta:
+  environment: node
+  toolchain:
+    name: npm
+    version: "24"          # node:sqlite (the relay's store) needs Node >= 22.13
+
+build:
+  additionalCommands: "npm ci --omit=dev"
+
+run:
+  scriptName: server/index.js
+  containerPort: 8787
+  persistenceMount: /data  # the SQLite database survives a redeploy here
+
+# amvera.yml has only meta/build/run. Environment variables are set in the
+# Amvera UI (Проект → Переменные и секреты), not in this file. Set:
+#   SLEEPHY_DB=/data/sleephy.db      (absolute, inside the mounted volume)
+#   SLEEPHY_DOWNLOADS=/app/dist
+# Without SLEEPHY_DB the database lands in /app/server and is wiped on deploy.

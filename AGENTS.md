@@ -424,6 +424,12 @@ arriving now can change a header that is already on screen.
   `/create` and `/verify` private, `install.sh`, and env-file templates. The guide
   is in Russian because that is the user's language. Only ports 80/443 open;
   12000 and 8791 stay on localhost.
+- **`deploy/free/` is the container path.** A `Dockerfile` (prod deps only — the
+  image needs `ws`, `node:sqlite` and `src/lib`, not electron) plus `amvera.yml`.
+  Two traps it documents: the relay needs **Node ≥ 22.13** because `node:sqlite`
+  is behind `--experimental-sqlite` before that, and the SQLite file must live on
+  the mounted volume (`SLEEPHY_DB=/data/sleephy.db`) or every redeploy wipes the
+  accounts. `amvera.yml` has only meta/build/run — env vars go in the Amvera UI.
 
 ## Privacy and social links (v0.8.0)
 

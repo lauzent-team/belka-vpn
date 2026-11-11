@@ -266,6 +266,11 @@ For a step-by-step deployment on a real server — service units, a Caddy config
 that gets the certificate for you, and a Russian-language guide that covers the
 no-foreign-card case — see [`deploy/oracle/`](deploy/oracle/README.md).
 
+To run the relay on a free container host instead, there is a Dockerfile and an
+Amvera config in [`deploy/free/`](deploy/free/README.md). That guide is also in
+Russian and starts with the arithmetic: a relay needs ~73 vCPU-hours and ~183
+GB-hours a month, which is why most "free" tiers cannot keep it up 24/7.
+
 ### Sending login codes by SMS (not enabled)
 
 Sign-in is by username and password, so nothing here is needed for the app to
