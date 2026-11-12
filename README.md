@@ -372,6 +372,37 @@ provider — forged bundles, double credits, gifting without paying and spending
 more than you hold are all refused; `test/pay-adapter.js` covers the adapter
 itself and `test/pay-flow.js` the relay-and-adapter handshake.
 
+### Single-process hosts (Amvera): the relay talks to YooMoney itself
+
+A host that runs **only** the relay — the Amvera container, whose `amvera.yaml`
+starts a single process — has no adapter to reach, so the adapter route above
+cannot be used. For that case the relay speaks to YooMoney directly: with
+`SLEEPHY_PAY_PROVIDER=yoomoney` and the wallet configured, and **no**
+`SLEEPHY_PAY_ADAPTER`, it builds the quickpay link itself and settles a payment
+when YooMoney posts its signed notification to `/notify/<token>`.
+
+Set these on the host (Amvera: project → «Переменные»):
+
+| Variable | Value |
+| --- | --- |
+| `SLEEPHY_PAY_PROVIDER` | `yoomoney` |
+| `YOOMONEY_RECEIVER` | your wallet id, e.g. `410011XXXXXXXXXX` |
+| `YOOMONEY_SECRET` | the notification secret from YooMoney settings |
+| `SLEEPHY_PAY_ADAPTER_TOKEN` | a long random string, the `/notify` path token |
+| `SLEEPHY_PAY_PUBLIC_URL` | `https://<your-relay-host>` |
+| `SLEEPHY_WELCOME_ROCKETS` | `0` to switch off the sign-up grant |
+
+Then point YooMoney's «Уведомления» at
+`https://<your-relay-host>/notify/<SLEEPHY_PAY_ADAPTER_TOKEN>`, with the HTTP
+notification method, and copy the same secret into `YOOMONEY_SECRET`.
+
+If the wallet or the secret is missing the relay falls back to its own demo
+checkout page, which moves no money — so a half-configured host can never take a
+payment it cannot credit. `test/pay-yoomoney-direct.js` covers this path: the
+real link, the signed notification, a forged signature, a short payment and a
+replay are all checked. The OAuth `YOOMONEY_TOKEN` is optional and only enables
+the polling fallback for a notification that never arrived.
+
 ## What is not done yet
 
 This is an honest list. The app should not be described as more secure than it is.

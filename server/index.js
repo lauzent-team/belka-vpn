@@ -152,6 +152,19 @@ const PAY_ADAPTER_TOKEN = process.env.SLEEPHY_PAY_ADAPTER_TOKEN || '';
 // built from the address the client is already talking to, which is correct for
 // a single-host deployment.
 const PAY_PUBLIC_URL = process.env.SLEEPHY_PAY_PUBLIC_URL || '';
+// A single-process host (the Amvera container) runs only the relay, so there is
+// no separate adapter to reach. In that case the relay speaks to YooMoney
+// itself: it builds the quickpay link from its own config and settles a payment
+// when YooMoney posts its signed notification to /notify/<token>. The secret
+// stays on the server and never reaches the app.
+const YOOMONEY_RECEIVER = process.env.YOOMONEY_RECEIVER || '';
+const YOOMONEY_SECRET = process.env.YOOMONEY_SECRET || '';
+const YOOMONEY_TOKEN = process.env.YOOMONEY_TOKEN || '';
+const YOOMONEY_QUICKPAY_URL = process.env.YOOMONEY_QUICKPAY_URL || 'https://yoomoney.ru/quickpay/confirm';
+const YOOMONEY_API_URL = process.env.YOOMONEY_API_URL || 'https://yoomoney.ru/api';
+// Guards /notify so a stranger cannot settle a payment by guessing ids. Reuses
+// the adapter token name so one value covers both wiring styles.
+const PAY_NOTIFY_TOKEN = process.env.SLEEPHY_PAY_ADAPTER_TOKEN || process.env.SLEEPHY_PAY_NOTIFY_TOKEN || '';
 
 /* ----------------------------- storage ----------------------------- */
 const db = new DatabaseSync(DB_PATH);
@@ -2379,6 +2392,94 @@ async function providerCreatePayment(payment) {
   return typeof data.checkoutUrl === 'string' ? data.checkoutUrl : null;
 }
 
+/**
+ * Whether the relay should speak to YooMoney itself. That is the case on a
+ * single-process host (Amvera) where no adapter is reachable: the provider is
+ * `yoomoney`, the wallet is configured, and no adapter URL is set.
+ */
+function usesDirectYooMoney() {
+  // The secret is required: without it a notification cannot be verified, so a
+  // real link would take money that could never be credited. Missing config
+  // falls back to the built-in demo checkout, which moves no money.
+  return PAY_PROVIDER === 'yoomoney' && !!YOOMONEY_RECEIVER && !!YOOMONEY_SECRET && !PAY_ADAPTER_URL;
+}
+
+/**
+ * Which payment path is actually in effect. Deciding it in one place keeps the
+ * create, confirm and claim handlers from disagreeing: a link is only ever
+ * handed out together with the handler that can settle it.
+ *   mock     - settles at once (tests)
+ *   direct   - the relay itself talks to YooMoney
+ *   adapter  - an external adapter talks to the provider
+ *   checkout - the relay's own demo page, which takes no money
+ */
+function payMode() {
+  if (PAY_PROVIDER === 'mock') return 'mock';
+  if (usesDirectYooMoney()) return 'direct';
+  if (PAY_PROVIDER !== 'checkout' && PAY_ADAPTER_URL) return 'adapter';
+  return 'checkout';
+}
+
+/** Build the YooMoney quickpay link the user opens in a browser. */
+function yoomoneyDirectCreate(payment) {
+  const url = new URL(YOOMONEY_QUICKPAY_URL);
+  url.searchParams.set('receiver', YOOMONEY_RECEIVER);
+  url.searchParams.set('quickpay-form', 'button');
+  url.searchParams.set('paymentType', 'AC');
+  url.searchParams.set('sum', MONEY.amountString(payment.amount_rub));
+  url.searchParams.set('label', payment.id);
+  url.searchParams.set('targets', payment.kind === 'premium' ? 'SleePhy Premium' : 'SleePhy Rockets');
+  if (PAY_PUBLIC_URL) url.searchParams.set('successURL', `${PAY_PUBLIC_URL.replace(/\/+$/, '')}/pay/return?id=${payment.id}`);
+  return url.toString();
+}
+
+/** The sha1 signature YooMoney puts on every notification, for verification. */
+function yoomoneyDirectSignature(p) {
+  const fields = [
+    p.notification_type, p.operation_id, p.amount, p.currency, p.datetime,
+    p.sender, p.codepro, YOOMONEY_SECRET, p.label
+  ].map((v) => (v === undefined || v === null ? '' : String(v)));
+  return crypto.createHash('sha1').update(fields.join('&')).digest('hex');
+}
+
+/**
+ * Fallback for a payment whose notification never arrived: ask YooMoney's
+ * operation history whether the label was paid. Only used when an OAuth token
+ * is configured. Any error (no token, network, provider) is a plain "not paid"
+ * so a claim can never fail the whole request.
+ */
+async function yoomoneyDirectPoll(payment) {
+  if (!YOOMONEY_TOKEN) return false;
+  try {
+    const res = await fetch(`${YOOMONEY_API_URL}/operation-history`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${YOOMONEY_TOKEN}`, 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ label: payment.id, type: 'deposition', records: '10' }).toString(),
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    const ops = Array.isArray(data.operations) ? data.operations : [];
+    // Only a deposit of at least the price counts; a partial payment is not one.
+    return ops.some((op) => op.status === 'success' && Math.round(Number(op.amount) * 100) >= payment.amount_rub);
+  } catch {
+    return false;
+  }
+}
+
+/** Read a POST body as a string, capped so a huge body cannot exhaust memory. */
+function readRequestBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    let raw = '';
+    req.on('data', (chunk) => {
+      raw += chunk;
+      if (raw.length > limit) { req.destroy(); reject(new Error('too large')); }
+    });
+    req.on('end', () => resolve(raw));
+    req.on('error', reject);
+  });
+}
+
 /** The public base of this relay, from configuration or the request itself. */
 function publicBase(req) {
   if (PAY_PUBLIC_URL) return PAY_PUBLIC_URL.replace(/\/+$/, '');
@@ -2417,7 +2518,7 @@ async function handlePayCreate(ws, msg, rid) {
   // The mock provider is a convenience for tests and local runs: it settles at
   // once so no browser is involved. Every other provider hands the app a real
   // checkout URL and credits nothing until that payment is confirmed.
-  if (PAY_PROVIDER === 'mock') {
+  if (payMode() === 'mock') {
     settlePayment(id, 'mock:' + id);
     reply(ws, rid, { t: 'payment', id, kind, amountRub: MONEY.rubles(amount), status: 'paid', ...walletState(ws.username), _id: rid });
     return;
@@ -2428,7 +2529,10 @@ async function handlePayCreate(ws, msg, rid) {
   // adapter. Nothing is credited here either way.
   const payment = q.getPayment.get(id);
   let checkoutUrl = `${publicBase(ws._req)}/pay/checkout?id=${id}`;
-  if (PAY_PROVIDER !== 'checkout' && PAY_ADAPTER_URL) {
+  if (payMode() === 'direct') {
+    // No adapter: the relay builds the real YooMoney link itself.
+    checkoutUrl = yoomoneyDirectCreate(payment);
+  } else if (payMode() === 'adapter') {
     try {
       checkoutUrl = (await providerCreatePayment(payment)) || checkoutUrl;
     } catch {
@@ -2496,15 +2600,25 @@ async function handlePayClaim(ws, msg, rid) {
     return reply(ws, rid, { ...walletState(ws.username), paymentStatus: payment.status, _id: rid });
   }
 
-  if (PAY_PROVIDER === 'mock') {
+  if (payMode() === 'mock') {
     settlePayment(payment.id, 'mock:' + payment.id);
     return reply(ws, rid, { ...walletState(ws.username), paymentStatus: 'paid', _id: rid });
   }
 
   // The relay's own checkout page settles the payment itself, and with no
   // adapter there is nothing to ask, so a claim just reports the current
-  // status: paid if the user confirmed, cancelled if they backed out.
-  if (PAY_PROVIDER === 'checkout' || !PAY_ADAPTER_URL) {
+  // status: paid if the user confirmed, cancelled if they backed out. When the
+  // relay speaks to YooMoney directly it polls the provider as a fallback, in
+  // case the notification was missed.
+  if (payMode() === 'direct') {
+    if (await yoomoneyDirectPoll(payment)) {
+      settlePayment(payment.id, 'yoomoney:' + payment.id);
+      return reply(ws, rid, { ...walletState(ws.username), paymentStatus: 'paid', _id: rid });
+    }
+    return reply(ws, rid, { ...walletState(ws.username), paymentStatus: payment.status, _id: rid });
+  }
+
+  if (payMode() === 'checkout') {
     return reply(ws, rid, { ...walletState(ws.username), paymentStatus: payment.status, _id: rid });
   }
 
@@ -4043,6 +4157,38 @@ const server = http.createServer((req, res) => {
     res.end(body);
     return;
   }
+  // YooMoney posts its signed notification here when the relay speaks to it
+  // directly (no adapter). The token in the path is the shared secret that
+  // keeps strangers out; the sha1 signature is checked before anything settles.
+  if (req.url.startsWith('/notify/')) {
+    if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
+    const token = req.url.slice('/notify/'.length).split('?')[0];
+    if (!PAY_NOTIFY_TOKEN || token !== PAY_NOTIFY_TOKEN) { res.writeHead(404); res.end(); return; }
+    readRequestBody(req, 16384).then((raw) => {
+      const params = Object.fromEntries(new URLSearchParams(raw));
+      const expected = yoomoneyDirectSignature(params);
+      const got = String(params.sha1_hash || '').toLowerCase();
+      if (!YOOMONEY_SECRET || expected !== got) {
+        json(res, 403, { error: 'bad signature' });
+        return;
+      }
+      const kind = String(params.notification_type || '');
+      if (!kind.includes('incoming')) { json(res, 200, { ok: true }); return; }
+      const label = String(params.label || '');
+      const payment = q.getPayment.get(label);
+      // Only a payment this relay is actually waiting on can be settled, and
+      // only for the amount it asked for. Anything else is acknowledged and
+      // dropped, so a replay or a smaller deposit credits nothing.
+      const paidKopecks = Math.round(Number(params.amount) * 100);
+      if (!payment || payment.status !== 'pending' || !Number.isFinite(paidKopecks) || paidKopecks < payment.amount_rub) {
+        json(res, 200, { ok: true });
+        return;
+      }
+      settlePayment(payment.id, String(params.operation_id || 'yoomoney:' + payment.id));
+      json(res, 200, { ok: true });
+    }).catch(() => { res.writeHead(413); res.end(); });
+    return;
+  }
   // The relay's own checkout page, opened by the app for a top-up.
   if (req.url === '/pay/checkout' || req.url.startsWith('/pay/checkout?')) {
     const id = new URL(req.url, 'http://localhost').searchParams.get('id') || '';
@@ -4061,7 +4207,7 @@ const server = http.createServer((req, res) => {
     const id = new URL(req.url, 'http://localhost').searchParams.get('id') || '';
     const payment = q.getPayment.get(id);
     if (!payment) return json(res, 404, { ok: false, error: 'not found' });
-    if (payment.status === 'pending' && PAY_PROVIDER === 'checkout') {
+    if (payment.status === 'pending' && payMode() === 'checkout') {
       settlePayment(payment.id, 'checkout:' + payment.id);
     }
     const now = q.getPayment.get(id);

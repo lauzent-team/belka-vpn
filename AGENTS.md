@@ -814,6 +814,24 @@ arriving now can change a header that is already on screen.
   default provider is `mock`, which settles instantly so the flow works with no
   account; `yoomoney` builds a real checkout link. The token rides in the URL path
   (`/create/<token>`), because the relay cannot send headers.
+- **A single-process host has no adapter, so the relay can talk to YooMoney
+  itself.** `amvera.yaml` runs only `server/index.js`; the adapter is a second
+  process that never starts there. So when `SLEEPHY_PAY_PROVIDER=yoomoney`, the
+  wallet (`YOOMONEY_RECEIVER`) and the secret (`YOOMONEY_SECRET`) are set and
+  `SLEEPHY_PAY_ADAPTER` is **empty**, `payMode()` returns `direct`: the relay
+  builds the quickpay link in `yoomoneyDirectCreate` and settles from YooMoney's
+  signed notification posted to `/notify/<SLEEPHY_PAY_ADAPTER_TOKEN>`. A missing
+  wallet or secret falls back to the demo `checkout` page, which moves no money,
+  so a half-configured host can never take a payment it cannot credit. `payMode()`
+  is the single source of truth for create/confirm/claim, so a link is only ever
+  handed out together with the handler that can settle it. `test/pay-yoomoney-direct.js`
+  covers the direct path.
+- **`/notify` checks the sha1 signature and the amount, and settles once.**
+  `yoomoneyDirectSignature` mirrors the adapter's check; a bad signature is
+  refused (403), a non-`incoming` notification is acknowledged and ignored, and
+  only a payment the relay is waiting on, for at least the asked amount, settles.
+  A replay is a no-op because `settlePayment` is guarded by the payment's
+  `pending` status and the ledger's UNIQUE index.
 - **`SLEEPHY_PAY_ADAPTER` is the bare host; the token goes in
   `SLEEPHY_PAY_ADAPTER_TOKEN`.** `payAdapterEndpoint` appends `/create` (or
   `/verify`) and then the token, so the adapter must see `/create/<token>`. Putting
