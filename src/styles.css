@@ -343,6 +343,10 @@ input, textarea { user-select: text; }
 .grant-quick button:hover { border-color: var(--accent); color: var(--text); }
 .admin-user-wallet { color: var(--accent); }
 .nickname-row .nickname-row-name { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nickname-row .nickname-row-claimed {
+  flex: none; font-size: 10.5px; font-weight: 600; letter-spacing: .02em;
+  color: var(--accent); opacity: .85; text-transform: lowercase;
+}
 .nickname-row input {
   flex: 1; min-width: 0; background: var(--surface-2); color: var(--text);
   border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px;

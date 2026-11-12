@@ -164,6 +164,46 @@ async function main() {
     );
   });
 
+  await step('the owner editor marks a held nickname as claimed', async () => {
+    // The popup step above left the settings overlay open; close it first so
+    // the profile button underneath is reachable.
+    if (await owner.win.isVisible('#settings-backdrop:not([hidden])')) {
+      await owner.win.click('#btn-settings-close');
+      await owner.win.waitForSelector('#settings-backdrop', { state: 'hidden', timeout: 8000 });
+    }
+    await openProfile(owner.win);
+    await owner.win.click('#btn-profile-edit');
+    await owner.win.waitForSelector('#profile-form:not([hidden])', { timeout: 8000 });
+    await owner.win.waitForSelector('#profile-nickname-rows .nickname-row', { timeout: 8000 });
+    const labels = await owner.win.$$eval(
+      '#profile-nickname-rows .nickname-row-claimed',
+      (els) => els.map((e) => e.textContent.trim())
+    );
+    assert.ok(labels.length > 0 && labels.every((t) => /занят вами/i.test(t)), `rows must say "занят вами": ${labels.join(', ')}`);
+  });
+
+  await step('claiming a nickname another account holds is refused', async () => {
+    // The owner is the admin, so it can hand the peer a name through the same
+    // admin path the popup uses, then try to take it back for itself.
+    await owner.win.evaluate(
+      (payload) => window.sleephy.adminAction(payload),
+      { action: 'nicknameAdd', username: peer, nickname: 'Вася' }
+    );
+    const before = await owner.win.$$eval('#profile-nickname-rows .nickname-row', (e) => e.length);
+    await owner.win.fill('#profile-nickname-input', 'Вася');
+    await owner.win.click('#btn-nickname-add');
+    await owner.win.waitForFunction(
+      () => {
+        const err = document.getElementById('profile-error');
+        return !err.hidden && /занят/i.test(err.textContent);
+      },
+      null, { timeout: 8000 }
+    );
+    const after = await owner.win.$$eval('#profile-nickname-rows .nickname-row', (e) => e.length);
+    assert.strictEqual(after, before, 'the taken name must not be added to the list');
+    await owner.win.click('#btn-profile-close');
+  });
+
   await step('no uncaught errors in either renderer', async () => {
     assert.deepStrictEqual(owner.errors, [], 'owner renderer errors');
     assert.deepStrictEqual(user.errors, [], 'user renderer errors');

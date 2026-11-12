@@ -1609,6 +1609,12 @@ class SleePhyClient {
   }
 
   /* ------------------------------ profile ------------------------------ */
+  /** Is a nickname still free? Used by the editor to warn before saving. */
+  async checkNickname(nickname) {
+    const res = await this.request({ t: 'nickname.check', nickname });
+    return { available: !!res.available, heldBySelf: !!res.heldBySelf };
+  }
+
   async getProfile(username) {
     const res = await this.request({ t: 'profile.get', username: bareUsername(username) });
     if (res.profile && res.profile.username) {

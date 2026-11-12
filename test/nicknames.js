@@ -15,6 +15,8 @@
  *   5. the owner sets its own list from the profile form
  *   6. nicknames reach the public profile and the admin user list
  *   7. a hidden profile hides its nicknames from other viewers
+ *   8. a nickname is held by at most one account: another is refused it, the
+ *      holder keeps it, and releasing it frees it for someone else
  */
 
 const assert = require('assert');
@@ -142,6 +144,38 @@ async function main() {
     await owner.saveProfile({ nicknames: ['Главный', 'Boss'] });
     const p = (await owner.getProfile(OWNER)).profile;
     assert.deepStrictEqual(p.nicknames, ['Главный', 'Boss']);
+  });
+
+  await step('a nickname held by one account cannot be taken by another', async () => {
+    let message = '';
+    try { await owner.adminAction({ action: 'nicknameAdd', username: 'petya', nickname: 'Главный' }); }
+    catch (err) { message = err.message; }
+    assert.ok(/занят/i.test(message), `expected a "taken" refusal, got "${message}"`);
+    const p = (await owner.getProfile('petya')).profile;
+    assert.deepStrictEqual(p.nicknames, [], 'the taken name must not be added');
+  });
+
+  await step('the check reports a held name as taken and an unused one as free', async () => {
+    const taken = await user.checkNickname('Главный');
+    assert.strictEqual(taken.available, false, 'a name held by the owner is not free');
+    const free = await user.checkNickname('СвежийНик');
+    assert.strictEqual(free.available, true, 'an unused name is free');
+  });
+
+  await step('the holder still sees its own nickname as its own', async () => {
+    const mine = await owner.checkNickname('Главный');
+    assert.strictEqual(mine.available, true, 'the holder keeps its own name');
+    assert.strictEqual(mine.heldBySelf, true, 'and is told it holds it');
+  });
+
+  await step('releasing a nickname frees it for another account', async () => {
+    // The owner drops "Boss", then an ordinary account can take it.
+    await owner.saveProfile({ nicknames: ['Главный'] });
+    const freed = await user.checkNickname('Boss');
+    assert.strictEqual(freed.available, true, 'the released name is free again');
+    await owner.adminAction({ action: 'nicknameAdd', username: 'petya', nickname: 'Boss' });
+    const p = (await owner.getProfile('petya')).profile;
+    assert.deepStrictEqual(p.nicknames, ['Boss'], 'the released name was claimed');
   });
 
   await step('a non-admin cannot edit anyone\'s nicknames', async () => {

@@ -401,6 +401,10 @@ for (const sql of [
   // Extra display names ("никнеймы"), a JSON array of strings. Only the owner
   // account may have more than a handful, and only it may edit anyone's.
   'ALTER TABLE users ADD COLUMN nicknames TEXT',
+  // The nicknames an account has reserved ("занял"): a JSON array of lowercased
+  // keys. A name belongs to at most one account; another account may still show
+  // it as a plain label, but only the holder owns it.
+  'ALTER TABLE users ADD COLUMN nickname_claims TEXT',
   // Self-destructing messages. `expires_at` is the ms timestamp at which the
   // relay wipes the ciphertext; NULL means the message never expires.
   'ALTER TABLE messages ADD COLUMN expires_at INTEGER',
@@ -461,12 +465,15 @@ const q = {
   // messages alone. Used by an administrator to moderate an abusive profile.
   resetProfile: db.prepare(
     `UPDATE users SET display_name = NULL, bio = NULL, avatar_color = NULL,
-            avatar_image = NULL, socials = NULL, nicknames = NULL, updated_at = ?
+            avatar_image = NULL, socials = NULL, nicknames = NULL, nickname_claims = NULL,
+            updated_at = ?
       WHERE username = ?`
   ),
   setAvatarImage: db.prepare('UPDATE users SET avatar_image = ?, updated_at = ? WHERE username = ?'),
   setSocials: db.prepare('UPDATE users SET socials = ?, updated_at = ? WHERE username = ?'),
   setNicknames: db.prepare('UPDATE users SET nicknames = ?, updated_at = ? WHERE username = ?'),
+  setNicknameClaims: db.prepare('UPDATE users SET nickname_claims = ?, updated_at = ? WHERE username = ?'),
+  allNicknameClaims: db.prepare('SELECT username, nickname_claims FROM users WHERE nickname_claims IS NOT NULL'),
   setLastSeen: db.prepare('UPDATE users SET last_seen = ? WHERE username = ?'),
   setPrivacy: db.prepare('UPDATE users SET last_seen_hidden = ?, profile_hidden = ? WHERE username = ?'),
   searchUsers: db.prepare(
@@ -1026,6 +1033,43 @@ function parseNicknames(text) {
   } catch { return []; }
 }
 
+/** The form a nickname is reserved and compared by: trimmed, lowercased. */
+function nicknameKey(name) {
+  return String(name).trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function parseNicknameKeys(text) {
+  if (!text) return [];
+  try {
+    const arr = JSON.parse(text);
+    return Array.isArray(arr) ? arr.filter((n) => typeof n === 'string') : [];
+  } catch { return []; }
+}
+
+/**
+ * The account that has reserved `name`, or null when nobody has. The relay is
+ * the only authority on this: a name belongs to at most one account, so two
+ * profiles can never both "own" the same nickname.
+ */
+function nicknameHolder(name) {
+  const key = nicknameKey(name);
+  if (!key) return null;
+  for (const row of q.allNicknameClaims.all()) {
+    if (parseNicknameKeys(row.nickname_claims).includes(key)) return row.username;
+  }
+  return null;
+}
+
+/** Every key reserved by some *other* account; the ones `username` may not take. */
+function reservedKeys(username) {
+  const set = new Set();
+  for (const row of q.allNicknameClaims.all()) {
+    if (row.username === username) continue;
+    for (const k of parseNicknameKeys(row.nickname_claims)) set.add(k);
+  }
+  return set;
+}
+
 /** One nickname from an admin, validated strictly (no silent truncation). */
 function cleanNickname(value) {
   if (typeof value !== 'string') return { error: 'Nickname is required' };
@@ -1033,6 +1077,26 @@ function cleanNickname(value) {
   if (!name) return { error: 'Nickname is required' };
   if (name.length > NICKNAME_MAX) return { error: 'Nickname is too long' };
   return { value: name };
+}
+
+/**
+ * Validate a nickname list for `username` and derive the keys it reserves.
+ * Every name must be free: a name another account already holds is refused, so
+ * a claim is exclusive. The stored list and the reserved keys are returned
+ * together so a caller cannot persist one without the other.
+ */
+function cleanNicknamesWithClaims(value, username) {
+  const base = cleanNicknames(value, username);
+  if (base.error) return base;
+  if (base.value === null) return { value: null, claims: null };
+  const names = JSON.parse(base.value);
+  const reserved = reservedKeys(username);
+  for (const n of names) {
+    if (reserved.has(nicknameKey(n))) {
+      return { error: `Никнейм «${n}» уже занят` };
+    }
+  }
+  return { value: base.value, claims: JSON.stringify(names.map(nicknameKey)) };
 }
 
 /**
@@ -1588,6 +1652,22 @@ function handleProfileGet(ws, msg, rid) {
   });
 }
 
+function handleNicknameCheck(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const name = typeof msg.nickname === 'string' ? msg.nickname.trim().replace(/\s+/g, ' ') : '';
+  if (!name) return bad(ws, rid, 'Nickname is required');
+  if (name.length > NICKNAME_MAX) return bad(ws, rid, 'Nickname is too long');
+  // "Free" means no *other* account holds it; the account's own claims do not
+  // make its own name look taken when the editor re-checks it.
+  const holder = nicknameHolder(name);
+  reply(ws, rid, {
+    t: 'nickname.check',
+    nickname: name,
+    available: !holder || holder === ws.username,
+    heldBySelf: !!holder && holder === ws.username
+  });
+}
+
 function handleStreakGet(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
   const base = { t: 'streak', ...streakView(ws.username) };
@@ -1648,9 +1728,10 @@ function handleProfileSet(ws, msg, rid) {
   // Nicknames are a privilege: only the owner account may set its own list from
   // the profile form. Everyone else is edited by an administrator.
   if (msg.nicknames !== undefined && isOwner(ws.username)) {
-    const parsed = cleanNicknames(msg.nicknames, ws.username);
+    const parsed = cleanNicknamesWithClaims(msg.nicknames, ws.username);
     if (parsed.error) return bad(ws, rid, parsed.error);
     q.setNicknames.run(parsed.value, Date.now(), ws.username);
+    q.setNicknameClaims.run(parsed.claims, Date.now(), ws.username);
   }
   const updated = publicProfile(q.getUser.get(ws.username));
   reply(ws, rid, { t: 'profile.saved', profile: updated });
@@ -3558,10 +3639,12 @@ function handleAdminAction(ws, msg, rid) {
         next = current.map((n, i) => (i === idx ? parsed.value : n));
       }
       // The list is validated for the *target*, so an admin cannot hand a normal
-      // account an unbounded list; the owner keeps the unbounded privilege.
-      const validated = cleanNicknames(next, target);
+      // account an unbounded list; the owner keeps the unbounded privilege. A
+      // name another account already holds is refused, so a claim stays unique.
+      const validated = cleanNicknamesWithClaims(next, target);
       if (validated.error) return bad(ws, rid, validated.error);
       q.setNicknames.run(validated.value, now, target);
+      q.setNicknameClaims.run(validated.claims, now, target);
       break;
     }
     case 'grantRockets':
@@ -3684,6 +3767,7 @@ const handlers = {
   'password.set': handlePasswordSet,
   directory: handleDirectory,
   'profile.get': handleProfileGet,
+  'nickname.check': handleNicknameCheck,
   'profile.set': handleProfileSet,
   'streak.get': handleStreakGet,
   'profile.username': handleUsernameSet,

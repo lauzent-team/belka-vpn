@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('sleephy', {
   react: (payload) => invoke('sleephy:react', payload),
   typing: (payload) => invoke('sleephy:typing', payload),
   profile: (username) => invoke('sleephy:profile', username),
+  checkNickname: (nickname) => invoke('sleephy:checkNickname', nickname),
   streak: () => invoke('sleephy:streak'),
   saveProfile: (payload) => invoke('sleephy:saveProfile', payload),
   changeUsername: (username) => invoke('sleephy:changeUsername', username),

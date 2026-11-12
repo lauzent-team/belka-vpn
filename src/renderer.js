@@ -3639,6 +3639,7 @@ function renderNicknameEditor() {
     row.className = 'social-row nickname-row';
     row.innerHTML = `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-star"></use></svg>
       <span class="nickname-row-name"></span>
+      <span class="nickname-row-claimed">занят вами</span>
       <button class="btn-ghost btn-compact" type="button" title="Убрать"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"></use></svg></button>`;
     row.querySelector('.nickname-row-name').textContent = name;
     row.querySelector('button').addEventListener('click', () => {
@@ -3649,7 +3650,7 @@ function renderNicknameEditor() {
   });
 }
 
-els.btnNicknameAdd.addEventListener('click', () => {
+els.btnNicknameAdd.addEventListener('click', async () => {
   const name = (els.profileNicknameInput.value || '').trim().replace(/\s+/g, ' ');
   if (!name) return;
   if (name.length > 32) {
@@ -3658,6 +3659,19 @@ els.btnNicknameAdd.addEventListener('click', () => {
   }
   if (nicknamePending.some((n) => n.toLowerCase() === name.toLowerCase())) {
     showError(els.profileError, 'Такой никнейм уже есть');
+    return;
+  }
+  // A nickname is reserved for one account only, so ask the relay whether it is
+  // still free before taking it. The save would refuse it anyway; this just
+  // says so right away instead of at the end.
+  try {
+    const { available } = await api.checkNickname(name);
+    if (!available) {
+      showError(els.profileError, 'Этот никнейм уже занят');
+      return;
+    }
+  } catch (err) {
+    showError(els.profileError, err.message || 'Не удалось проверить никнейм');
     return;
   }
   showError(els.profileError, null);

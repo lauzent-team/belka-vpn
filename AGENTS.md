@@ -468,6 +468,17 @@ arriving now can change a header that is already on screen.
   it stays open while hovered and closes a beat after the pointer leaves, so a
   click inside is possible. It calls the `nicknameAdd` / `nicknameSet` /
   `nicknameRemove` admin actions.
+- **A nickname is claimed, so it belongs to one account at most (v0.16.6).**
+  `users.nickname_claims` holds the reserved keys (trimmed, lowercased) beside
+  the display list. `cleanNicknamesWithClaims` returns the list and the keys
+  together, so a caller cannot persist one without the other, and it refuses a
+  name that `reservedKeys` shows another account already holds. Releasing a name
+  drops its key and frees it again. The relay is the only authority; the client
+  only asks.
+- **`nickname.check` lets the editor warn before saving.** It answers
+  `available` and `heldBySelf`, treating the caller's own claims as free so an
+  account re-checking a name it already owns is not told it is taken. The save
+  still refuses a taken name; the check is only an early heads-up.
 
 ## Games, bots and gifts (v0.9.0)
 
