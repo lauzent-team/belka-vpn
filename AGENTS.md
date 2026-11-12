@@ -1006,3 +1006,47 @@ arriving now can change a header that is already on screen.
   sync if the file ever moves.
 - **Never point a shipped build at an ephemeral dev host.** It is not enough to
   fix the default later — the saved address has to be filtered too.
+
+## Chat actions live in the profile, gifts are a collection (v0.16.7)
+
+- **There is no chat options menu any more.** `#btn-chat-menu` and
+  `#chatmenu-backdrop` were removed; the entry point is `#btn-peer-profile` in
+  the chat header, which opens `#profile-backdrop`. Pin, mute, archive,
+  auto-delete, mark-as-read, clear, leave and delete sit in
+  `#profile-chat-actions-list` as `.menu-item[data-action=…]`, driven by
+  `renderProfileChatActions()` and routed through the shared `runChatAction()`.
+  Tests that drove `#menu-*` now drive `#pa-*` (see `#pa-ttl`,
+  `#pa-channel-settings`). Only one copy of each action exists; do not
+  reintroduce a second entry point, or the two will drift.
+- **Your own profile shows no chat actions.** `showProfile()` hides
+  `#profile-chat-actions` when `isSelf`, because your profile manages no chat.
+  A test that opens the profile and expects the actions must open the *peer*
+  profile (`#btn-peer-profile`), not `#btn-my-profile`.
+- **The profile is tabbed: `Профиль` and `Подарки`.** The gifts tab is for the
+  owner only (`data-tab="gifts"` is hidden on someone else's profile) and is
+  populated by `loadProfileGifts()`. An equipped gift shows as a card
+  (`#profile-gift-card`) on the public profile.
+- **The public-key block is gone.** `renderPubkey()` and `#profile-pubkey` were
+  removed; the safety number is the one way to check a contact. Do not bring the
+  raw key back.
+- **The relay keeps a gift inventory per account** (`gifts.changed` is pushed to
+  clients and handled in `src/lib/client.js`). A received gift can be equipped
+  on the profile or sold back for part of its price; `test/payments.js` covers
+  ownership, resale value, equip/replace, sell, claim-twice and report status.
+- **Rockets are granted only after the provider confirms.** The old order
+  credited the wallet first, so a failed top-up still paid out. `WELCOME_ROCKETS`
+  (`server/index.js`) is the sign-up grant.
+- **Building the Windows installer locally works** with Wine present
+  (`/usr/local/bin/wine`) and the electron-builder cache warm:
+  `npx electron-builder --win` → `dist/SleePhy-Setup-<version>.exe`. The CI job
+  on a tag does the same and attaches the file to the release.
+- **The repo token can push and create releases, but not edit repository
+  metadata.** `gh repo edit` (description, topics, homepage) returns
+  `403 Resource not accessible by integration`; the README is the page that can
+  be changed.
+- **`xvfb-run -a node test/ui-features.js` is flaky in this sandbox.** The first
+  step ("search finds the other user") times out on a clean tree too, and every
+  later step that depends on the peer chat then fails with it — the same 6
+  failures appear with and without local changes. Do not read that cascade as a
+  regression; check a focused test against a real relay instead. Kill stray
+  `server/index.js` processes between runs or they collide on the port.
