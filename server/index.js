@@ -17,6 +17,7 @@ const { WebSocketServer } = require('ws');
 const { DatabaseSync } = require('node:sqlite');
 const STREAK = require('../src/lib/streak');
 const MONEY = require('../src/lib/money');
+const YOOMONEY = require('../src/lib/yoomoney');
 const { createRegistry } = require('../src/lib/ratelimit');
 
 // A host (Render, Fly, Heroku-style) hands the port in PORT; SLEEPHY_PORT wins
@@ -2674,15 +2675,6 @@ function yoomoneyDirectCreate(payment) {
   return url.toString();
 }
 
-/** The sha1 signature YooMoney puts on every notification, for verification. */
-function yoomoneyDirectSignature(p) {
-  const fields = [
-    p.notification_type, p.operation_id, p.amount, p.currency, p.datetime,
-    p.sender, p.codepro, YOOMONEY_SECRET, p.label
-  ].map((v) => (v === undefined || v === null ? '' : String(v)));
-  return crypto.createHash('sha1').update(fields.join('&')).digest('hex');
-}
-
 /**
  * Fallback for a payment whose notification never arrived: ask YooMoney's
  * operation history whether the label was paid. Only used when an OAuth token
@@ -4537,16 +4529,16 @@ const server = http.createServer((req, res) => {
   }
   // YooMoney posts its signed notification here when the relay speaks to it
   // directly (no adapter). The token in the path is the shared secret that
-  // keeps strangers out; the sha1 signature is checked before anything settles.
+  // keeps strangers out; the signature is checked before anything settles.
   if (req.url.startsWith('/notify/')) {
     if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
     const token = req.url.slice('/notify/'.length).split('?')[0];
     if (!PAY_NOTIFY_TOKEN || token !== PAY_NOTIFY_TOKEN) { res.writeHead(404); res.end(); return; }
     readRequestBody(req, 16384).then((raw) => {
       const params = Object.fromEntries(new URLSearchParams(raw));
-      const expected = yoomoneyDirectSignature(params);
-      const got = String(params.sha1_hash || '').toLowerCase();
-      if (!YOOMONEY_SECRET || expected !== got) {
+      // YooMoney signs with `sign` (HMAC-SHA256); the older `sha1_hash` is
+      // accepted while notifications still carry it.
+      if (!YOOMONEY.verifyNotification(params, YOOMONEY_SECRET)) {
         json(res, 403, { error: 'bad signature' });
         return;
       }

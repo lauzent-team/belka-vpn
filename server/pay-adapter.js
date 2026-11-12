@@ -48,13 +48,13 @@
 
 const http = require('http');
 const fs = require('fs');
-const crypto = require('crypto');
 
 const PORT = Number(process.env.PAY_ADAPTER_PORT) || 8791;
 const HOST = process.env.PAY_ADAPTER_HOST || '127.0.0.1';
 const PROVIDER = (process.env.PAY_PROVIDER || 'mock').toLowerCase();
 const TOKEN = process.env.PAY_ADAPTER_TOKEN || '';
 const STORE = process.env.PAY_STORE || require('path').join(__dirname, 'pay-store.json');
+const YOOMONEY = require('../src/lib/yoomoney');
 
 /**
  * Settled payments, keyed by the relay's payment id. Persisted so a restart
@@ -117,16 +117,6 @@ async function yoomoneyPoll({ id, amount }) {
   return ops.some((op) => op.status === 'success' && Math.round(Number(op.amount) * 100) >= amount);
 }
 
-/** Check the sha1 signature YooMoney puts on every notification. */
-function yoomoneySignature(p) {
-  const secret = process.env.YOOMONEY_SECRET || '';
-  const fields = [
-    p.notification_type, p.operation_id, p.amount, p.currency, p.datetime,
-    p.sender, p.codepro, secret, p.label
-  ].map((v) => (v === undefined || v === null ? '' : String(v)));
-  return crypto.createHash('sha1').update(fields.join('&')).digest('hex');
-}
-
 async function genericCall(url, payload) {
   if (!url) throw new Error('PAY_GENERIC_*_URL is not set');
   const res = await fetch(url, {
@@ -184,11 +174,11 @@ const server = http.createServer(async (req, res) => {
   // YooMoney posts its notification as form-encoded, not JSON.
   if (route('notify')) {
     const params = Object.fromEntries(new URLSearchParams(raw));
-    const expected = yoomoneySignature(params);
-    const got = String(params.sha1_hash || '').toLowerCase();
+    // YooMoney signs with `sign` (HMAC-SHA256); the older `sha1_hash` is
+    // accepted while notifications still carry it.
     // A signature that does not match is either a bug or an attempt to credit
     // an account for free. Either way it is refused.
-    if (!process.env.YOOMONEY_SECRET || expected !== got) {
+    if (!YOOMONEY.verifyNotification(params, process.env.YOOMONEY_SECRET || '')) {
       console.warn('[pay-adapter] rejected a notification with a bad signature');
       return json(res, 403, { error: 'bad signature' });
     }

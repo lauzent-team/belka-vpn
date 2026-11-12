@@ -849,8 +849,11 @@ arriving now can change a header that is already on screen.
   shows it as a banner, so the owner can tell a live relay from a demo one.
   `test/pay-disabled.js` pins this; `test/pay-checkout.js` and
   `test/ui-pay-checkout.js` set `SLEEPHY_PAY_DEMO=1` to exercise the demo.
-- **`/notify` checks the sha1 signature and the amount, and settles once.**
-  `yoomoneyDirectSignature` mirrors the adapter's check; a bad signature is
+- **`/notify` checks the signature and the amount, and settles once.**
+  `src/lib/yoomoney.js` is the one verifier the relay and the adapter both call.
+  YooMoney signs with `sign` (HMAC-SHA256 over the sorted, RFC 3986-encoded
+  parameters); the retired `sha1_hash` is accepted as a fallback so a payment
+  still settles while the cutover is in flight. A bad signature is
   refused (403), a non-`incoming` notification is acknowledged and ignored, and
   only a payment the relay is waiting on, for at least the asked amount, settles.
   A replay is a no-op because `settlePayment` is guarded by the payment's

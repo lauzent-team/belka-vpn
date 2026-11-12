@@ -444,13 +444,19 @@ notification method, and copy the same secret into `YOOMONEY_SECRET`.
 **Turning it on, step by step (Amvera):**
 
 1. Open YooMoney → «Настройки» → «Уведомления» → «Уведомления о переводах» and
-   take the **secret** shown there. That is `YOOMONEY_SECRET`. Your wallet id
-   (the number under your name, like `41001…`) is `YOOMONEY_RECEIVER`.
+   take the **secret** shown there (in YooMoney's docs this is the "секретный
+   ключ" the signature is computed with). That is `YOOMONEY_SECRET` — it comes
+   from YooMoney, you do not invent it. Your wallet id (the number under your
+   name, like `41001…`) is `YOOMONEY_RECEIVER`.
 2. In the Amvera project open «Переменные» and add, one per row:
    `SLEEPHY_PAY_PROVIDER=yoomoney`, `YOOMONEY_RECEIVER=<wallet id>`,
-   `YOOMONEY_SECRET=<secret>`, `SLEEPHY_PAY_ADAPTER_TOKEN=<a long random
-   string>`, `SLEEPHY_PAY_PUBLIC_URL=https://<your-relay-host>`. Do **not** add
-   `SLEEPHY_PAY_ADAPTER` — the relay talks to YooMoney itself here.
+   `YOOMONEY_SECRET=<secret from step 1>`, `SLEEPHY_PAY_ADAPTER_TOKEN=<a long
+   random string you make up, e.g. a UUID>`,
+   `SLEEPHY_PAY_PUBLIC_URL=https://<your-relay-host>`. Do **not** add
+   `SLEEPHY_PAY_ADAPTER` — the relay talks to YooMoney itself here. The two
+   secrets are different things: `YOOMONEY_SECRET` is YooMoney's, and
+   `SLEEPHY_PAY_ADAPTER_TOKEN` is only the password that guards your `/notify`
+   URL — it never leaves your host and YooMoney never sees it.
 3. In YooMoney's «Уведомления», set the URL to
    `https://<your-relay-host>/notify/<the same token>`, method **HTTP**, and
    enable notifications.

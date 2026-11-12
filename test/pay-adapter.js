@@ -3,7 +3,7 @@
 /**
  * Tests for the payment adapter, the one process that holds the provider
  * secret. A fake YooMoney stands in for the real service, so the suite
- * exercises the adapter's own code — the quickpay link it builds, the sha1
+ * exercises the adapter's own code — the quickpay link it builds, the
  * signature it insists on, the amount it checks, the path token — without
  * touching the network or moving money.
  *
@@ -109,13 +109,23 @@ function post(pathname, body, { form = false, headers = {} } = {}) {
   });
 }
 
-/** The signature YooMoney would put on a notification with this secret. */
+/** The legacy signature YooMoney used to put on a notification (sha1_hash). */
 function sign(params) {
   const fields = [
     params.notification_type, params.operation_id, params.amount, params.currency,
     params.datetime, params.sender, params.codepro, SECRET, params.label
   ].map((v) => (v === undefined || v === null ? '' : String(v)));
   return crypto.createHash('sha1').update(fields.join('&')).digest('hex');
+}
+
+/** The current signature YooMoney puts on a notification (`sign`). */
+function signNew(params) {
+  const line = Object.keys(params)
+    .filter((k) => k !== 'sign')
+    .sort()
+    .map((k) => `${k}=${encodeURIComponent(String(params[k])).replace(/%20/g, '+')}`)
+    .join('&');
+  return crypto.createHmac('sha256', SECRET).update(line).digest('hex');
 }
 
 async function main() {
@@ -165,12 +175,40 @@ async function main() {
       currency: '643', datetime: '2026-01-01T00:00:00Z', sender: '4100', codepro: 'false',
       label: 'pay_ok'
     };
-    params.sha1_hash = sign(params);
+    params.sign = signNew(params);
     const res = await post(`/notify/${TOKEN}`, params, { form: true });
     assert.strictEqual(res.status, 200, 'the signature checks out');
     const verify = await post(`/verify/${TOKEN}`, { id: 'pay_ok', amount: 4450 });
     assert.strictEqual(verify.json.paid, true, 'and verify reports it paid');
     assert.strictEqual(verify.json.ref, 'op-2', 'the provider reference comes back');
+  });
+
+  await step('a notification signed with the retired sha1_hash is still accepted', async () => {
+    const params = {
+      notification_type: 'card-incoming', operation_id: 'op-legacy', amount: '44.50',
+      currency: '643', datetime: '2026-01-01T00:00:00Z', sender: '4100', codepro: 'false',
+      label: 'pay_legacy'
+    };
+    params.sha1_hash = sign(params);
+    const res = await post(`/notify/${TOKEN}`, params, { form: true });
+    assert.strictEqual(res.status, 200, 'the old signature still checks out');
+    const verify = await post(`/verify/${TOKEN}`, { id: 'pay_legacy', amount: 4450 });
+    assert.strictEqual(verify.json.paid, true, 'and the payment is credited');
+  });
+
+  await step('a notification signed with the wrong secret is refused', async () => {
+    const params = {
+      notification_type: 'card-incoming', operation_id: 'op-bad-secret', amount: '44.50',
+      currency: '643', datetime: '2026-01-01T00:00:00Z', sender: '4100', codepro: 'false',
+      label: 'pay_bad_secret'
+    };
+    const line = Object.keys(params).sort()
+      .map((k) => `${k}=${encodeURIComponent(String(params[k])).replace(/%20/g, '+')}`).join('&');
+    params.sign = crypto.createHmac('sha256', 'not-the-secret').update(line).digest('hex');
+    const res = await post(`/notify/${TOKEN}`, params, { form: true });
+    assert.strictEqual(res.status, 403, 'a signature from another secret does not pass');
+    const verify = await post(`/verify/${TOKEN}`, { id: 'pay_bad_secret', amount: 4450 });
+    assert.strictEqual(verify.json.paid, false, 'and nothing was credited');
   });
 
   await step('a confirmation for less than the price is not a payment', async () => {

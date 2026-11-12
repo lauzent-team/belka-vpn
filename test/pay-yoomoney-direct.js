@@ -35,13 +35,23 @@ async function step(name, fn) {
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** The sha1 signature YooMoney would put on a notification with this secret. */
+/** The legacy signature YooMoney used to put on a notification (sha1_hash). */
 function sign(params) {
   const fields = [
     params.notification_type, params.operation_id, params.amount, params.currency,
     params.datetime, params.sender, params.codepro, SECRET, params.label
   ].map((v) => (v === undefined || v === null ? '' : String(v)));
   return crypto.createHash('sha1').update(fields.join('&')).digest('hex');
+}
+
+/** The current signature YooMoney puts on a notification (`sign`). */
+function signNew(params) {
+  const line = Object.keys(params)
+    .filter((k) => k !== 'sign')
+    .sort()
+    .map((k) => `${k}=${encodeURIComponent(String(params[k])).replace(/%20/g, '+')}`)
+    .join('&');
+  return crypto.createHmac('sha256', SECRET).update(line).digest('hex');
 }
 
 /** POST a form-encoded notification to the relay's /notify route. */
@@ -158,7 +168,7 @@ async function main() {
       currency: '643', datetime: '2026-01-01T00:00:00Z', sender: '4100', codepro: 'false',
       label: paymentId
     };
-    params.sha1_hash = sign(params);
+    params.sign = signNew(params);
     const res = await notify(`/notify/${TOKEN}`, params);
     assert.strictEqual(res.status, 200, 'the signature checks out');
     const claim = await client.payClaim({ id: paymentId });
@@ -166,16 +176,48 @@ async function main() {
     assert.strictEqual(claim.balance, 50, 'and 50 Rockets appeared');
   });
 
+  await step('a notification signed with the retired sha1_hash is still credited', async () => {
+    const created = await client.payCreate({ kind: 'rockets', rockets: 50 });
+    const params = {
+      notification_type: 'card-incoming', operation_id: 'op-legacy', amount: '44.50',
+      currency: '643', datetime: '2026-01-01T00:00:00Z', sender: '4100', codepro: 'false',
+      label: created.id
+    };
+    params.sha1_hash = sign(params);
+    const res = await notify(`/notify/${TOKEN}`, params);
+    assert.strictEqual(res.status, 200, 'the old signature still checks out');
+    const claim = await client.payClaim({ id: created.id });
+    assert.strictEqual(claim.paymentStatus, 'paid', 'and the payment is settled');
+    assert.strictEqual(claim.balance, 100, 'the second bundle landed on top of the first');
+  });
+
+  await step('a notification signed with the wrong secret is refused', async () => {
+    const created = await client.payCreate({ kind: 'rockets', rockets: 50 });
+    const params = {
+      notification_type: 'card-incoming', operation_id: 'op-bad-secret', amount: '44.50',
+      currency: '643', datetime: '2026-01-01T00:00:00Z', sender: '4100', codepro: 'false',
+      label: created.id
+    };
+    const line = Object.keys(params).sort()
+      .map((k) => `${k}=${encodeURIComponent(String(params[k])).replace(/%20/g, '+')}`).join('&');
+    params.sign = crypto.createHmac('sha256', 'not-the-secret').update(line).digest('hex');
+    const res = await notify(`/notify/${TOKEN}`, params);
+    assert.strictEqual(res.status, 403, 'a signature from another secret does not pass');
+    const claim = await client.payClaim({ id: created.id });
+    assert.strictEqual(claim.paymentStatus, 'pending', 'and nothing was credited');
+  });
+
   await step('a replayed notification does not credit a second time', async () => {
+    const before = (await client.wallet()).balance;
     const params = {
       notification_type: 'card-incoming', operation_id: 'op-2', amount: '44.50',
       currency: '643', datetime: '2026-01-01T00:00:00Z', sender: '4100', codepro: 'false',
       label: paymentId
     };
-    params.sha1_hash = sign(params);
+    params.sign = signNew(params);
     await notify(`/notify/${TOKEN}`, params);
     const w = await client.wallet();
-    assert.strictEqual(w.balance, 50, 'the balance is unchanged');
+    assert.strictEqual(w.balance, before, 'the balance is unchanged');
   });
 
   await step('an outgoing notification is acknowledged but ignored', async () => {
