@@ -1050,3 +1050,39 @@ arriving now can change a header that is already on screen.
   failures appear with and without local changes. Do not read that cascade as a
   regression; check a focused test against a real relay instead. Kill stray
   `server/index.js` processes between runs or they collide on the port.
+
+## Rate limits, the device account cap and the device tab (v0.16.8)
+
+- **The relay rate-limits bursts and forgets stale keys.** `server/index.js`
+  holds a small in-memory limiter (`rateLimit`) keyed per socket and per
+  identity; a refused request answers with the usual error plus `retryAfterMs`,
+  which `src/lib/client.js` surfaces on the thrown error. `test/ratelimit-relay.js`
+  and `test/ratelimit.js` cover the relay and the pure limiter.
+- **A device may hold three accounts, five with Premium.** The cap is keyed by a
+  client-generated installation id (`device_id` on `users`, created by
+  `SleePhyClient.ensureDeviceId()` and sent on `register`, `phone.request` and
+  `resume`). The relay counts accounts per `device_id` in `canCreateAccount`
+  before it writes a new user. `test/account-limit.js` covers three-allowed,
+  fourth-refused, per-device isolation, missing id, the Premium raise and the
+  sixth refusal.
+- **The device id is a grouping key, not an identity.** It never leaves the
+  relay's admin surface, it is not shown to other users, and it carries no
+  message content. Do not treat it as an account credential.
+- **`device_id` is a migration, not a fresh column.** Existing databases get it
+  through an `ALTER TABLE users ADD COLUMN device_id` guarded by a
+  `PRAGMA table_info` check; `test/server-migration.js` guards that path.
+- **The admin panel gained a devices tab.** `admin.devices` returns one row per
+  device (`accounts`, `usernames`, `premium`, first/last seen) and
+  `admin.action { action: 'deviceClear', deviceId }` detaches every account from
+  a device without deleting anything. The panel also has a Premium stat and a
+  Premium filter chip. `test/admin.js` covers the list, the clear and the
+  non-admin refusal; `test/ui-admin.js` drives the tab.
+- **A new admin bridge method needs three edits, not one.** `adminDevices` had
+  to be added to `src/lib/client.js`, `preload.js` (`contextBridge`) and
+  `main.js` (`ipcMain.handle`). Missing the preload/main pair leaves the panel
+  empty and the whole admin UI suite failing — check all three when adding an
+  admin call.
+- **`test/ui-admin.js` is flaky in this sandbox too.** Two steps ("the filter
+  chips narrow the list" and "an admin grants Rockets and Premium") fail on a
+  clean tree as well; the baseline run scored 8/10. Do not read those two as a
+  regression.
