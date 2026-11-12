@@ -6,7 +6,7 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-2b2b2b?style=flat-square)](#download)
 [![Encryption](https://img.shields.io/badge/encryption-libsodium%20%C2%B7%20X25519-5a4bff?style=flat-square)](https://doc.libsodium.org/)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.16.7-blue?style=flat-square)](https://github.com/lauzent-team/belka-vpn/releases/latest)
+[![Version](https://img.shields.io/badge/version-0.16.8-blue?style=flat-square)](https://github.com/lauzent-team/belka-vpn/releases/latest)
 
 <a id="download"></a>
 
@@ -14,7 +14,7 @@
 
 | Сборка | Файл | Как поставить |
 | --- | --- | --- |
-| **Windows 10/11 (x64)** | [**SleePhy-Setup-0.16.7.exe**](https://github.com/lauzent-team/belka-vpn/releases/latest/download/SleePhy-Setup-0.16.7.exe) | Запустить установщик, дальше — как обычную программу |
+| **Windows 10/11 (x64)** | [**SleePhy-Setup-0.16.8.exe**](https://github.com/lauzent-team/belka-vpn/releases/latest/download/SleePhy-Setup-0.16.8.exe) | Запустить установщик, дальше — как обычную программу |
 | Linux | `npm run dist:linux` → AppImage | См. [сборку из исходников](#run-it-locally) |
 
 Установщик уже настроен на рабочий релей: **ничего вводить не нужно**, только
@@ -43,6 +43,8 @@
 
 - Регистрация и вход по логину и паролю; пароль защищает ключи на устройстве
 - **Уникальный @username** — можно занять и менять в любой момент
+- **Один компьютер — до трёх аккаунтов** (с Premium — до пяти). Лимит считает
+  релей по идентификатору установки; чтобы завести ещё один, освободите слот
 - Профиль: имя, био, цвет аватара и **соцсети** (Telegram, Instagram, X, GitHub…)
   отдельными чипами
 - **Приватность, которую держит релей**: скрыть время последнего визита и
@@ -78,7 +80,14 @@
 - **SleePhy Rockets** — внутренняя валюта фиксированными наборами; цены держит
   релей, пополнение зачисляется ровно один раз на подтверждение провайдера
 - **SleePhy Premium** — подписка на месяц; повторная покупка **продлевает**, а не
-  начинает заново
+  начинает заново; с ней лимит аккаунтов на устройстве поднимается с трёх до пяти
+
+**Админ-панель**
+
+- Статистика по пользователям, каналам, **устройствам** и подпискам Premium
+- Управление аккаунтами, каналами, объявлениями и журналом действий
+- Вкладка **«Устройства»** — видно, сколько аккаунтов завёл каждый компьютер, и
+  можно освободить слоты устройства, не удаляя сами аккаунты
 
 **Звонки и музыка**
 
@@ -115,7 +124,6 @@
 - **Нет мультидевайса** — один ключ на аккаунт, привязан к одному устройству.
 - **Звонки best-effort** — зависят от signaling-релея и ICE/STUN.
 - **История живёт на сервере** (шифротекстом) до «Очистить историю».
-- **У релея нет rate limiting** — нужен до выхода в публичный интернет.
 - **Платежи по умолчанию не живые** — провайдер `mock` двигает нулевую сумму.
 - **Аккаунт нельзя восстановить.** Потеряли пароль — потеряли ключи.
 
@@ -212,7 +220,7 @@ overrides it.
 ## Build a Windows installer
 
 ```bash
-npm run dist:win      # -> dist/SleePhy-Setup-0.16.7.exe
+npm run dist:win      # -> dist/SleePhy-Setup-0.16.8.exe
 ```
 
 Building a Windows `.exe` from Linux/macOS uses Wine; the CI workflow does this
