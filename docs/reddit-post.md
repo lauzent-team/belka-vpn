@@ -37,6 +37,9 @@ r/Разработка, r/ru_dev. Для англоязычных сабов и�
 
 - Переписка один-на-один с E2E-шифрованием, ответы, редактирование, удаление
 - Реакции, индикатор набора текста, онлайн-статус
+- **Один компьютер — до трёх аккаунтов** (с Premium — до пяти). Лимит считает
+  релей по идентификатору установки, так что завести сотню одноразовых учёток
+  «в один клик» не выйдет
 - **Огонёк** — сколько дней подряд вы писали друг другу
 - **Самоуничтожающиеся сообщения** — таймер на чат, релей физически стирает
   шифротекст по истечении
@@ -67,8 +70,6 @@ r/Разработка, r/ru_dev. Для англоязычных сабов и�
 - **Метаданные видит сервер** — кто с кем, когда и какого размера сообщения.
 - **Один ключ на аккаунт, один девайс.** Мультидевайса пока нет.
 - **История живёт на сервере** шифротекстом до «Очистить историю».
-- **У релея нет rate limiting** — это надо сделать до выхода в публичный
-  интернет.
 - **Аккаунт нельзя восстановить.** Потеряли пароль — потеряли ключи. Это цена
   того, что ключи не у нас.
 - Платежи (внутренняя валюта и подписка) по умолчанию работают на «заглушке»,
@@ -90,9 +91,9 @@ https://github.com/lauzent-team/belka-vpn/releases/latest
 криптографии. Лицензия MIT.
 
 Буду рад вопросам и критике. Особенно интересно, что вы считаете правильным
-следующим шагом: Double Ratchet для forward secrecy, rate limiting на релее или
-мультидевайс. И если кто-то захочет поднять свой релей — в репозитории есть
-пошаговые инструкции, в том числе как обойтись без зарубежной карты.
+следующим шагом: Double Ratchet для forward secrecy или мультидевайс. И если
+кто-то захочет поднять свой релей — в репозитории есть пошаговые инструкции, в
+том числе как обойтись без зарубежной карты.
 
 ---
 
@@ -129,6 +130,9 @@ with the whole database tomorrow, they would get unreadable bytes and metadata.
 
 - One-to-one chat with E2E encryption, replies, edits, deletes
 - Reactions, typing indicators, presence
+- **Up to three accounts per computer** (five with Premium). The relay counts
+  them per installation, so spinning up a hundred throwaway accounts is not a
+  one-click affair
 - A per-chat streak counter ("how many days in a row you wrote to each other")
 - **Self-destructing messages** — set a timer per chat; the relay wipes the
   ciphertext when it expires
@@ -159,8 +163,6 @@ would not be true. Here is the real list:
   sizes.
 - **One key per account, one device.** No multi-device support yet.
 - **History lives on the server** as ciphertext until you clear the chat.
-- **The relay has no rate limiting** — that has to be done before it faces the
-  public internet.
 - **Accounts cannot be recovered.** Lose the password, lose the keys. That is
   the cost of not holding your keys.
 - Payments (in-app currency and subscription) use a mock provider by default and
@@ -182,9 +184,9 @@ Source, tests and docs: https://github.com/lauzent-team/belka-vpn
 MIT licensed.
 
 Happy to answer questions and take criticism. I am especially curious what you
-think the right next step is: Double Ratchet for forward secrecy, rate limiting
-on the relay, or multi-device. And if anyone wants to run their own relay, the
-repo has step-by-step guides.
+think the right next step is: Double Ratchet for forward secrecy, or
+multi-device. And if anyone wants to run their own relay, the repo has
+step-by-step guides.
 
 ---
 
