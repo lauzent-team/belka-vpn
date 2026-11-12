@@ -72,8 +72,9 @@ r/Разработка, r/ru_dev. Для англоязычных сабов и�
 - **История живёт на сервере** шифротекстом до «Очистить историю».
 - **Аккаунт нельзя восстановить.** Потеряли пароль — потеряли ключи. Это цена
   того, что ключи не у нас.
-- Платежи (внутренняя валюта и подписка) по умолчанию работают на «заглушке»,
-  реальные деньги не двигаются.
+- Платежи (внутренняя валюта и подписка) **выключены, пока владелец релея не
+  подключит платёжный сервис**: покупка отклоняется, а не зачисляется. Демо-режим
+  для показа включается отдельным флагом и денег не берёт.
 
 Полный список с деталями — в README, раздел «Что ещё не сделано».
 
@@ -165,8 +166,9 @@ would not be true. Here is the real list:
 - **History lives on the server** as ciphertext until you clear the chat.
 - **Accounts cannot be recovered.** Lose the password, lose the keys. That is
   the cost of not holding your keys.
-- Payments (in-app currency and subscription) use a mock provider by default and
-  move no real money.
+- Payments (in-app currency and subscription) are **off until the relay owner
+  connects a payment provider**: a purchase is refused rather than credited. A
+  demo mode exists for showing the flow and moves no money.
 
 The full list is in the README under "What is not done yet".
 

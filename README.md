@@ -124,7 +124,10 @@
 - **Нет мультидевайса** — один ключ на аккаунт, привязан к одному устройству.
 - **Звонки best-effort** — зависят от signaling-релея и ICE/STUN.
 - **История живёт на сервере** (шифротекстом) до «Очистить историю».
-- **Платежи по умолчанию не живые** — провайдер `mock` двигает нулевую сумму.
+- **Платежи не живые, пока не настроены.** Провайдер по умолчанию —
+  `disabled`: покупка отклоняется, ничего не зачисляется. Реальные деньги
+  двигает только настроенный YooMoney (или адаптер); демо-страница денег не берёт
+  и включается отдельным флагом.
 - **Аккаунт нельзя восстановить.** Потеряли пароль — потеряли ключи.
 
 
@@ -371,10 +374,11 @@ this against a fake provider, so it runs without sending anything.
 
 ### Taking payment for Rockets and Premium
 
-Out of the box the relay uses a **mock** provider: a top-up settles instantly
-and no money moves. That is what the tests use, and it is enough to try the
-whole flow. For real money the relay talks to the same kind of adapter as the
-SMS flow, so the provider secret never reaches the relay or the app:
+Out of the box the relay **refuses a purchase**: with no provider configured it
+reports `disabled` and `pay.create` answers with an error, so nobody can take
+Premium or Rockets for free. `mock` (a top-up that settles instantly, no money)
+exists for the tests. For real money the relay talks to the same kind of adapter
+as the SMS flow, so the provider secret never reaches the relay or the app:
 
 ```
 app ──pay.create──▶ relay ──{id,amount}──▶ pay-adapter ──provider──▶ YooMoney
@@ -509,11 +513,12 @@ This is an honest list. The app should not be described as more secure than it i
 - **The relay has no rate limiting or abuse protection** — needed before it
   faces the public internet. The SMS adapter throttles code requests, but nothing
   yet limits messages, searches or failed logins.
-- **Payments are not live out of the box.** The default provider is `mock`, which
-  settles instantly and moves no money. Taking real payment means running
-  `server/pay-adapter.js` against a provider and pointing the relay at it; there
-  is no refund or chargeback flow, and the welcome Rocket grant is a local
-  policy, not a paid balance.
+- **Payments are not live out of the box.** With no provider configured the relay
+  reports `disabled` and refuses a purchase, so nothing is credited for free.
+  Taking real payment means running `server/pay-adapter.js` against a provider (or
+  setting the direct YooMoney variables) and pointing the relay at it; `mock`
+  settles instantly and is for tests only. There is no refund or chargeback flow,
+  and the welcome Rocket grant is a local policy, not a paid balance.
 - **Accounts cannot be recovered.** Lose the password, lose the keys.
 
 ## Layout

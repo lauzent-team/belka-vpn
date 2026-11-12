@@ -812,8 +812,9 @@ arriving now can change a header that is already on screen.
   `server/pay-adapter.js` mirrors `sms-adapter.js`: the relay posts
   `{id,amount}` and the adapter talks to the provider, holds the secret, and
   checks the provider's confirmed amount matches before reporting `paid`. The
-  default provider is `mock`, which settles instantly so the flow works with no
-  account; `yoomoney` builds a real checkout link. The token rides in the URL path
+  default provider is `checkout`, which is the opt-in demo; `mock` settles
+  instantly and is for tests; `yoomoney` builds a real checkout link. The token
+  rides in the URL path
   (`/create/<token>`), because the relay cannot send headers.
 - **A single-process host has no adapter, so the relay can talk to YooMoney
   itself.** `amvera.yaml` runs only `server/index.js`; the adapter is a second
