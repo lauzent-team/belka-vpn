@@ -12,3 +12,8 @@ server/*.db-wal
 server/pay-store.json
 .runtime/
 .tmp-*
+
+# Real environment files: they hold wallet ids and notification secrets
+.env
+*.env
+!*.env.example
