@@ -29,12 +29,32 @@ function isSessionExpired(err) {
   return /session expired|unknown account|blocked by an administrator/i.test(message);
 }
 
+// True inside an installed build (Electron unpacked into app.asar), false when
+// running from source with `npm start` or in the test harness, where a relay on
+// loopback is the normal way to work. `SLEEPHY_PACKAGED=1` forces it, so the
+// packaged branch stays testable without building an installer.
+const PACKAGED = process.env.SLEEPHY_PACKAGED === '1'
+  || /app\.asar[\\/]/.test(__dirname)
+  || (!process.defaultApp && !!process.resourcesPath);
+
+// A loopback address is how a developer reaches a relay started on their own
+// machine (`npm run server`). It is meaningless inside an installer, where no
+// such relay runs, so a packaged build never accepts one — from a saved profile
+// or from the environment. Either one otherwise pins the app to a dead local
+// port, and both outlive an uninstall, which is why reinstalling never helped.
+const LOOPBACK_SERVER_RE = /^wss?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/i;
+
+function isLoopbackServer(url) {
+  return typeof url === 'string' && LOOPBACK_SERVER_RE.test(url);
+}
+
 // Where the app looks for a relay by default, in priority order:
 //   1. SLEEPHY_SERVER environment variable
 //   2. a bundled server-default.json (written at build time)
 //   3. a local relay on this machine
 function resolveDefaultServer() {
-  if (process.env.SLEEPHY_SERVER) return process.env.SLEEPHY_SERVER;
+  const fromEnv = process.env.SLEEPHY_SERVER;
+  if (fromEnv && !(PACKAGED && isLoopbackServer(fromEnv))) return fromEnv;
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'server-default.json'), 'utf8'));
     if (cfg && typeof cfg.server === 'string' && cfg.server) return cfg.server;
@@ -43,14 +63,6 @@ function resolveDefaultServer() {
 }
 
 const DEFAULT_SERVER = resolveDefaultServer();
-
-// True inside an installed build (Electron unpacked into app.asar), false when
-// running from source with `npm start` or in the test harness, where a relay on
-// loopback is the normal way to work. `SLEEPHY_PACKAGED=1` forces it, so the
-// packaged branch stays testable without building an installer.
-const PACKAGED = process.env.SLEEPHY_PACKAGED === '1'
-  || /app\.asar[\\/]/.test(__dirname)
-  || (!process.defaultApp && !!process.resourcesPath);
 
 // Hosts that only existed while a development sandbox was running. One build
 // shipped such a host as its default, and because a chosen address is
@@ -61,18 +73,6 @@ const LEGACY_SERVER_RE = /^wss?:\/\/[^/]*\.prod-runtime\.all-hands\.dev(?::\d+)?
 
 function isLegacyServer(url) {
   return typeof url === 'string' && LEGACY_SERVER_RE.test(url);
-}
-
-// A loopback address is how a developer reaches a relay started on their own
-// machine (`npm run server`). It is meaningless inside an installer, where no
-// such relay runs: a saved loopback there only ever comes from a development
-// session that leaked into the profile, and because the profile outlives an
-// uninstall it pinned every later install to a dead local port. Ignore it in a
-// packaged build so the bundled default wins, exactly as with the sandbox host.
-const LOOPBACK_SERVER_RE = /^wss?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/i;
-
-function isLoopbackServer(url) {
-  return typeof url === 'string' && LOOPBACK_SERVER_RE.test(url);
 }
 
 // People write usernames as `@alice`. The leading `@` is presentation, not part
@@ -153,6 +153,10 @@ class SleePhyClient {
 
   writeServerUrl(url) {
     if (!url || isLegacyServer(url)) return;
+    // A packaged build must not remember a loopback address: the sign-in form
+    // ships one as its placeholder, so a sign-in that lands before the window
+    // has read its status would otherwise persist it and reopen there forever.
+    if (PACKAGED && isLoopbackServer(url)) return;
     try {
       fs.mkdirSync(path.dirname(this.serverFile), { recursive: true });
       fs.writeFileSync(this.serverFile, JSON.stringify({ server: url }), { mode: 0o600 });

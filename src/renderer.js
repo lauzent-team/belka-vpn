@@ -9230,6 +9230,16 @@ document.addEventListener('keydown', (e) => {
   buildEmojiPanel();
   buildStickerPanel();
   loadAppearance();
+  // Fill the server field from the client before anything can be submitted, so
+  // it never shows an empty box or a stale development address, and a sign-in
+  // cannot land on a placeholder the app would then remember.
+  try {
+    const early = await api.status();
+    if (early.serverUrl) {
+      els.serverUrl.value = early.serverUrl;
+      els.setServer.value = early.serverUrl;
+    }
+  } catch { /* the connection below reports the real failure */ }
   // A single low-frequency ticker repaints the countdown on self-destructing
   // bubbles; the relay still decides when they actually vanish.
   setInterval(tickTtlMarks, 1000);
@@ -9238,10 +9248,6 @@ document.addEventListener('keydown', (e) => {
   // screen for a moment. A failure just falls through to the auth screen.
   await api.connect().catch(() => {});
   const s = await api.status();
-  if (s.serverUrl) {
-    els.serverUrl.value = s.serverUrl;
-    els.setServer.value = s.serverUrl;
-  }
   updateConnIndicators(s.online);
   if (s.username && !s.unlocked) {
     els.unlockUser.textContent = `Unlock your vault, ${s.username}.`;

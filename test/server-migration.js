@@ -130,6 +130,55 @@ async function main() {
       'a development relay on loopback must stay reachable');
   });
 
+  // 7. SLEEPHY_SERVER is read before anything else and lives in the Windows
+  //    registry, so it survives deleting the profile — the one thing "delete the
+  //    app data" cannot clear. A packaged build must refuse a loopback value
+  //    there too, or the app stays pinned to a dead local port.
+  await step('a loopback SLEEPHY_SERVER is ignored inside an installed build', async () => {
+    const { execFileSync } = require('child_process');
+    const script = `
+      const os=require('os'),path=require('path'),fs=require('fs');
+      const { SleePhyClient } = require(${JSON.stringify(path.join(__dirname, '..', 'src', 'lib', 'client.js'))});
+      const dir=fs.mkdtempSync(path.join(os.tmpdir(),'sleephy-envloop-'));
+      const c=new SleePhyClient({userDataDir:dir,onEvent:()=>{}});
+      process.stdout.write(String(c.serverUrl));
+    `;
+    const out = execFileSync(process.execPath, ['-e', script], {
+      env: { ...process.env, SLEEPHY_PACKAGED: '1', SLEEPHY_SERVER: 'ws://127.0.0.1:8787' },
+      encoding: 'utf8'
+    }).trim();
+    const bundled = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'server-default.json'), 'utf8')).server;
+    assert.strictEqual(out, bundled, `packaged app honoured a loopback env var: ${out}`);
+  });
+
+  // 8. A real remote address in SLEEPHY_SERVER must still win, so an operator
+  //    can point an installed build at their own relay.
+  await step('a remote SLEEPHY_SERVER still overrides the bundled default', async () => {
+    const { execFileSync } = require('child_process');
+    const script = `
+      const os=require('os'),path=require('path'),fs=require('fs');
+      const { SleePhyClient } = require(${JSON.stringify(path.join(__dirname, '..', 'src', 'lib', 'client.js'))});
+      const dir=fs.mkdtempSync(path.join(os.tmpdir(),'sleephy-envok-'));
+      const c=new SleePhyClient({userDataDir:dir,onEvent:()=>{}});
+      process.stdout.write(String(c.serverUrl));
+    `;
+    const out = execFileSync(process.execPath, ['-e', script], {
+      env: { ...process.env, SLEEPHY_PACKAGED: '1', SLEEPHY_SERVER: 'wss://relay.example.com' },
+      encoding: 'utf8'
+    }).trim();
+    assert.strictEqual(out, 'wss://relay.example.com', `env override was lost: ${out}`);
+  });
+
+  // 9. The sign-in form ships no address of its own, so a submit that lands
+  //    before the window reads its status cannot dial a placeholder.
+  await step('the sign-in form carries no hardcoded server address', async () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8');
+    const field = html.match(/id="server-url"[^>]*/);
+    assert.ok(field, 'the server field should exist');
+    assert.ok(!/value="ws:\/\/127\.0\.0\.1/.test(field[0]),
+      `the form still hardcodes a loopback address: ${field[0]}`);
+  });
+
   const failed = results.filter((r) => !r).length;
   console.log(`\n${results.length - failed}/${results.length} server-migration checks passed`);
   process.exit(failed === 0 ? 0 : 1);

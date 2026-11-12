@@ -1037,7 +1037,19 @@ arriving now can change a header that is already on screen.
   clear it** and the app reopens on `ws://127.0.0.1:8787` forever. `readServerUrl()`
   now ignores a saved loopback **when packaged** (`PACKAGED`, set by `app.asar`
   in `__dirname` or `SLEEPHY_PACKAGED=1`), so the bundled relay wins, while a
-  source run keeps using loopback. `test/server-migration.js` covers both sides.
+  source run keeps using loopback.
+- **The loopback leak had three doors, and all three are shut (v0.16.12).** A
+  saved profile is only one of them. The sign-in field shipped
+  `value="ws://127.0.0.1:8787"`, so a submit that beat the boot-time status read
+  dialled the placeholder and `connect()` then remembered it. And `SLEEPHY_SERVER`
+  is read *first* and lives in the Windows registry, so it survives deleting the
+  profile — the one thing "delete the app data" cannot clear. A packaged build now
+  refuses a loopback address from all three: the saved file (`readServerUrl`), the
+  write path (`writeServerUrl`), and the environment (`resolveDefaultServer`). The
+  form's field starts empty and is filled from `status()` at the top of `boot()`,
+  before anything can be submitted. A **remote** `SLEEPHY_SERVER` still wins, so an
+  operator can point an installed build at their own relay. `test/server-migration.js`
+  covers all of it (9 checks).
 - **`server-default.json` is read from `path.join(__dirname,'..','..')`**, i.e.
   the app root, and `package.json` `build.files` includes it. Keep that path in
   sync if the file ever moves.
