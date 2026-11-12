@@ -54,6 +54,7 @@ node test/premium-logic.js             # Rocket prices, Premium expiry math (pur
 node test/payments.js                  # Rockets, Premium and gifts over a real relay
 node test/pay-adapter.js               # the provider adapter: link, signature, amount, token
 node test/pay-flow.js                  # relay + real adapter: checkout, pending, credit once
+node test/pay-disabled.js              # an unconfigured relay refuses purchases (no free Premium)
 xvfb-run -a node test/ui-premium.js    # the Rockets and Premium panes, clicked for real
 xvfb-run -a node test/shots.js         # regenerate shots/*.png
 ```
@@ -821,11 +822,22 @@ arriving now can change a header that is already on screen.
   `SLEEPHY_PAY_ADAPTER` is **empty**, `payMode()` returns `direct`: the relay
   builds the quickpay link in `yoomoneyDirectCreate` and settles from YooMoney's
   signed notification posted to `/notify/<SLEEPHY_PAY_ADAPTER_TOKEN>`. A missing
-  wallet or secret falls back to the demo `checkout` page, which moves no money,
-  so a half-configured host can never take a payment it cannot credit. `payMode()`
+  wallet or secret falls back to `disabled`, which refuses a purchase rather
+  than crediting one for free, so a half-configured host can never take a payment
+  it cannot credit. `payMode()`
   is the single source of truth for create/confirm/claim, so a link is only ever
   handed out together with the handler that can settle it. `test/pay-yoomoney-direct.js`
   covers the direct path.
+- **The built-in checkout is opt-in, and an unconfigured relay refuses
+  purchases.** `/pay/checkout` credits on a button press and moves no money, so
+  it is a demo: `payMode()` returns `checkout` only when `SLEEPHY_PAY_DEMO` is
+  set (1/true/yes/on). Otherwise, with no real provider, `payMode()` is
+  `disabled`: `handlePayCreate` answers with an error and no payment row is
+  written, so a default relay cannot be drained for free. `mock` is unaffected
+  (tests only). `/health` reports the mode as `payments`, and the admin panel
+  shows it as a banner, so the owner can tell a live relay from a demo one.
+  `test/pay-disabled.js` pins this; `test/pay-checkout.js` and
+  `test/ui-pay-checkout.js` set `SLEEPHY_PAY_DEMO=1` to exercise the demo.
 - **`/notify` checks the sha1 signature and the amount, and settles once.**
   `yoomoneyDirectSignature` mirrors the adapter's check; a bad signature is
   refused (403), a non-`incoming` notification is acknowledged and ignored, and

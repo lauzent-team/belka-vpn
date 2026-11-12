@@ -1206,6 +1206,7 @@ const els = {
   btnResetSettings: $('btn-reset-settings'),
   settingsNavAdmin: $('settings-nav-admin'),
   adminStats: $('admin-stats'),
+  adminPayments: $('admin-payments'),
   adminUsers: $('admin-users'),
   adminUsersEmpty: $('admin-users-empty'),
   adminUsersCount: $('admin-users-count'),
@@ -1290,6 +1291,7 @@ const state = {
   adminUsers: [], // last admin user list, filtered client-side by the search box
   adminChannels: [], // last admin channel list, filtered client-side
   adminDevices: [], // last admin device list, filtered client-side
+  adminPayments: 'unknown', // how the relay takes money: direct/adapter/checkout/mock/disabled
   adminPerDevice: 3, // account cap per device, from the relay
   adminPerDevicePremium: 5,
   adminLog: [], // last admin action log, newest first
@@ -4325,12 +4327,14 @@ async function loadAdminPanel() {
   els.adminUsers.innerHTML = '<p class="panel-empty">Загрузка…</p>';
   els.adminUsersEmpty.hidden = true;
   try {
-    const [{ stats, announcements, log }, users, channels, devices] = await Promise.all([
+    const [{ stats, announcements, log, payments }, users, channels, devices] = await Promise.all([
       api.adminOverview(),
       api.adminUsers(),
       api.adminChannels().catch(() => []),
       api.adminDevices().catch(() => ({ items: [], perDevice: 3, perDevicePremium: 5 }))
     ]);
+    state.adminPayments = payments;
+    renderAdminPayments();
     els.adminStats.innerHTML = adminStatCard(stats.users, 'Пользователей') +
       adminStatCard(stats.online, 'Онлайн') +
       adminStatCard(stats.messages, 'Сообщений') +
@@ -4366,6 +4370,23 @@ async function loadAdminPanel() {
 function adminStatCard(value, label) {
   const n = value == null ? 0 : value;
   return `<div class="admin-stat"><span class="admin-stat-num">${n}</span><span class="admin-stat-label">${escapeHtml(label)}</span></div>`;
+}
+
+/** How the relay takes money, said plainly so the owner can spot a demo relay. */
+function renderAdminPayments() {
+  const el = els.adminPayments;
+  if (!el) return;
+  const mode = state.adminPayments;
+  const info = {
+    direct:   ['ok',   'Оплата включена: YooMoney'],
+    adapter:  ['ok',   'Оплата включена: платёжный адаптер'],
+    checkout: ['warn', 'Демо-оплата: деньги не списываются'],
+    mock:     ['warn', 'Демо-оплата (mock): деньги не списываются'],
+    disabled: ['bad',  'Оплата выключена: покупки отклоняются'],
+    unknown:  ['warn', 'Режим оплаты неизвестен']
+  }[mode] || ['warn', 'Режим оплаты неизвестен'];
+  el.className = 'admin-payments is-' + info[0];
+  el.textContent = info[1];
 }
 
 /** Switch the visible admin tab. */

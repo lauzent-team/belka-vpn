@@ -88,7 +88,9 @@ async function main() {
     env: {
       ...process.env,
       SLEEPHY_PORT: String(PORT),
-      SLEEPHY_DB: DB
+      SLEEPHY_DB: DB,
+      // The built-in checkout is the deliberate demo path, so it is opt-in.
+      SLEEPHY_PAY_DEMO: '1'
       // No SLEEPHY_PAY_PROVIDER: the default is the built-in checkout page.
     },
     stdio: ['ignore', 'ignore', 'pipe']

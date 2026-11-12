@@ -1514,6 +1514,7 @@ class SleePhyClient {
     const res = await this.request({ t: 'admin.overview' });
     return {
       stats: res.stats,
+      payments: res.payments || 'unknown',
       announcements: res.announcements || [],
       log: res.log || []
     };

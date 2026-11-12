@@ -1,12 +1,16 @@
 'use strict';
 
 /**
- * The relay's own checkout, which is the default payment path.
+ * The relay's own checkout, which is the deliberate demo payment path.
  *
- * Unlike test/payments.js (mock, settles at once) and test/pay-flow.js (a real
- * provider adapter), this exercises the built-in checkout page: a purchase is
- * created uncredited, the page is served with the price and the two buttons,
- * confirming credits the wallet exactly once, and cancelling credits nothing.
+ * The built-in checkout credits a purchase on a button press and moves no
+ * money, so it is opt-in: the relay serves it only with SLEEPHY_PAY_DEMO=1.
+ * Without that flag (and no real provider) payMode() is `disabled` and a
+ * purchase is refused — see test/pay-disabled.js.
+ *
+ * This exercises the built-in checkout page: a purchase is created uncredited,
+ * the page is served with the price and the two buttons, confirming credits the
+ * wallet exactly once, and cancelling credits nothing.
  *
  * Run with: node test/pay-checkout.js
  */
@@ -58,7 +62,9 @@ async function main() {
       ...process.env,
       SLEEPHY_PORT: String(PORT),
       SLEEPHY_DB: DB,
-      SLEEPHY_WELCOME_ROCKETS: '0'
+      SLEEPHY_WELCOME_ROCKETS: '0',
+      // The built-in checkout credits on a button press, so it is opt-in.
+      SLEEPHY_PAY_DEMO: '1'
       // No SLEEPHY_PAY_PROVIDER: the default is the built-in checkout.
     },
     stdio: ['ignore', 'ignore', 'pipe']

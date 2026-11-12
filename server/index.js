@@ -162,6 +162,13 @@ for (const g of Object.values(GIFT_CATALOGUE)) g.sellValue = giftSellValue(g.cos
 const PAY_PROVIDER = (process.env.SLEEPHY_PAY_PROVIDER || 'checkout').toLowerCase();
 const PAY_ADAPTER_URL = process.env.SLEEPHY_PAY_ADAPTER || '';
 const PAY_ADAPTER_TOKEN = process.env.SLEEPHY_PAY_ADAPTER_TOKEN || '';
+// The built-in checkout moves no money: it credits a purchase the moment the
+// buyer presses "Оплатить" on the relay's own page. That is fine for a demo or
+// a local run, but on a public relay it hands out Premium and Rockets for free.
+// So it must be switched on deliberately; without this flag a relay that has no
+// real provider configured refuses to start a purchase at all instead of
+// crediting one it was never paid for.
+const PAY_DEMO = ['1', 'true', 'yes', 'on'].includes(String(process.env.SLEEPHY_PAY_DEMO || '').toLowerCase());
 // Public base of the relay, used to build the return URL a provider redirects
 // to, and the checkout link handed to the app. When it is empty the link is
 // built from the address the client is already talking to, which is correct for
@@ -2640,13 +2647,18 @@ function usesDirectYooMoney() {
  *   mock     - settles at once (tests)
  *   direct   - the relay itself talks to YooMoney
  *   adapter  - an external adapter talks to the provider
- *   checkout - the relay's own demo page, which takes no money
+ *   checkout - the relay's own page, which takes no money; only with the
+ *              SLEEPHY_PAY_DEMO opt-in, otherwise it is `disabled`
+ *   disabled - no real provider is configured, so purchases are refused rather
+ *              than credited for free
  */
 function payMode() {
   if (PAY_PROVIDER === 'mock') return 'mock';
   if (usesDirectYooMoney()) return 'direct';
   if (PAY_PROVIDER !== 'checkout' && PAY_ADAPTER_URL) return 'adapter';
-  return 'checkout';
+  // The demo checkout credits on a button press, so it must be asked for. A
+  // relay that is merely unconfigured must never hand out a free purchase.
+  return PAY_DEMO ? 'checkout' : 'disabled';
 }
 
 /** Build the YooMoney quickpay link the user opens in a browser. */
@@ -2729,6 +2741,12 @@ async function handlePayCreate(ws, msg, rid) {
   // Each create writes a pending row and may call the provider; cap it so a
   // script cannot fill the table or hammer the provider.
   if (!allow(ws, rid, 'pay.create', ws.username)) return;
+  // No real provider is configured and the demo checkout was not switched on.
+  // Refuse instead of handing out a link whose confirmation would credit a
+  // purchase for free.
+  if (payMode() === 'disabled') {
+    return bad(ws, rid, 'Оплата на этом сервере не настроена. Сообщите администратору.');
+  }
   const kind = msg.kind === 'premium' ? 'premium' : 'rockets';
   let amount;
   let rockets = null;
@@ -3957,6 +3975,9 @@ function handleAdminOverview(ws, msg, rid) {
       accountsPerDevice: ACCOUNTS_PER_DEVICE,
       accountsPerDevicePremium: ACCOUNTS_PER_DEVICE_PREMIUM
     },
+    // So the panel can say whether a purchase takes real money, is a deliberate
+    // demo, or is switched off — the owner should never have to guess.
+    payments: payMode(),
     isAdmin: true,
     announcements: q.recentAnnouncements.all().map((a) => ({
       id: a.id, sender: a.sender, text: a.text, ts: a.ts
@@ -4501,7 +4522,10 @@ function payReturnPage(id) {
 const server = http.createServer((req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, service: 'sleephy-relay' }));
+    // `payments` tells the owner at a glance whether a purchase can take real
+    // money (`direct`/`adapter`), is a deliberate demo (`checkout`/`mock`), or
+    // is switched off (`disabled`). It names no secret.
+    res.end(JSON.stringify({ ok: true, service: 'sleephy-relay', payments: payMode() }));
     return;
   }
   if (req.url === '/pay/return' || req.url.startsWith('/pay/return?')) {

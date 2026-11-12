@@ -437,12 +437,49 @@ Then point YooMoney's «Уведомления» at
 `https://<your-relay-host>/notify/<SLEEPHY_PAY_ADAPTER_TOKEN>`, with the HTTP
 notification method, and copy the same secret into `YOOMONEY_SECRET`.
 
-If the wallet or the secret is missing the relay falls back to its own demo
-checkout page, which moves no money — so a half-configured host can never take a
-payment it cannot credit. `test/pay-yoomoney-direct.js` covers this path: the
-real link, the signed notification, a forged signature, a short payment and a
-replay are all checked. The OAuth `YOOMONEY_TOKEN` is optional and only enables
-the polling fallback for a notification that never arrived.
+**Turning it on, step by step (Amvera):**
+
+1. Open YooMoney → «Настройки» → «Уведомления» → «Уведомления о переводах» and
+   take the **secret** shown there. That is `YOOMONEY_SECRET`. Your wallet id
+   (the number under your name, like `41001…`) is `YOOMONEY_RECEIVER`.
+2. In the Amvera project open «Переменные» and add, one per row:
+   `SLEEPHY_PAY_PROVIDER=yoomoney`, `YOOMONEY_RECEIVER=<wallet id>`,
+   `YOOMONEY_SECRET=<secret>`, `SLEEPHY_PAY_ADAPTER_TOKEN=<a long random
+   string>`, `SLEEPHY_PAY_PUBLIC_URL=https://<your-relay-host>`. Do **not** add
+   `SLEEPHY_PAY_ADAPTER` — the relay talks to YooMoney itself here.
+3. In YooMoney's «Уведомления», set the URL to
+   `https://<your-relay-host>/notify/<the same token>`, method **HTTP**, and
+   enable notifications.
+4. Restart the container (Amvera applies variables only on restart) and check
+   `https://<your-relay-host>/health` — it must say `"payments":"direct"`. If it
+   says `disabled`, a variable is missing or misspelled.
+5. Buy something small yourself and confirm the Rockets or Premium land. The
+   admin panel banner should read «Оплата включена: YooMoney».
+
+If `/health` says `disabled` after this, the wallet or the secret did not reach
+the relay — fix that before telling anyone the shop is open.
+
+### Payments are off until you configure them
+
+A relay that is simply unconfigured takes **no** money and credits **nothing**:
+`payMode()` returns `disabled`, `pay.create` is refused, and the app tells the
+user payment is not set up on this server. This is deliberate — an unconfigured
+relay must never hand out free Premium or Rockets.
+
+The built-in checkout page (`/pay/checkout`) credits a purchase the moment the
+buyer presses «Оплатить», so it moves no money. It is a demo, and it is
+**opt-in**: set `SLEEPHY_PAY_DEMO=1` to switch it on. Do not set it on a relay
+that is open to the public. To check what a running relay is doing, call
+`/health` — it answers `{"ok":true,"service":"sleephy-relay","payments":"…"}`
+with `direct`, `adapter`, `checkout`, `mock` or `disabled`. The admin panel
+shows the same thing as a banner above the stats.
+
+If the wallet or the secret is missing the relay falls back to `disabled`
+(not to a working demo), so a half-configured host can never take a payment it
+cannot credit. `test/pay-yoomoney-direct.js` covers the real path — the link,
+the signed notification, a forged signature, a short payment and a replay — and
+`test/pay-disabled.js` covers the refusal. The OAuth `YOOMONEY_TOKEN` is optional
+and only enables the polling fallback for a notification that never arrived.
 
 ## What is not done yet
 
