@@ -432,6 +432,16 @@ arriving now can change a header that is already on screen.
   is behind `--experimental-sqlite` before that, and the SQLite file must live on
   the mounted volume (`SLEEPHY_DB=/data/sleephy.db`) or every redeploy wipes the
   accounts. `amvera.yml` has only meta/build/run — env vars go in the Amvera UI.
+- **`deploy/amvera/relay.env.example` is the variable list for that UI.** Amvera
+  has no `.env` reader in the image (the relay never calls `dotenv`), so the file
+  is a copy-paste source, not something the container loads. Amvera needs no
+  build-stage choice — `amvera.yaml` already names the Dockerfile and the CMD —
+  and it applies variables only on restart. The YooMoney trio
+  (`YOOMONEY_RECEIVER`, `YOOMONEY_SECRET`, `SLEEPHY_PAY_ADAPTER_TOKEN`) turns
+  `payments` to `direct`; without them it stays `disabled` and refuses every
+  purchase. `SLEEPHY_PAY_ADAPTER` and `SLEEPHY_PAY_DEMO` must not be set on
+  Amvera — the first looks for an adapter that is not there, the second credits
+  purchases without money.
 
 ## Privacy and social links (v0.8.0)
 
