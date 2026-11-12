@@ -17,6 +17,7 @@ const { WebSocketServer } = require('ws');
 const { DatabaseSync } = require('node:sqlite');
 const STREAK = require('../src/lib/streak');
 const MONEY = require('../src/lib/money');
+const { createRegistry } = require('../src/lib/ratelimit');
 
 // A host (Render, Fly, Heroku-style) hands the port in PORT; SLEEPHY_PORT wins
 // when it is set, so the same build runs on a VPS and on a platform.
@@ -179,6 +180,36 @@ const YOOMONEY_API_URL = process.env.YOOMONEY_API_URL || 'https://yoomoney.ru/ap
 // Guards /notify so a stranger cannot settle a payment by guessing ids. Reuses
 // the adapter token name so one value covers both wiring styles.
 const PAY_NOTIFY_TOKEN = process.env.SLEEPHY_PAY_ADAPTER_TOKEN || process.env.SLEEPHY_PAY_NOTIFY_TOKEN || '';
+
+/* --------------------------- rate limiting --------------------------- */
+// What keeps the relay from being trivially abused once it is reachable from the
+// internet: a loop of password guesses, a message flood, or a script that
+// requests SMS codes until the provider balance is gone. The limits are
+// deliberately generous for a person and tight for a script. Every one can be
+// overridden from the environment so a busy relay can be tuned without a code
+// change.
+//
+// The per-address limits are set for shared addresses, not for one household: a
+// school, an office or a mobile carrier puts many real users behind one IP, and
+// a limit tight enough to stop a script there would lock out the people it is
+// meant to serve. The per-account and per-number limits are what actually stop
+// the attacks; the per-address ones only stop mass automation.
+//
+// `SLEEPHY_RATE_LIMIT=off` disables every limit. It exists for the test suite
+// and for a single-user local relay; it must not be set on a public one.
+const RATE_OFF = String(process.env.SLEEPHY_RATE_LIMIT || '').toLowerCase() === 'off';
+const rateMax = (value) => (RATE_OFF ? Number.MAX_SAFE_INTEGER : value);
+const RATE_POLICIES = {
+  register:        { windowMs: 60 * 60 * 1000, max: rateMax(Number(process.env.SLEEPHY_RATE_REGISTER ?? 30)) },
+  login:           { windowMs: 15 * 60 * 1000, max: rateMax(Number(process.env.SLEEPHY_RATE_LOGIN ?? 10)) },
+  'login.ip':      { windowMs: 15 * 60 * 1000, max: rateMax(Number(process.env.SLEEPHY_RATE_LOGIN_IP ?? 100)) },
+  'phone.request': { windowMs: 60 * 60 * 1000, max: rateMax(Number(process.env.SLEEPHY_RATE_PHONE ?? 10)) },
+  'phone.verify':  { windowMs: 15 * 60 * 1000, max: rateMax(Number(process.env.SLEEPHY_RATE_PHONE_VERIFY ?? 10)) },
+  send:            { windowMs: 10 * 1000,      max: rateMax(Number(process.env.SLEEPHY_RATE_SEND ?? 60)) },
+  'users.search':  { windowMs: 60 * 1000,      max: rateMax(Number(process.env.SLEEPHY_RATE_SEARCH ?? 60)) },
+  'pay.create':    { windowMs: 60 * 60 * 1000, max: rateMax(Number(process.env.SLEEPHY_RATE_PAY ?? 20)) }
+};
+const limits = createRegistry(RATE_POLICIES);
 
 /* ----------------------------- storage ----------------------------- */
 const db = new DatabaseSync(DB_PATH);
@@ -483,10 +514,20 @@ for (const sql of [
   'ALTER TABLE messages ADD COLUMN scheduled_hidden INTEGER NOT NULL DEFAULT 0',
   // When a Premium subscription runs out (ms), or NULL for "no subscription".
   // The relay is the only authority on this: a client cannot claim Premium.
-  'ALTER TABLE users ADD COLUMN premium_until INTEGER'
+  'ALTER TABLE users ADD COLUMN premium_until INTEGER',
+  // The installation an account was created from. Used to cap how many accounts
+  // one device may hold: a person gets a few, a Premium owner gets a couple more.
+  // It is a client-generated id, so it is a speed bump against casual hoarding,
+  // not a hard identity — the per-address registration limit is the other half.
+  'ALTER TABLE users ADD COLUMN device_id TEXT'
 ]) {
   try { db.exec(sql); } catch { /* column already present */ }
 }
+
+// Counting a device's accounts is on the registration path, so it must not scan
+// the whole table.
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_users_device ON users(device_id)'); }
+catch { /* an older database keeps working without the index */ }
 
 // A channel handle is unique, like a username. SQLite exempts NULLs from a
 // UNIQUE index, so legacy channels without a handle never collide.
@@ -501,9 +542,10 @@ catch { /* a legacy database already holds a duplicate number */ }
 const q = {
   getUser: db.prepare('SELECT * FROM users WHERE username = ?'),
   insertUser: db.prepare(
-    `INSERT INTO users (username, salt, verifier, public_key, display_name, bio, avatar_color, created_at, updated_at, has_password)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO users (username, salt, verifier, public_key, display_name, bio, avatar_color, created_at, updated_at, has_password, device_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ),
+  countUsersByDevice: db.prepare('SELECT COUNT(*) AS n FROM users WHERE device_id = ?'),
   getUserByPhone: db.prepare('SELECT * FROM users WHERE phone = ?'),
   setPhone: db.prepare('UPDATE users SET phone = ?, updated_at = ? WHERE username = ?'),
   setPassword: db.prepare(
@@ -1209,6 +1251,37 @@ function bad(ws, rid, message) {
   reply(ws, rid, { t: 'error', message });
 }
 
+/**
+ * The client address for rate limiting. Behind a proxy the socket address is
+ * the proxy's, so the first entry of X-Forwarded-For is preferred; it is
+ * attacker-controlled, but that only lets a caller rotate the key it is limited
+ * by, which is still bounded by the per-action limits that do not use an IP.
+ */
+function clientIp(ws) {
+  const req = ws && ws._req;
+  const fwd = req && req.headers && req.headers['x-forwarded-for'];
+  if (fwd) return String(fwd).split(',')[0].trim();
+  return (req && req.socket && req.socket.remoteAddress) || 'unknown';
+}
+
+/**
+ * Spend one event from the named bucket. Returns true when the request may
+ * proceed; when it may not, the caller has already been answered, so every call
+ * site is a single `if (!allow(...)) return;`. The reply carries `retryAfterMs`
+ * so the client can show a real wait instead of a generic error.
+ */
+function allow(ws, rid, bucket, key) {
+  const res = limits.take(bucket, key);
+  if (res.ok) return true;
+  const seconds = Math.ceil(res.retryAfterMs / 1000);
+  reply(ws, rid, {
+    t: 'error',
+    message: `Слишком много запросов. Попробуйте через ${seconds} с.`,
+    retryAfterMs: res.retryAfterMs
+  });
+  return false;
+}
+
 function send(ws, obj) {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
 }
@@ -1551,17 +1624,26 @@ async function handlePhoneRequest(ws, msg, rid) {
     return bad(ws, rid, 'Enter a phone number in international format, e.g. +79991234567');
   }
   if (!validB64(msg.publicKey, 200)) return bad(ws, rid, 'Invalid public key');
+  // Every code costs real money at the SMS provider, so this is the tightest
+  // limit on the relay: per number first, then per address, so neither a single
+  // number nor a single machine can drain the provider balance.
+  if (!allow(ws, rid, 'phone.request', phone)) return;
+  if (!allow(ws, rid, 'phone.request', 'ip:' + clientIp(ws))) return;
 
   let user = q.getUserByPhone.get(phone);
   let created = false;
   if (!user) {
+    // A brand-new account is created here, so the per-device cap applies too.
+    const deviceId = typeof msg.deviceId === 'string' && msg.deviceId.length <= 128 ? msg.deviceId : null;
+    const allowance = deviceAllowsAnotherAccount(deviceId);
+    if (!allowance.ok) return bad(ws, rid, allowance.message);
     const username = freeUsername();
     const now = Date.now();
     const salt = crypto.randomBytes(16).toString('base64');
     // A phone account starts passwordless: the verifier is a random secret the
     // client never learns, and has_password = 0 makes login refuse it.
     const verifier = crypto.randomBytes(32).toString('base64');
-    q.insertUser.run(username, salt, verifier, msg.publicKey, null, null, null, now, now, 0);
+    q.insertUser.run(username, salt, verifier, msg.publicKey, null, null, null, now, now, 0, deviceId);
     q.setPhone.run(phone, now, username);
     if (ADMINS.has(username)) q.setAdmin.run(1, now, username);
     user = q.getUser.get(username);
@@ -1586,6 +1668,8 @@ function handlePhoneVerify(ws, msg, rid) {
   const code = typeof msg.code === 'string' ? msg.code.trim() : '';
   if (!PHONE_RE.test(phone)) return bad(ws, rid, 'Invalid phone number');
   if (!/^\d{6}$/.test(code)) return bad(ws, rid, 'Enter the 6-digit code');
+  // A six-digit code is guessable in a loop, so cap the attempts per number.
+  if (!allow(ws, rid, 'phone.verify', phone)) return;
 
   const rec = q.getPhoneCode.get(phone);
   if (!rec) return bad(ws, rid, 'Request a new code');
@@ -1637,12 +1721,69 @@ function handlePasswordSet(ws, msg, rid) {
 }
 
 /* ------------------------------- handlers ------------------------------- */
+/**
+ * How many accounts one device may hold. A person gets three, an owner of
+ * Premium five: the extra two are part of what Premium buys. The count is of
+ * accounts created from this device, so a device that has already used its
+ * allowance cannot mint more.
+ *
+ * The device id is generated by the client and stored on each account it
+ * creates. That makes this a speed bump, not a wall: a determined person can
+ * clear their local id and register again, and the per-address limit is what
+ * bounds that. It is honest about what it is — a rule for ordinary use, not a
+ * defence against an attacker.
+ */
+const ACCOUNTS_PER_DEVICE = Number(process.env.SLEEPHY_ACCOUNTS_PER_DEVICE ?? 3);
+const ACCOUNTS_PER_DEVICE_PREMIUM = Number(process.env.SLEEPHY_ACCOUNTS_PER_DEVICE_PREMIUM ?? 5);
+
+/**
+ * Whether this device may create one more account. `deviceId` is optional: an
+ * old client that does not send one is not blocked (its registrations are still
+ * bounded by the address limit), so an upgrade never locks anyone out.
+ *
+ * The allowance grows to the Premium number when *any* account on the device
+ * holds Premium, so buying Premium once raises the ceiling for the device.
+ */
+function deviceAllowsAnotherAccount(deviceId) {
+  if (!deviceId) return { ok: true };
+  let n = 0;
+  try { n = Number(q.countUsersByDevice.get(deviceId).n) || 0; } catch { return { ok: true }; }
+  const premium = deviceHasPremium(deviceId);
+  const cap = premium ? ACCOUNTS_PER_DEVICE_PREMIUM : ACCOUNTS_PER_DEVICE;
+  if (n >= cap) {
+    return {
+      ok: false,
+      cap,
+      premium,
+      message: premium
+        ? `На этом устройстве уже ${cap} аккаунтов — это максимум даже с Premium.`
+        : `На этом устройстве уже ${ACCOUNTS_PER_DEVICE} аккаунта. Оформите Premium, чтобы поднять лимит до ${ACCOUNTS_PER_DEVICE_PREMIUM}.`
+    };
+  }
+  return { ok: true, cap, remaining: cap - n };
+}
+
+/** Whether any account created from this device currently holds Premium. */
+function deviceHasPremium(deviceId) {
+  try {
+    const rows = db.prepare('SELECT premium_until FROM users WHERE device_id = ?').all(deviceId);
+    const now = Date.now();
+    return rows.some((r) => r.premium_until && Number(r.premium_until) > now);
+  } catch { return false; }
+}
+
 function handleRegister(ws, msg, rid) {
   const { password, publicKey, salt, verifier } = msg;
   const username = normalizeUsername(msg.username);
   if (typeof username !== 'string' || !USERNAME_RE.test(username)) {
     return bad(ws, rid, 'Username must be 3-32 chars: a-z, 0-9, _');
   }
+  // Creating accounts is free and costs the relay a row, so cap it per address
+  // before any work: a script cannot fill the user table with junk names.
+  if (!allow(ws, rid, 'register', clientIp(ws))) return;
+  const deviceId = typeof msg.deviceId === 'string' && msg.deviceId.length <= 128 ? msg.deviceId : null;
+  const allowance = deviceAllowsAnotherAccount(deviceId);
+  if (!allowance.ok) return bad(ws, rid, allowance.message);
   if (typeof password !== 'string' || password.length < 8 || password.length > 512) {
     return bad(ws, rid, 'Password must be at least 8 characters');
   }
@@ -1659,7 +1800,7 @@ function handleRegister(ws, msg, rid) {
     : scrypt(password, useSalt);
 
   const now = Date.now();
-  q.insertUser.run(username, useSalt, useVerifier, publicKey, null, null, null, now, now, 1);
+  q.insertUser.run(username, useSalt, useVerifier, publicKey, null, null, null, now, now, 1, deviceId);
   if (ADMINS.has(username)) q.setAdmin.run(1, now, username);
   if (WELCOME_ROCKETS > 0) moveRockets(username, WELCOME_ROCKETS, 'welcome', 'welcome bonus');
 
@@ -1680,6 +1821,11 @@ function handleLogin(ws, msg, rid) {
   if (typeof username !== 'string' || typeof password !== 'string') {
     return bad(ws, rid, 'Username and password required');
   }
+  // Password guessing is the classic attack on a login. Two buckets: one per
+  // account, so a single name cannot be hammered, and one per address, so one
+  // machine cannot spray many names. Both must pass.
+  if (!allow(ws, rid, 'login', username)) return;
+  if (!allow(ws, rid, 'login.ip', clientIp(ws))) return;
   const user = q.getUser.get(username);
   if (!user) return bad(ws, rid, 'Wrong username or password');
   // Phone accounts start without a password; they sign in by phone number.
@@ -1709,6 +1855,11 @@ function handleResume(ws, msg, rid) {
   if (user.banned) return bad(ws, rid, 'This account has been blocked by an administrator');
   ws.username = username;
   bindSocket(username, ws);
+  // Attach the device id to an account that predates it, so the per-device
+  // account cap starts counting it. Only ever fills a blank, never overwrites.
+  if (!user.device_id && typeof msg.deviceId === 'string' && msg.deviceId.length <= 128) {
+    try { db.prepare('UPDATE users SET device_id = ? WHERE username = ? AND device_id IS NULL').run(msg.deviceId, username); } catch { /* non-fatal */ }
+  }
   reply(ws, rid, {
     t: 'ok', action: 'resume', username, token: msg.token, publicKey: user.public_key,
     profile: publicProfile(user)
@@ -1890,6 +2041,8 @@ function handleUserSearch(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
   const query = typeof msg.query === 'string' ? msg.query.trim().toLowerCase().replace(/^@+/, '') : '';
   if (query.length < 1) return reply(ws, rid, { t: 'users', items: [] });
+  // Search walks the user table; a script could enumerate every account from it.
+  if (!allow(ws, rid, 'users.search', ws.username)) return;
   const like = `%${query}%`;
   const rows = q.searchUsers.all(like, like);
   const items = rows.map((r) => ({ ...publicProfile(r, ws.username), online: isOnline(r.username) }));
@@ -1986,6 +2139,9 @@ function handleSend(ws, msg, rid) {
   const { to, box, nonce } = msg;
   // Sending to yourself is allowed: that is how Saved Messages works.
   if (typeof to !== 'string' || !q.getUser.get(to)) return bad(ws, rid, 'No such recipient');
+  // A cap on messages per sender keeps one account from flooding the relay or
+  // another user. It is well above human speed, so it only ever catches a script.
+  if (!allow(ws, rid, 'send', ws.username)) return;
 
   const parsed = parseAttachment(msg.attachment);
   if (parsed.error) return bad(ws, rid, parsed.error);
@@ -2554,6 +2710,9 @@ function publicBase(req) {
  */
 async function handlePayCreate(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  // Each create writes a pending row and may call the provider; cap it so a
+  // script cannot fill the table or hammer the provider.
+  if (!allow(ws, rid, 'pay.create', ws.username)) return;
   const kind = msg.kind === 'premium' ? 'premium' : 'rockets';
   let amount;
   let rockets = null;
@@ -4447,6 +4606,9 @@ const sweeper = setInterval(() => {
 
   let rows;
   try { rows = q.expired.all(Date.now()); } catch { return; }
+  // Forget rate-limit keys whose events have aged out, so a relay that has been
+  // up for weeks does not carry a key for every address it has ever seen.
+  limits.sweep();
   if (!rows.length) return;
   for (const row of rows) {
     try {

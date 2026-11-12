@@ -79,6 +79,10 @@ class SleePhyClient {
     // random per-device key kept beside the identity file. Setting a password
     // re-seals the key and removes this file.
     this.deviceKeyFile = path.join(userDataDir, 'sleephy-device.key');
+    // A stable id for this installation, so the relay can cap how many accounts
+    // one device holds (3, or 5 with Premium). It is not an identity: it is
+    // generated here and never derived from hardware.
+    this.deviceIdFile = path.join(userDataDir, 'sleephy-device-id');
     this.onEvent = onEvent;
     // Message frames are decrypted asynchronously, but a centered series note
     // needs no decryption. Chaining every message frame through this promise
@@ -161,6 +165,20 @@ class SleePhyClient {
 
   clearDeviceKey() {
     try { fs.unlinkSync(this.deviceKeyFile); } catch { /* nothing to remove */ }
+  }
+
+  /** This installation's id, created on first use and then stable. */
+  ensureDeviceId() {
+    try {
+      const existing = fs.readFileSync(this.deviceIdFile, 'utf8').trim();
+      if (existing) return existing;
+    } catch { /* first run on this device */ }
+    const id = require('crypto').randomBytes(16).toString('hex');
+    try {
+      fs.mkdirSync(path.dirname(this.deviceIdFile), { recursive: true });
+      fs.writeFileSync(this.deviceIdFile, id, { mode: 0o600 });
+    } catch { /* best effort: an unwritable id just means no device cap */ }
+    return id;
   }
 
   /** Open a stored record with whichever key sealed it (password or device). */
@@ -361,8 +379,13 @@ class SleePhyClient {
     if (msg._id && this.pending.has(msg._id)) {
       const { resolve, reject } = this.pending.get(msg._id);
       this.pending.delete(msg._id);
-      if (msg.t === 'error') reject(new Error(msg.message || 'Request failed'));
-      else resolve(msg);
+      if (msg.t === 'error') {
+        const err = new Error(msg.message || 'Request failed');
+        // A rate-limit refusal carries how long to wait, so the caller (and the
+        // UI) can show a real countdown instead of a generic failure.
+        if (Number.isFinite(msg.retryAfterMs)) err.retryAfterMs = msg.retryAfterMs;
+        reject(err);
+      } else resolve(msg);
       return;
     }
 
@@ -581,7 +604,7 @@ class SleePhyClient {
     if (!id || !id.token) return;
     let res;
     try {
-      res = await this.request({ t: 'resume', token: id.token });
+      res = await this.request({ t: 'resume', token: id.token, deviceId: this.ensureDeviceId() });
     } catch (err) {
       // Only a definitive "this token is dead" answer may drop the token. A
       // network hiccup (relay restarting, no route) must leave the record —
@@ -620,7 +643,8 @@ class SleePhyClient {
     const verifier = cryptoLib.passwordVerifier(password, salt);
 
     const res = await this.request({
-      t: 'register', username, password, salt, verifier, publicKey: identity.publicKey
+      t: 'register', username, password, salt, verifier, publicKey: identity.publicKey,
+      deviceId: this.ensureDeviceId()
     });
     this.applySession(res);
 
@@ -676,7 +700,9 @@ class SleePhyClient {
    */
   async requestCode(phone) {
     const identity = await cryptoLib.generateIdentity();
-    const res = await this.request({ t: 'phone.request', phone, publicKey: identity.publicKey });
+    const res = await this.request({
+      t: 'phone.request', phone, publicKey: identity.publicKey, deviceId: this.ensureDeviceId()
+    });
     this.pendingPhone = { phone, identity };
     return { phone: res.phone, isNew: !!res.isNew, code: res.code || null };
   }
