@@ -44,6 +44,14 @@ function resolveDefaultServer() {
 
 const DEFAULT_SERVER = resolveDefaultServer();
 
+// True inside an installed build (Electron unpacked into app.asar), false when
+// running from source with `npm start` or in the test harness, where a relay on
+// loopback is the normal way to work. `SLEEPHY_PACKAGED=1` forces it, so the
+// packaged branch stays testable without building an installer.
+const PACKAGED = process.env.SLEEPHY_PACKAGED === '1'
+  || /app\.asar[\\/]/.test(__dirname)
+  || (!process.defaultApp && !!process.resourcesPath);
+
 // Hosts that only existed while a development sandbox was running. One build
 // shipped such a host as its default, and because a chosen address is
 // remembered, that dead address outlived the build: upgrading kept the app
@@ -53,6 +61,18 @@ const LEGACY_SERVER_RE = /^wss?:\/\/[^/]*\.prod-runtime\.all-hands\.dev(?::\d+)?
 
 function isLegacyServer(url) {
   return typeof url === 'string' && LEGACY_SERVER_RE.test(url);
+}
+
+// A loopback address is how a developer reaches a relay started on their own
+// machine (`npm run server`). It is meaningless inside an installer, where no
+// such relay runs: a saved loopback there only ever comes from a development
+// session that leaked into the profile, and because the profile outlives an
+// uninstall it pinned every later install to a dead local port. Ignore it in a
+// packaged build so the bundled default wins, exactly as with the sandbox host.
+const LOOPBACK_SERVER_RE = /^wss?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/i;
+
+function isLoopbackServer(url) {
+  return typeof url === 'string' && LOOPBACK_SERVER_RE.test(url);
 }
 
 // People write usernames as `@alice`. The leading `@` is presentation, not part
@@ -122,6 +142,9 @@ class SleePhyClient {
       // A remembered address from a dead sandbox is treated as absent, so the
       // bundled default takes over instead of leaving the app offline.
       if (data && typeof data.server === 'string' && data.server && !isLegacyServer(data.server)) {
+        // In an installer a saved loopback can only be a leaked development
+        // address, and it would outlive an uninstall; the bundled relay wins.
+        if (PACKAGED && isLoopbackServer(data.server)) return null;
         return data.server;
       }
     } catch { /* no saved address */ }

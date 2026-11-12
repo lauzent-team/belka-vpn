@@ -1,4 +1,4 @@
-# Текст для Reddit (SleePhy 0.16.10)
+# Текст для Reddit (SleePhy 0.16.11)
 
 Куда постить: r/opensource, r/privacy, r/selfhosted, r/программирование,
 r/Разработка, r/ru_dev. Для англоязычных сабов используйте перевод ниже.

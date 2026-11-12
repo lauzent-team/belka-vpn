@@ -98,6 +98,38 @@ async function main() {
     assert.ok(!/prod-runtime\.all-hands\.dev/.test(saved), `dead host was persisted: ${saved}`);
   });
 
+  // 5. A saved loopback address is a development leftover. In an installed
+  //    build there is no relay on the user's machine, so it must be ignored and
+  //    the bundled default used instead — otherwise the profile, which survives
+  //    an uninstall, pins every later install to a dead local port.
+  await step('a saved loopback address is ignored inside an installed build', async () => {
+    const { execFileSync } = require('child_process');
+    const script = `
+      const os=require('os'),path=require('path'),fs=require('fs');
+      const { SleePhyClient } = require(${JSON.stringify(path.join(__dirname, '..', 'src', 'lib', 'client.js'))});
+      const dir=fs.mkdtempSync(path.join(os.tmpdir(),'sleephy-pkgloop-'));
+      fs.writeFileSync(path.join(dir,'sleephy-server.json'), JSON.stringify({server:'ws://127.0.0.1:8787'}));
+      const c=new SleePhyClient({userDataDir:dir,onEvent:()=>{}});
+      process.stdout.write(String(c.serverUrl));
+    `;
+    const out = execFileSync(process.execPath, ['-e', script], {
+      env: { ...process.env, SLEEPHY_PACKAGED: '1' }, encoding: 'utf8'
+    }).trim();
+    const bundled = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'server-default.json'), 'utf8')).server;
+    assert.strictEqual(out, bundled, `packaged app kept a loopback address: ${out}`);
+  });
+
+  // 6. Running from source must still honour loopback, or `npm run server` +
+  //    `npm start` could no longer talk to a relay on this machine.
+  await step('a loopback address still works when running from source', async () => {
+    const dir = tmpDir('devloop');
+    fs.writeFileSync(path.join(dir, 'sleephy-server.json'),
+      JSON.stringify({ server: 'ws://127.0.0.1:8787' }));
+    const client = new SleePhyClient({ userDataDir: dir, onEvent: () => {} });
+    assert.strictEqual(client.serverUrl, 'ws://127.0.0.1:8787',
+      'a development relay on loopback must stay reachable');
+  });
+
   const failed = results.filter((r) => !r).length;
   console.log(`\n${results.length - failed}/${results.length} server-migration checks passed`);
   process.exit(failed === 0 ? 0 : 1);

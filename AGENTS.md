@@ -1027,6 +1027,17 @@ arriving now can change a header that is already on screen.
   `removeAllListeners()` then `close()`, `ws` emitted `error` with no listener,
   and the main process exited. The window stayed up showing "Входим…" with a grey
   dot, which is exactly the reported symptom.
+- **A saved loopback address is a second leak of the same kind (v0.16.11).** The
+  sign-in screen's server field ships with `value="ws://127.0.0.1:8787"` and the
+  client falls back to the same address, both meant for `npm run server` on a
+  developer's machine. `connect()` writes whatever it dials to
+  `sleephy-server.json`, so a development session leaves a loopback address in
+  the profile; the profile lives in `%APPDATA%\SleePhy` and NSIS keeps it on
+  uninstall (`deleteAppDataOnUninstall` is not set), so **reinstalling does not
+  clear it** and the app reopens on `ws://127.0.0.1:8787` forever. `readServerUrl()`
+  now ignores a saved loopback **when packaged** (`PACKAGED`, set by `app.asar`
+  in `__dirname` or `SLEEPHY_PACKAGED=1`), so the bundled relay wins, while a
+  source run keeps using loopback. `test/server-migration.js` covers both sides.
 - **`server-default.json` is read from `path.join(__dirname,'..','..')`**, i.e.
   the app root, and `package.json` `build.files` includes it. Keep that path in
   sync if the file ever moves.
