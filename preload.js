@@ -71,6 +71,7 @@ contextBridge.exposeInMainWorld('sleephy', {
   payClaim: (payload) => invoke('sleephy:payClaim', payload),
   payCancel: (payload) => invoke('sleephy:payCancel', payload),
   giftSend: (payload) => invoke('sleephy:giftSend', payload),
+  giftPremium: (payload) => invoke('sleephy:giftPremium', payload),
   openExternal: (url) => invoke('sleephy:openExternal', url),
   readMediaManifest: (kind) => invoke('sleephy:readMediaManifest', kind),
   getSettings: () => invoke('sleephy:getSettings'),

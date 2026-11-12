@@ -1348,26 +1348,74 @@ body.theme-light ::-webkit-scrollbar-thumb { background: #C4CEDA; }
 /* ------------------------------- gifts ------------------------------- */
 .gift-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
 .gift-card {
+  position: relative; overflow: hidden;
   display: flex; flex-direction: column; align-items: center; gap: 4px;
   padding: 12px 8px; border: 0; border-radius: var(--radius-sm);
   background: var(--bg-3); color: var(--text); cursor: pointer;
   transition: background 0.14s var(--ease), transform 0.14s var(--ease);
 }
 .gift-card:hover { background: var(--bg-4); transform: translateY(-2px); }
+.gift-card-static { cursor: default; width: 140px; margin: 0 auto; }
+.gift-card-static:hover { transform: none; background: var(--bg-3); }
 .gift-card-locked { opacity: 0.5; }
 .gift-card-locked:hover { transform: none; }
 .gift-emoji { font-size: 30px; line-height: 1; }
 .gift-name { font-size: 12px; font-weight: 600; }
 .gift-cost { font-size: 11px; color: var(--text-dim); }
+/* A soft tint marks a gift's tier. It never carries meaning on its own — the
+   name and price are always there — so the palette can stay quiet. */
+.gift-tier { position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0.10; }
+.gift-tier-common { background: var(--swatch-cyan); }
+.gift-tier-rare { background: var(--swatch-sky); opacity: 0.16; }
+.gift-tier-epic { background: var(--swatch-violet); opacity: 0.20; }
+.gift-tier-legendary { background: var(--swatch-amber); opacity: 0.24; }
 
-.gift-bubble {
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
-  padding: 10px 16px; border-radius: var(--radius);
-  background: linear-gradient(160deg, rgba(82, 136, 193, 0.28), rgba(94, 82, 158, 0.28));
+.gift-modes { display: flex; gap: 6px; margin: 10px 0 12px; }
+.gift-mode-btn {
+  flex: 1; padding: 7px 10px; border: 0; border-radius: var(--radius-sm);
+  background: var(--bg-3); color: var(--text-dim); font-weight: 600; font-size: 12.5px;
+  cursor: pointer; transition: background 0.14s var(--ease), color 0.14s var(--ease);
 }
+.gift-mode-btn.active { background: var(--bg-4); color: var(--text); }
+
+.gift-compose { display: flex; flex-direction: column; gap: 12px; }
+.gifts-premium { display: flex; flex-direction: column; gap: 12px; }
+.premium-gift-card {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px; border-radius: var(--radius);
+  background: var(--bg-3);
+}
+.premium-gift-star { font-size: 30px; }
+.premium-gift-meta { display: flex; flex-direction: column; }
+.premium-gift-title { font-weight: 600; }
+.premium-gift-sub { font-size: 12px; color: var(--text-dim); }
+.gift-months { display: flex; gap: 6px; }
+.gift-month-btn {
+  flex: 1; padding: 8px 0; border: 0; border-radius: var(--radius-sm);
+  background: var(--bg-3); color: var(--text-dim); font-weight: 600; cursor: pointer;
+}
+.gift-month-btn.active { background: var(--accent); color: #fff; }
+.gift-send, .gift-premium-send { width: 100%; }
+
+/* A gift in the transcript is centered, like a date separator, so it reads as
+   an event between the two people rather than a bubble from one of them. */
+.msg-gift { align-self: center; }
+.msg-gift .gift-bubble {
+  position: relative; overflow: hidden;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 14px 22px; border-radius: var(--radius);
+  background: var(--bg-3); min-width: 160px;
+}
+.msg-gift .gift-bubble-common { box-shadow: inset 0 0 0 1px var(--line-soft); }
+.msg-gift .gift-bubble-rare { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--swatch-sky) 55%, transparent); }
+.msg-gift .gift-bubble-epic { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--swatch-violet) 60%, transparent); }
+.msg-gift .gift-bubble-legendary { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--swatch-amber) 65%, transparent); }
+.gift-sender { font-size: 11.5px; color: var(--text-dim); }
 .gift-bubble-emoji { font-size: 44px; line-height: 1; }
-.gift-bubble-name { font-size: 13px; font-weight: 600; }
-.gift-bubble-cost { font-size: 11px; color: var(--text-dim); }
+.gift-bubble-name { font-size: 14px; font-weight: 600; }
+.gift-bubble-sub { font-size: 12px; color: var(--text-dim); }
+.gift-note { margin: 4px 0 0; font-size: 12.5px; font-style: italic; color: var(--text); text-align: center; }
+.gift-bubble-time { font-size: 11px; color: var(--text-faint); }
 
 .game-msg { display: flex; justify-content: flex-start; }
 .drawer-sub { color: var(--text-faint); font-size: 11px; }

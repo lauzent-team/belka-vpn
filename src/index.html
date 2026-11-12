@@ -478,10 +478,12 @@
               </div>
             </div>
             <div class="profile-socials" id="profile-socials" hidden></div>
-            <div class="setting-sep"></div>
-            <span class="setting-title">Public key</span>
-            <code class="key-box" id="profile-pubkey">—</code>
-            <p class="setting-note">Verify this with your contact in person. Your private key never leaves your device.</p>
+            <div class="setting-sep" id="profile-crypto-sep"></div>
+            <div id="profile-crypto">
+              <span class="setting-title">Public key</span>
+              <code class="key-box" id="profile-pubkey">—</code>
+              <p class="setting-note">Verify this with your contact in person. Your private key never leaves your device.</p>
+            </div>
             <div class="safety-block" id="profile-safety" hidden>
               <div class="safety-head">
                 <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-shield"></use></svg>
@@ -499,6 +501,7 @@
               </div>
             </div>
             <div class="profile-actions" id="profile-actions">
+              <button class="btn-primary" id="btn-profile-gift">Подарить</button>
               <button class="btn-secondary" id="btn-profile-message">Send message</button>
               <button class="btn-secondary" id="btn-profile-edit">Edit profile</button>
             </div>
@@ -1361,7 +1364,23 @@
         </header>
         <div class="modal-body">
           <p class="setting-note" id="gifts-note">Выберите подарок для собеседника.</p>
+          <div class="gift-modes" id="gifts-modes">
+            <button class="gift-mode-btn active" data-mode="catalogue" type="button">Подарки</button>
+            <button class="gift-mode-btn" data-mode="premium" type="button">Premium</button>
+          </div>
           <div class="gift-grid" id="gifts-grid"></div>
+          <div class="gifts-premium" id="gifts-premium" hidden></div>
+          <div class="gift-compose" id="gifts-compose" hidden>
+            <button class="btn-ghost btn-compact" id="btn-gift-back" type="button">← К подаркам</button>
+            <div class="gift-card gift-card-static" id="gifts-compose-card"></div>
+            <label class="field">
+              <span class="field-label">Подпись к подарку</span>
+              <input id="gift-note" type="text" maxlength="120" placeholder="Например: Спасибо за всё!" />
+            </label>
+            <button class="btn-primary gift-send" id="btn-gift-send" type="button">
+              <span id="gift-send-label">Отправить</span> <span id="gift-send-cost"></span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

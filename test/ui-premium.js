@@ -153,6 +153,8 @@ async function main() {
 
   await step('sending a gift spends Rockets and reaches the peer', async () => {
     await u.win.click('#gifts-grid .gift-card[data-gift="rose"]');
+    await u.win.waitForSelector('#gifts-compose:not([hidden])', { timeout: 8000 });
+    await u.win.click('#btn-gift-send');
     await u.win.waitForSelector('#messages .gift-bubble', { timeout: 8000 });
     await v.win.waitForSelector('#messages .gift-bubble', { timeout: 10000 });
     // The rose costs 1 Rocket; the balance must fall by exactly one.

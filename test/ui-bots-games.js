@@ -131,10 +131,15 @@ async function main() {
     const n = await u.win.$$eval('#gifts-grid .gift-card', (e) => e.length);
     assert.ok(n >= 5, `expected a gift catalogue, got ${n}`);
     await u.win.click('#gifts-grid .gift-card[data-gift="rose"]');
+    // Picking a gift opens the compose step; the send button carries the note.
+    await u.win.waitForSelector('#gifts-compose:not([hidden])', { timeout: 8000 });
+    await u.win.fill('#gift-note', 'Спасибо!');
+    await u.win.click('#btn-gift-send');
     await u.win.waitForSelector('#messages .gift-bubble', { timeout: 8000 });
     await v.win.waitForSelector('#messages .gift-bubble', { timeout: 10000 });
     const text = await v.win.textContent('#messages .gift-bubble');
     assert.ok(text.includes('Роза'), `gift bubble was ${text}`);
+    assert.ok(text.includes('Спасибо!'), `the signature was ${text}`);
   });
 
   await step('no uncaught errors in either renderer', async () => {

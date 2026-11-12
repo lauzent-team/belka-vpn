@@ -862,6 +862,15 @@ const els = {
   giftsBackdrop: $('gifts-backdrop'),
   giftsGrid: $('gifts-grid'),
   giftsNote: $('gifts-note'),
+  giftsMode: $('gifts-modes'),
+  giftsPremium: $('gifts-premium'),
+  giftsCompose: $('gifts-compose'),
+  giftsComposeCard: $('gifts-compose-card'),
+  btnGiftComposeBack: $('btn-gift-back'),
+  btnGiftSend: $('btn-gift-send'),
+  giftSendLabel: $('gift-send-label'),
+  giftSendCost: $('gift-send-cost'),
+  giftNoteInput: $('gift-note'),
   btnGiftsClose: $('btn-gifts-close'),
   // Premium and Rockets.
   premiumBadge: $('premium-badge'),
@@ -1037,6 +1046,9 @@ const els = {
   profileActions: $('profile-actions'),
   btnProfileMessage: $('btn-profile-message'),
   btnProfileEdit: $('btn-profile-edit'),
+  btnProfileGift: $('btn-profile-gift'),
+  profileCrypto: $('profile-crypto'),
+  profileCryptoSep: $('profile-crypto-sep'),
   profileForm: $('profile-form'),
   avatarPreview: $('avatar-preview'),
   btnAvatarPick: $('btn-avatar-pick'),
@@ -1303,7 +1315,10 @@ const state = {
   // Rockets and Premium. The relay owns the real numbers; these mirror them
   // for the interface and are refreshed from the relay on sign-in and on any
   // change, never computed locally.
-  wallet: { balance: 0, premium: { active: false, until: null }, bundles: [], gifts: {}, pending: null, pendingKind: null, pendingNotice: null }
+  wallet: { balance: 0, premium: { active: false, until: null }, bundles: [], gifts: {}, premiumGift: { rocketsPerMonth: 0, maxMonths: 1 }, pending: null, pendingKind: null, pendingNotice: null },
+  giftMode: 'catalogue',
+  pendingGift: null,
+  premiumGiftMonths: 1
 };
 
 
@@ -2198,12 +2213,6 @@ function renderMessageBody(m) {
   if (m.deleted) return '<span class="deleted-text">This message was deleted</span>';
   const poll = pollPayloadOf(m);
   if (poll) return '<div class="poll-mount"></div>';
-  const gift = giftPayloadOf(m);
-  if (gift) {
-    return `<div class="gift-bubble"><span class="gift-bubble-emoji">${escapeHtml(gift.emoji || '🎁')}</span>
-      <span class="gift-bubble-name">${escapeHtml(gift.name || 'Подарок')}</span>
-      <span class="gift-bubble-cost">${Number(gift.cost) || 0} ⭐</span></div>`;
-  }
   if (m.kind && m.attachment) {
     const cap = m.text ? `<div class="caption">${messageTextHtml(m.text)}</div>` : '';
     return `<div class="att-wrap" data-kind="${escapeHtml(m.kind)}"></div>${cap}`;
@@ -2259,6 +2268,30 @@ function messageEl(m) {
     note.dataset.id = m.id;
     note.innerHTML = `<span class="series-note bot-note">${icon('i-robot')}<span>${escapeHtml(m.text)}</span></span>`;
     return note;
+  }
+  // A gift is not a bubble from either person: it lands centered, the way a
+  // birthday notice would, with the gift itself, the note and who sent it.
+  const gift = m && giftPayloadOf(m);
+  if (gift) {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg msg-system msg-gift';
+    wrap.dataset.id = m.id;
+    const mine = !!m.mine;
+    const who = mine ? 'Вы подарили' : `${escapeHtml(displayNameFor(m.from || ''))} дарит`;
+    const note = gift.note
+      ? `<p class="gift-note">${escapeHtml(gift.note)}</p>` : '';
+    const months = gift.gift === 'premium' && gift.months
+      ? `<span class="gift-bubble-sub">${gift.months} ${plural(gift.months, 'месяц', 'месяца', 'месяцев')} Premium</span>` : '';
+    wrap.innerHTML = `
+      <div class="gift-bubble gift-bubble-${gift.tier || 'common'}">
+        <span class="gift-sender">${who}</span>
+        <span class="gift-bubble-emoji">${escapeHtml(gift.emoji || '🎁')}</span>
+        <span class="gift-bubble-name">${escapeHtml(gift.name || 'Подарок')}</span>
+        ${months}
+        ${note}
+        <span class="gift-bubble-time">${escapeHtml(timeLabel(m.ts))}</span>
+      </div>`;
+    return wrap;
   }
   const el = document.createElement('div');
   const hit = state.searchHits.includes(m.id);
@@ -3207,16 +3240,14 @@ els.chatmenuBackdrop.addEventListener('click', (e) => {
   if (e.target === els.chatmenuBackdrop) els.chatmenuBackdrop.hidden = true;
 });
 
-els.chatmenuBody.addEventListener('click', async (e) => {
-  const btn = e.target.closest('.menu-item');
-  if (!btn) return;
-  const action = btn.dataset.action;
-  const key = state.activePeer;
+/**
+ * Run one chat action. The chat menu and the profile panel both route through
+ * here, so the two entry points cannot drift apart.
+ */
+async function runChatAction(action, key) {
   const chat = activeChat();
   if (!key || !chat) return;
   const peer = peerUsername(key);
-  els.chatmenuBackdrop.hidden = true;
-
   try {
     if (action === 'pin') {
       const res = await api.chatSettings({ peer, pinned: !chat.pinned });
@@ -3304,6 +3335,13 @@ els.chatmenuBody.addEventListener('click', async (e) => {
   } catch (err) {
     toast(err.message || 'Something went wrong');
   }
+}
+
+els.chatmenuBody.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.menu-item');
+  if (!btn) return;
+  els.chatmenuBackdrop.hidden = true;
+  await runChatAction(btn.dataset.action, state.activePeer);
 });
 
 els.btnArchivedToggle.addEventListener('click', () => {
@@ -3723,6 +3761,11 @@ async function showProfile(username, { self = false } = {}) {
   els.btnProfileMessage.hidden = isSelf;
   els.btnProfileEdit.hidden = !isSelf;
   els.profileActions.hidden = false;
+  // The raw public key is a developer's detail; a peer's profile shows only the
+  // safety number, which is the check a person can actually act on.
+  els.profileCrypto.hidden = !isSelf;
+  els.profileCryptoSep.hidden = !isSelf;
+  els.btnProfileGift.hidden = isSelf;
 
   // Fill the edit form for later use.
   els.profileName.value = p.displayName || '';
@@ -3939,6 +3982,14 @@ els.btnProfileMessage.addEventListener('click', () => {
   const target = state.profileTarget;
   closeProfile();
   if (target) startChatWith(target);
+});
+els.btnProfileGift.addEventListener('click', () => {
+  const target = state.profileTarget;
+  if (!target) return;
+  closeProfile();
+  // The gift shelf is drawn from the open conversation, so make sure it exists.
+  startChatWith(target);
+  openGifts();
 });
 
 els.btnProfileEdit.addEventListener('click', () => {
@@ -5707,6 +5758,7 @@ function applyWallet(res) {
   if (res.premium) state.wallet.premium = res.premium;
   if (Array.isArray(res.bundles) && res.bundles.length) state.wallet.bundles = res.bundles;
   if (res.gifts && Object.keys(res.gifts).length) state.wallet.gifts = res.gifts;
+  if (res.premiumGift) state.wallet.premiumGift = res.premiumGift;
   // A wallet push from the relay means a payment was settled; there is nothing
   // left to wait for, so drop the open-checkout notice.
   if (res.paymentStatus === 'paid') {
@@ -5714,7 +5766,10 @@ function applyWallet(res) {
     state.wallet.pendingNotice = null;
   }
   renderWallet();
-  if (!els.giftsBackdrop.hidden) renderGiftShelf();
+  if (!els.giftsBackdrop.hidden) {
+    if (state.giftMode === 'premium') renderPremiumGift();
+    else renderGiftShelf();
+  }
 }
 
 function premiumUntilLabel(until) {
@@ -7568,16 +7623,24 @@ els.botsBackdrop.addEventListener('click', (e) => {
 // message. The relay stores only the ciphertext, exactly like any other
 // message, so the relay never learns that a gift was sent or which one.
 const GIFTS = [
-  { id: 'rose', emoji: '🌹', name: 'Роза', cost: 1 },
-  { id: 'teddy', emoji: '🧸', name: 'Мишка', cost: 5 },
-  { id: 'cake', emoji: '🎂', name: 'Торт', cost: 5 },
-  { id: 'heart', emoji: '💝', name: 'Сердце', cost: 10 },
-  { id: 'ring', emoji: '💍', name: 'Кольцо', cost: 25 },
-  { id: 'trophy', emoji: '🏆', name: 'Кубок', cost: 25 },
-  { id: 'diamond', emoji: '💎', name: 'Алмаз', cost: 50 },
-  { id: 'rocket', emoji: '🚀', name: 'Ракета', cost: 50 },
-  { id: 'crown', emoji: '👑', name: 'Корона', cost: 100 },
-  { id: 'star', emoji: '🌟', name: 'Звезда', cost: 100 }
+  { id: 'rose', emoji: '🌹', name: 'Роза', cost: 1, tier: 'common' },
+  { id: 'candy', emoji: '🍬', name: 'Конфета', cost: 2, tier: 'common' },
+  { id: 'balloon', emoji: '🎈', name: 'Шарик', cost: 3, tier: 'common' },
+  { id: 'teddy', emoji: '🧸', name: 'Мишка', cost: 5, tier: 'common' },
+  { id: 'cake', emoji: '🎂', name: 'Торт', cost: 5, tier: 'common' },
+  { id: 'pizza', emoji: '🍕', name: 'Пицца', cost: 8, tier: 'common' },
+  { id: 'heart', emoji: '💝', name: 'Сердце', cost: 10, tier: 'rare' },
+  { id: 'bouquet', emoji: '💐', name: 'Букет', cost: 15, tier: 'rare' },
+  { id: 'guitar', emoji: '🎸', name: 'Гитара', cost: 20, tier: 'rare' },
+  { id: 'ring', emoji: '💍', name: 'Кольцо', cost: 25, tier: 'rare' },
+  { id: 'trophy', emoji: '🏆', name: 'Кубок', cost: 25, tier: 'rare' },
+  { id: 'champagne', emoji: '🍾', name: 'Шампанское', cost: 35, tier: 'epic' },
+  { id: 'plane', emoji: '✈️', name: 'Самолёт', cost: 40, tier: 'epic' },
+  { id: 'diamond', emoji: '💎', name: 'Алмаз', cost: 50, tier: 'epic' },
+  { id: 'rocket', emoji: '🚀', name: 'Ракета', cost: 50, tier: 'epic' },
+  { id: 'unicorn', emoji: '🦄', name: 'Единорог', cost: 75, tier: 'legendary' },
+  { id: 'crown', emoji: '👑', name: 'Корона', cost: 100, tier: 'legendary' },
+  { id: 'star', emoji: '🌟', name: 'Звезда', cost: 100, tier: 'legendary' }
 ];
 
 function giftById(id) {
@@ -7605,15 +7668,38 @@ function giftPayloadOf(m) {
   return null;
 }
 
-function openGifts() {
+function openGifts(mode) {
   const key = state.activePeer;
   if (!key || isGroupKey(key) || isChannelKey(key) || isBotKey(key) || key === SAVED) {
     toast('Подарок можно отправить собеседнику в личном чате');
     return;
   }
   els.giftsNote.textContent = `Подарок для ${displayNameFor(key)} · ${state.wallet.balance} 🚀`;
-  renderGiftShelf();
+  setGiftMode(mode === 'premium' ? 'premium' : 'catalogue');
   els.giftsBackdrop.hidden = false;
+}
+
+/** Switch the gifts modal between the catalogue and the Premium gift. */
+function setGiftMode(mode) {
+  state.giftMode = mode;
+  const premium = mode === 'premium';
+  els.giftsGrid.hidden = premium;
+  els.giftsPremium.hidden = !premium;
+  els.giftsMode.querySelectorAll('.gift-mode-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.mode === mode);
+  });
+  showGiftCompose(null);
+  if (premium) renderPremiumGift();
+  else renderGiftShelf();
+}
+
+/** The card a gift is drawn as, shared by the shelf and the compose step. */
+function giftCardHtml(gift) {
+  const tier = gift.tier || 'common';
+  return `<span class="gift-emoji">${escapeHtml(gift.emoji || '🎁')}</span>
+    <span class="gift-name">${escapeHtml(gift.name || 'Подарок')}</span>
+    <span class="gift-cost">${Number(gift.cost) || 0} 🚀</span>
+    <span class="gift-tier gift-tier-${tier}"></span>`;
 }
 
 function renderGiftShelf() {
@@ -7623,20 +7709,77 @@ function renderGiftShelf() {
   for (const gift of giftCatalogue()) {
     const card = document.createElement('button');
     card.type = 'button';
-    card.className = 'gift-card' + (balance < gift.cost ? ' gift-card-locked' : '');
+    card.className = 'gift-card gift-card-' + (gift.tier || 'common')
+      + (balance < gift.cost ? ' gift-card-locked' : '');
     card.dataset.gift = gift.id;
-    card.innerHTML = `<span class="gift-emoji">${gift.emoji}</span>
-      <span class="gift-name">${escapeHtml(gift.name)}</span>
-      <span class="gift-cost">${gift.cost} 🚀</span>`;
-    card.addEventListener('click', async () => {
-      els.giftsBackdrop.hidden = true;
-      await sendGift(gift);
-    });
+    card.innerHTML = giftCardHtml(gift);
+    card.addEventListener('click', () => showGiftCompose(gift));
     els.giftsGrid.appendChild(card);
   }
 }
 
-async function sendGift(gift) {
+/** The compose step: the chosen gift, a signature line, and the send button. */
+function showGiftCompose(gift) {
+  state.pendingGift = gift || null;
+  if (!els.giftsCompose) return;
+  if (!gift) { els.giftsCompose.hidden = true; return; }
+  els.giftsGrid.hidden = true;
+  els.giftsPremium.hidden = true;
+  els.giftsCompose.hidden = false;
+  els.giftsComposeCard.className = 'gift-card gift-card-' + (gift.tier || 'common') + ' gift-card-static';
+  els.giftsComposeCard.innerHTML = giftCardHtml(gift);
+  els.giftNoteInput.value = '';
+  els.giftSendLabel.textContent = 'Отправить';
+  els.giftSendCost.textContent = `${gift.cost} 🚀`;
+  els.btnGiftSend.disabled = state.wallet.balance < gift.cost;
+  els.btnGiftSend.classList.toggle('btn-disabled', state.wallet.balance < gift.cost);
+  els.giftNoteInput.focus();
+}
+
+/** The Premium gift pane: pick a number of months and send. */
+function renderPremiumGift() {
+  if (!els.giftsPremium) return;
+  const cfg = state.wallet.premiumGift || { rocketsPerMonth: 0, maxMonths: 1 };
+  const perMonth = Number(cfg.rocketsPerMonth) || 0;
+  const max = Math.max(1, Math.trunc(Number(cfg.maxMonths) || 1));
+  const months = Math.min(Math.max(state.premiumGiftMonths || 1, 1), max);
+  state.premiumGiftMonths = months;
+  const cost = perMonth * months;
+  const affordable = state.wallet.balance >= cost;
+  els.giftsPremium.innerHTML = `
+    <div class="premium-gift-card">
+      <span class="premium-gift-star">⭐</span>
+      <div class="premium-gift-meta">
+        <span class="premium-gift-title">SleePhy Premium</span>
+        <span class="premium-gift-sub">Подписка на ${months} ${plural(months, 'месяц', 'месяца', 'месяцев')}</span>
+      </div>
+    </div>
+    <div class="gift-months" id="gift-months"></div>
+    <label class="field">
+      <span class="field-label">Подпись к подарку</span>
+      <input id="gift-premium-note" type="text" maxlength="120" placeholder="Например: С днём рождения!" />
+    </label>
+    <button class="btn-primary gift-premium-send" id="btn-gift-premium-send"${affordable ? '' : ' disabled'}>
+      Подарить за ${cost} 🚀
+    </button>`;
+  const row = els.giftsPremium.querySelector('#gift-months');
+  for (const n of [1, 3, 6, 12].filter((n) => n <= max)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'gift-month-btn' + (n === months ? ' active' : '');
+    b.dataset.months = String(n);
+    b.textContent = `${n} ${plural(n, 'мес', 'мес', 'мес')}`;
+    b.addEventListener('click', () => { state.premiumGiftMonths = n; renderPremiumGift(); });
+    row.appendChild(b);
+  }
+  const send = els.giftsPremium.querySelector('#btn-gift-premium-send');
+  send.addEventListener('click', async () => {
+    const note = els.giftsPremium.querySelector('#gift-premium-note').value;
+    await sendPremiumGift(months, note);
+  });
+}
+
+async function sendGift(gift, note) {
   const key = state.activePeer;
   if (!key) return;
   const to = peerUsername(key);
@@ -7658,18 +7801,53 @@ async function sendGift(gift) {
   state.wallet.balance = res.balance;
   renderWallet();
 
-  const payload = JSON.stringify({ gift: gift.id, name: gift.name, emoji: gift.emoji, cost: gift.cost });
+  const payload = JSON.stringify({
+    gift: gift.id, name: gift.name, emoji: gift.emoji, cost: gift.cost,
+    tier: gift.tier || 'common', note: String(note || '').slice(0, 120)
+  });
+  await deliverGiftMessage(key, to, payload, `Подарок: ${gift.name}`);
+}
+
+/** Send a Premium gift: the relay debits and extends, then the note goes out. */
+async function sendPremiumGift(months, note) {
+  const key = state.activePeer;
+  if (!key) return;
+  const to = peerUsername(key);
+  let res;
+  try {
+    res = await api.giftPremium({ to, months });
+  } catch (err) {
+    const msg = err.message || '';
+    if (msg.includes('Недостаточно')) {
+      toast('Не хватает ракет на этот подарок');
+    } else {
+      toast(msg || 'Не удалось подарить Premium');
+    }
+    return;
+  }
+  state.wallet.balance = res.balance;
+  renderWallet();
+  const payload = JSON.stringify({
+    gift: 'premium', name: 'SleePhy Premium', emoji: '⭐', cost: 0,
+    tier: 'legendary', months, note: String(note || '').slice(0, 120)
+  });
+  await deliverGiftMessage(key, to, payload, `Подарок: Premium на ${months} мес.`);
+}
+
+/** Put a gift message into the transcript: optimistic, then confirmed. */
+async function deliverGiftMessage(key, to, payload, preview) {
   const chat = ensureChat(key);
   const optimistic = {
     id: 'tmp-gift-' + Date.now(), text: payload, ts: Date.now(), mine: true,
-    pending: true, reactions: []
+    from: state.username, pending: true, reactions: []
   };
   chat.messages.push(optimistic);
-  chat.last = `Подарок: ${gift.name}`;
+  chat.last = preview;
   chat.lastTs = optimistic.ts;
   state.forceScrollBottom = true;
   renderMessages();
   renderChatList();
+  els.giftsBackdrop.hidden = true;
   try {
     const sent = await api.send({ to, text: payload });
     optimistic.id = sent.id;
@@ -7689,6 +7867,25 @@ els.btnGiftsClose.addEventListener('click', () => { els.giftsBackdrop.hidden = t
 els.giftsBackdrop.addEventListener('click', (e) => {
   if (e.target === els.giftsBackdrop) els.giftsBackdrop.hidden = true;
 });
+if (els.giftsMode) {
+  els.giftsMode.addEventListener('click', (e) => {
+    const btn = e.target.closest('.gift-mode-btn');
+    if (btn) setGiftMode(btn.dataset.mode);
+  });
+}
+if (els.btnGiftComposeBack) {
+  els.btnGiftComposeBack.addEventListener('click', () => {
+    const mode = state.giftMode === 'premium' ? 'premium' : 'catalogue';
+    setGiftMode(mode);
+  });
+}
+if (els.btnGiftSend) {
+  els.btnGiftSend.addEventListener('click', async () => {
+    const gift = state.pendingGift;
+    if (!gift) return;
+    await sendGift(gift, els.giftNoteInput.value);
+  });
+}
 
 /* -------------------------------- polls -------------------------------- */
 // A poll is an ordinary encrypted message whose text is a small JSON document,

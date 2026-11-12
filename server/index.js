@@ -105,20 +105,38 @@ const ROCKET_BUNDLES = [50, 100, 250, 500, 1000, 2500];
 // the shelf is not a wall of locked cards. It is a one-time grant, not a
 // balance: it is written to the ledger so the accounting stays honest.
 const WELCOME_ROCKETS = Number(process.env.SLEEPHY_WELCOME_ROCKETS ?? 10);
+// Premium can itself be given as a gift: the sender spends Rockets and the
+// recipient's subscription is extended. The price is derived from the two
+// tables above so a price change cannot leave the gift out of step with the
+// subscription it buys.
+const PREMIUM_GIFT_ROCKETS = Number(process.env.SLEEPHY_PREMIUM_GIFT_ROCKETS)
+  || Math.ceil(PREMIUM_PRICE_KOPECKS / ROCKET_PRICE_KOPECKS);
+// How many months one Premium gift may cover. The sender picks a count from
+// this range; anything outside is clamped, so the debit is never unbounded.
+const PREMIUM_GIFT_MAX_MONTHS = Number(process.env.SLEEPHY_PREMIUM_GIFT_MAX_MONTHS) || 12;
 // The gift catalogue, priced in Rockets. It lives on the relay so the debit is
 // authoritative — the renderer's copy is only for drawing the shelf. A gift is
 // still sent as an ordinary encrypted message; the relay only moves Rockets.
+// `tier` drives the card's look only (common → legendary), never the price.
 const GIFT_CATALOGUE = {
-  rose: { emoji: '🌹', name: 'Роза', cost: 1 },
-  teddy: { emoji: '🧸', name: 'Мишка', cost: 5 },
-  cake: { emoji: '🎂', name: 'Торт', cost: 5 },
-  heart: { emoji: '💝', name: 'Сердце', cost: 10 },
-  ring: { emoji: '💍', name: 'Кольцо', cost: 25 },
-  trophy: { emoji: '🏆', name: 'Кубок', cost: 25 },
-  diamond: { emoji: '💎', name: 'Алмаз', cost: 50 },
-  rocket: { emoji: '🚀', name: 'Ракета', cost: 50 },
-  crown: { emoji: '👑', name: 'Корона', cost: 100 },
-  star: { emoji: '🌟', name: 'Звезда', cost: 100 }
+  rose: { emoji: '🌹', name: 'Роза', cost: 1, tier: 'common' },
+  candy: { emoji: '🍬', name: 'Конфета', cost: 2, tier: 'common' },
+  balloon: { emoji: '🎈', name: 'Шарик', cost: 3, tier: 'common' },
+  teddy: { emoji: '🧸', name: 'Мишка', cost: 5, tier: 'common' },
+  cake: { emoji: '🎂', name: 'Торт', cost: 5, tier: 'common' },
+  pizza: { emoji: '🍕', name: 'Пицца', cost: 8, tier: 'common' },
+  heart: { emoji: '💝', name: 'Сердце', cost: 10, tier: 'rare' },
+  bouquet: { emoji: '💐', name: 'Букет', cost: 15, tier: 'rare' },
+  guitar: { emoji: '🎸', name: 'Гитара', cost: 20, tier: 'rare' },
+  ring: { emoji: '💍', name: 'Кольцо', cost: 25, tier: 'rare' },
+  trophy: { emoji: '🏆', name: 'Кубок', cost: 25, tier: 'rare' },
+  champagne: { emoji: '🍾', name: 'Шампанское', cost: 35, tier: 'epic' },
+  plane: { emoji: '✈️', name: 'Самолёт', cost: 40, tier: 'epic' },
+  diamond: { emoji: '💎', name: 'Алмаз', cost: 50, tier: 'epic' },
+  rocket: { emoji: '🚀', name: 'Ракета', cost: 50, tier: 'epic' },
+  unicorn: { emoji: '🦄', name: 'Единорог', cost: 75, tier: 'legendary' },
+  crown: { emoji: '👑', name: 'Корона', cost: 100, tier: 'legendary' },
+  star: { emoji: '🌟', name: 'Звезда', cost: 100, tier: 'legendary' }
 };
 
 // Where top-ups are collected. `checkout` is the default: the relay serves its
@@ -2310,7 +2328,15 @@ function walletState(username) {
     balance: rocketBalance(username),
     premium: premiumState(user),
     bundles: MONEY.priceBundles(ROCKET_PRICE_KOPECKS, ROCKET_BUNDLES),
-    gifts: GIFT_CATALOGUE
+    gifts: GIFT_CATALOGUE,
+    // What a Premium gift costs and how far it may reach. The renderer draws
+    // the picker from this, so the shelf cannot advertise a price the relay
+    // would refuse.
+    premiumGift: {
+      rocketsPerMonth: PREMIUM_GIFT_ROCKETS,
+      maxMonths: PREMIUM_GIFT_MAX_MONTHS,
+      priceRub: MONEY.rubles(PREMIUM_PRICE_KOPECKS)
+    }
   };
 }
 
@@ -2519,6 +2545,37 @@ function handleGiftSend(ws, msg, rid) {
   }
   const next = moveRockets(ws.username, -gift.cost, 'gift', `${msg.gift} -> ${to}`);
   reply(ws, rid, { t: 'gift.ok', gift: msg.gift, to, balance: next, _id: rid });
+}
+
+/**
+ * Gift Premium: the sender spends Rockets, the recipient's subscription is
+ * extended. The relay prices it from its own table and clamps the month count,
+ * so a tampered request can neither buy a year for one Rocket nor hand out an
+ * unbounded subscription. The gift itself rides as an ordinary encrypted
+ * message, exactly like a catalogue gift; only the extension happens here.
+ */
+function handleGiftPremium(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const to = msg.to;
+  if (typeof to !== 'string' || !q.getUser.get(to)) return bad(ws, rid, 'No such user');
+  if (to === ws.username) return bad(ws, rid, 'Cannot gift yourself');
+
+  const months = Math.min(Math.max(Math.trunc(Number(msg.months) || 1), 1), PREMIUM_GIFT_MAX_MONTHS);
+  const cost = PREMIUM_GIFT_ROCKETS * months;
+  const balance = rocketBalance(ws.username);
+  if (balance < cost) {
+    return reply(ws, rid, { t: 'error', message: 'Недостаточно ракет', need: cost, balance });
+  }
+
+  const next = moveRockets(ws.username, -cost, 'gift-premium', `${months}mo -> ${to}`);
+  const target = q.getUser.get(to);
+  const now = Date.now();
+  const until = MONEY.extendPremium(premiumUntil(target), now, months, PREMIUM_MONTH_MS);
+  q.setPremiumUntil.run(until, now, to);
+  // The recipient's own devices learn about the subscription at once; the
+  // sender gets its new balance back in the reply.
+  deliverToUser(to, walletState(to));
+  reply(ws, rid, { t: 'gift.ok', gift: 'premium', months, to, balance: next, _id: rid });
 }
 
 /** The owner can hand out Rockets and Premium, e.g. to seed a promotion or
@@ -3797,6 +3854,7 @@ const handlers = {
   'pay.claim': handlePayClaim,
   'pay.cancel': handlePayCancel,
   'gift.send': handleGiftSend,
+  'gift.premium': handleGiftPremium,
   'admin.grant': handleAdminGrant,
   'chats.list': handleChatsList,
   'chat.settings': handleChatSettings,

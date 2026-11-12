@@ -161,7 +161,7 @@ async function main() {
 
   await step('an unknown gift is refused', async () => {
     await assert.rejects(
-      () => A.client.giftSend({ to: bob, gift: 'unicorn' }),
+      () => A.client.giftSend({ to: bob, gift: 'dragon' }),
       /Такого подарка нет/
     );
   });
@@ -224,6 +224,64 @@ async function main() {
     assert.strictEqual(profile.premium, true, 'alice is marked premium');
     const plain = await A.client.getProfile(bob);
     assert.strictEqual(plain.profile.premium, false, 'bob is not');
+  });
+
+  await step('the wallet advertises what a Premium gift costs', async () => {
+    const w = await A.client.wallet();
+    assert.ok(w.premiumGift, 'the gift price came down');
+    assert.strictEqual(w.premiumGift.rocketsPerMonth, 224, '199 ₽ / 0.89 ₽ per Rocket, rounded up');
+    assert.strictEqual(w.premiumGift.maxMonths, 12, 'a year is the cap');
+  });
+
+  await step('a Premium gift spends Rockets and extends the recipient', async () => {
+    const topUp = await A.client.payCreate({ kind: 'rockets', rockets: 2500 });
+    const before = topUp.balance;
+    const bBefore = (await B.client.wallet()).premium.until || 0;
+    const base = Math.max(bBefore, Date.now());
+    const bEvents = B.events.length;
+    const res = await A.client.giftPremium({ to: bob, months: 2 });
+    assert.strictEqual(res.balance, before - 224 * 2, 'two months were debited');
+    const bAfter = (await B.client.wallet()).premium;
+    assert.strictEqual(bAfter.active, true, 'bob is premium now');
+    assert.ok(Math.abs(bAfter.until - base - 2 * 30 * 24 * 60 * 60 * 1000) < 5000,
+      'two months were added');
+    const push = await waitFrom(B, bEvents, 'wallet', (e) => e.premium && e.premium.active);
+    assert.ok(push, 'the recipient was told at once');
+  });
+
+  await step('a Premium gift stacks on an existing subscription', async () => {
+    const before = (await B.client.wallet()).premium.until;
+    const res = await A.client.giftPremium({ to: bob, months: 1 });
+    assert.ok(res.balance > 0, 'a month was affordable');
+    const after = (await B.client.wallet()).premium.until;
+    assert.ok(Math.abs(after - before - 30 * 24 * 60 * 60 * 1000) < 5000, 'a month was added');
+  });
+
+  await step('the month count is clamped to the cap', async () => {
+    await A.client.payCreate({ kind: 'rockets', rockets: 2500 });
+    const before = (await B.client.wallet()).premium.until;
+    // 999 months must be treated as the 12-month cap, not 999.
+    await A.client.giftPremium({ to: bob, months: 999 });
+    const after = (await B.client.wallet()).premium.until;
+    assert.ok(Math.abs(after - before - 12 * 30 * 24 * 60 * 60 * 1000) < 5000, 'capped at a year');
+  });
+
+  await step('a Premium gift the sender cannot afford is refused', async () => {
+    // Spend the balance down to nothing, then a year must be refused.
+    const left = (await A.client.wallet()).balance;
+    await A.client.payCreate({ kind: 'rockets', rockets: 100 });
+    await assert.rejects(
+      () => A.client.giftPremium({ to: bob, months: 12 }),
+      /Недостаточно/,
+      `twelve months costs more than ${left + 100} Rockets`
+    );
+  });
+
+  await step('a Premium gift to yourself is refused', async () => {
+    await assert.rejects(
+      () => A.client.giftPremium({ to: alice, months: 1 }),
+      /Cannot gift yourself/
+    );
   });
 
   const passed = results.filter(Boolean).length;

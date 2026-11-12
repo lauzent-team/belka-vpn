@@ -901,7 +901,8 @@ class SleePhyClient {
       balance: Number(res.balance) || 0,
       premium: res.premium || { active: false, until: null },
       bundles: Array.isArray(res.bundles) ? res.bundles : [],
-      gifts: res.gifts || {}
+      gifts: res.gifts || {},
+      premiumGift: res.premiumGift || { rocketsPerMonth: 0, maxMonths: 1, priceRub: 0 }
     };
   }
 
@@ -923,6 +924,11 @@ class SleePhyClient {
   /** Buy a gift. The relay debits the Rockets; the message itself is separate. */
   async giftSend({ to, gift }) {
     return this.request({ t: 'gift.send', to, gift });
+  }
+
+  /** Gift Premium: the relay debits the Rockets and extends the recipient. */
+  async giftPremium({ to, months }) {
+    return this.request({ t: 'gift.premium', to, months });
   }
 
   async receiveMessage(msg) {
