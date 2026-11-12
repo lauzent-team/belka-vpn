@@ -1524,14 +1524,24 @@ class SleePhyClient {
     return res.items || [];
   }
 
-  async adminAction({ action, username, text, image, channelId, nickname, index, amount, months }) {
+  async adminDevices() {
+    const res = await this.request({ t: 'admin.devices' });
+    return {
+      items: res.items || [],
+      perDevice: res.perDevice,
+      perDevicePremium: res.perDevicePremium
+    };
+  }
+
+  async adminAction({ action, username, text, image, channelId, nickname, index, amount, months, deviceId }) {
     const res = await this.request({
-      t: 'admin.action', action, username, text, image, channelId, nickname, index, amount, months
+      t: 'admin.action', action, username, text, image, channelId, nickname, index, amount, months, deviceId
     });
     return {
       action: res.action,
       username: res.username,
       channelId: res.channelId,
+      deviceId: res.deviceId,
       wallet: res.wallet,
       premium: res.premium
     };

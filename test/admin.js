@@ -405,6 +405,47 @@ async function main() {
     owner.client.disconnect();
   });
 
+  await step('the device list groups accounts by installation', async () => {
+    const owner = makeClient('devowner');
+    owner.client.ensureDeviceId = () => 'test-device-xyz';
+    await owner.client.connect(URL);
+    await owner.client.register({ username: 'dev_owner_a', password: 'dev-pass-1' });
+    const second = makeClient('devsecond');
+    second.client.ensureDeviceId = () => 'test-device-xyz';
+    await second.client.connect(URL);
+    await second.client.register({ username: 'dev_owner_b', password: 'dev-pass-1' });
+
+    const { items } = await admin.client.adminDevices();
+    const row = items.find((d) => d.id === 'test-device-xyz');
+    assert.ok(row, 'the shared device is listed');
+    assert.strictEqual(row.accounts, 2, 'both accounts are counted');
+    assert.ok(row.usernames.includes('dev_owner_a') && row.usernames.includes('dev_owner_b'),
+      'both usernames are shown');
+
+    owner.client.disconnect();
+    second.client.disconnect();
+  });
+
+  await step('freeing a device frees its account slots', async () => {
+    const { items } = await admin.client.adminDevices();
+    const row = items.find((d) => d.id === 'test-device-xyz');
+    assert.ok(row, 'the device is still there');
+    await admin.client.adminAction({ action: 'deviceClear', deviceId: 'test-device-xyz' });
+    const after = await admin.client.adminDevices();
+    assert.ok(!after.items.find((d) => d.id === 'test-device-xyz'),
+      'the cleared device is gone from the list');
+  });
+
+  await step('a non-admin is refused the device list and action', async () => {
+    let threw = false;
+    try { await user.client.adminDevices(); } catch { threw = true; }
+    assert.ok(threw, 'a non-admin must be refused the device list');
+    threw = false;
+    try { await user.client.adminAction({ action: 'deviceClear', deviceId: 'whatever' }); }
+    catch { threw = true; }
+    assert.ok(threw, 'a non-admin must be refused deviceClear');
+  });
+
   await step('a non-admin is refused the new actions too', async () => {
     for (const action of ['forceLogout', 'resetProfile', 'clearMessages', 'channelUnverifyAll']) {
       let threw = false;

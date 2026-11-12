@@ -1020,6 +1020,7 @@
 
               <div class="admin-tabs" id="admin-tabs">
                 <button class="admin-tab active" data-tab="users">Пользователи</button>
+                <button class="admin-tab" data-tab="devices">Устройства</button>
                 <button class="admin-tab" data-tab="channels">Каналы</button>
                 <button class="admin-tab" data-tab="log">Журнал</button>
                 <button class="admin-tab" data-tab="broadcast">Рассылка</button>
@@ -1037,6 +1038,7 @@
                   <button class="admin-filter" data-filter="online">Онлайн</button>
                   <button class="admin-filter" data-filter="verified">Проверенные</button>
                   <button class="admin-filter" data-filter="admins">Админы</button>
+                  <button class="admin-filter" data-filter="premium">Premium</button>
                   <button class="admin-filter" data-filter="banned">Заблокированные</button>
                 </div>
 
@@ -1050,6 +1052,17 @@
 
                 <div class="admin-users" id="admin-users"></div>
                 <p class="panel-empty" id="admin-users-empty" hidden>Пользователей пока нет.</p>
+              </div>
+
+              <div class="admin-tabpane" data-tab="devices">
+                <div class="admin-users-head">
+                  <span class="admin-card-title">Устройства <span class="admin-count" id="admin-devices-count"></span></span>
+                  <input id="admin-devices-search" class="admin-search" type="text"
+                         spellcheck="false" placeholder="Поиск по аккаунту…" />
+                </div>
+                <p class="admin-card-sub" id="admin-devices-note">Сколько аккаунтов завёл каждый компьютер. Снять устройство — значит освободить его слоты, сами аккаунты остаются.</p>
+                <div class="admin-users" id="admin-devices"></div>
+                <p class="panel-empty" id="admin-devices-empty" hidden>Устройств пока нет.</p>
               </div>
 
               <div class="admin-tabpane" data-tab="channels">

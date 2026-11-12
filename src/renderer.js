@@ -1214,6 +1214,11 @@ const els = {
   adminChannelsEmpty: $('admin-channels-empty'),
   adminChannelsCount: $('admin-channels-count'),
   adminChannelsSearch: $('admin-channels-search'),
+  adminDevices: $('admin-devices'),
+  adminDevicesEmpty: $('admin-devices-empty'),
+  adminDevicesCount: $('admin-devices-count'),
+  adminDevicesSearch: $('admin-devices-search'),
+  adminDevicesNote: $('admin-devices-note'),
   btnAdminUnverifyAll: $('btn-admin-unverify-all'),
   btnAdminRefresh: $('btn-admin-refresh'),
   btnAdminExport: $('btn-admin-export'),
@@ -1284,6 +1289,9 @@ const state = {
   isAdmin: false, // whether the signed-in account may open the admin panel
   adminUsers: [], // last admin user list, filtered client-side by the search box
   adminChannels: [], // last admin channel list, filtered client-side
+  adminDevices: [], // last admin device list, filtered client-side
+  adminPerDevice: 3, // account cap per device, from the relay
+  adminPerDevicePremium: 5,
   adminLog: [], // last admin action log, newest first
   adminAnnouncements: [], // last announcements, newest first
   adminFilter: 'all', // active filter chip in the users tab
@@ -4317,16 +4325,19 @@ async function loadAdminPanel() {
   els.adminUsers.innerHTML = '<p class="panel-empty">Загрузка…</p>';
   els.adminUsersEmpty.hidden = true;
   try {
-    const [{ stats, announcements, log }, users, channels] = await Promise.all([
+    const [{ stats, announcements, log }, users, channels, devices] = await Promise.all([
       api.adminOverview(),
       api.adminUsers(),
-      api.adminChannels().catch(() => [])
+      api.adminChannels().catch(() => []),
+      api.adminDevices().catch(() => ({ items: [], perDevice: 3, perDevicePremium: 5 }))
     ]);
     els.adminStats.innerHTML = adminStatCard(stats.users, 'Пользователей') +
       adminStatCard(stats.online, 'Онлайн') +
       adminStatCard(stats.messages, 'Сообщений') +
       adminStatCard(stats.groups, 'Групп') +
       adminStatCard(stats.channels, 'Каналов') +
+      adminStatCard(stats.devices, 'Устройств') +
+      adminStatCard(stats.premium, 'Premium') +
       adminStatCard(stats.verified, 'Проверено') +
       adminStatCard(stats.admins, 'Админов') +
       adminStatCard(stats.banned, 'Заблокировано') +
@@ -4334,10 +4345,14 @@ async function loadAdminPanel() {
       adminStatCard(stats.sessions, 'Сессий');
     state.adminUsers = users;
     state.adminChannels = channels;
+    state.adminDevices = devices.items || [];
+    if (devices.perDevice) state.adminPerDevice = devices.perDevice;
+    if (devices.perDevicePremium) state.adminPerDevicePremium = devices.perDevicePremium;
     state.adminLog = log || [];
     state.adminAnnouncements = announcements;
     state.adminAnnounceCount = announcements.length;
     renderAdminUsers();
+    renderAdminDevices();
     renderAdminChannels();
     renderAdminLog();
     renderAdminAnnouncements();
@@ -4368,6 +4383,7 @@ const ADMIN_ACTION_LABELS = {
   channelVerify: 'Галочка канала',
   channelDelete: 'Удаление канала',
   channelUnverifyAll: 'Снятие галочек каналов',
+  deviceClear: 'Устройство освобождено',
   verify: 'Галочка',
   badge: 'Значок',
   grantAdmin: 'Права админа',
@@ -4442,6 +4458,7 @@ function adminUserMatchesFilter(u, filter) {
   if (filter === 'online') return !!u.online;
   if (filter === 'verified') return !!u.verified;
   if (filter === 'admins') return !!u.admin;
+  if (filter === 'premium') return !!u.premium;
   if (filter === 'banned') return !!u.banned;
   return true;
 }
@@ -4501,6 +4518,73 @@ function renderAdminUsers() {
     els.adminUsers.appendChild(row);
   }
 }
+
+/** Draw the device list: how many accounts each installation created. */
+function renderAdminDevices() {
+  const query = (els.adminDevicesSearch.value || '').trim().toLowerCase();
+  const devices = (state.adminDevices || []).filter((d) => {
+    if (!query) return true;
+    if (d.id.toLowerCase().includes(query)) return true;
+    return (d.usernames || []).some((u) => u.toLowerCase().includes(query));
+  });
+  els.adminDevices.innerHTML = '';
+  els.adminDevicesCount.textContent = String((state.adminDevices || []).length);
+  if (els.adminDevicesNote) {
+    els.adminDevicesNote.textContent =
+      `Сколько аккаунтов завёл каждый компьютер (лимит: ${state.adminPerDevice}, с Premium: ${state.adminPerDevicePremium}). ` +
+      'Снять устройство — значит освободить его слоты, сами аккаунты остаются.';
+  }
+  els.adminDevicesEmpty.hidden = devices.length > 0;
+  if (!devices.length) {
+    els.adminDevicesEmpty.textContent = query ? 'Ничего не найдено.' : 'Устройств пока нет.';
+    return;
+  }
+  for (const d of devices) {
+    const row = document.createElement('div');
+    row.className = 'admin-user';
+    const cap = d.premium ? state.adminPerDevicePremium : state.adminPerDevice;
+    const atCap = d.accounts >= cap;
+    const flags = [
+      d.premium ? '<span class="admin-tag verified">Premium</span>' : '',
+      atCap ? '<span class="admin-tag banned">лимит</span>' : ''
+    ].filter(Boolean).join(' ');
+    const names = (d.usernames || []).map((u) => '@' + escapeHtml(u)).join(', ');
+    row.innerHTML = `
+      <div class="avatar small" data-color="violet">${icon('i-shield')}</div>
+      <div class="admin-user-body">
+        <div class="admin-user-name">${escapeHtml(d.id.slice(0, 16))}… ${flags}</div>
+        <div class="admin-user-sub">${d.accounts} из ${cap} аккаунтов</div>
+        <div class="admin-user-meta">${names}</div>
+        <div class="admin-user-meta">первый: ${fmtDateTime(d.firstAt)} · последний: ${fmtDateTime(d.lastAt)}</div>
+      </div>
+      <div class="admin-user-actions">
+        <button class="admin-act danger" data-act="deviceClear" data-device="${escapeHtml(d.id)}" title="Освободить слоты устройства">${icon('i-trash')}</button>
+      </div>
+    `;
+    els.adminDevices.appendChild(row);
+  }
+}
+
+els.adminDevices.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.admin-act');
+  if (!btn) return;
+  const deviceId = btn.dataset.device;
+  const d = (state.adminDevices || []).find((x) => x.id === deviceId);
+  const ok = await confirmDialog({
+    title: 'Освободить устройство?',
+    text: `Устройство с ${d ? d.accounts : '?'} аккаунтами отсоединится: его владелец снова сможет регистрироваться. Сами аккаунты и их сообщения остаются.`,
+    confirmLabel: 'Освободить'
+  });
+  if (!ok) return;
+  try {
+    await api.adminAction({ action: 'deviceClear', deviceId });
+    toast('Устройство освобождено');
+    loadAdminPanel();
+  } catch (err) {
+    toast(err.message || 'Не удалось освободить устройство');
+  }
+});
+els.adminDevicesSearch.addEventListener('input', renderAdminDevices);
 
 /** Draw the channel list, honouring the search box. */
 function renderAdminChannels() {
@@ -4843,6 +4927,10 @@ function exportAdminReport() {
   lines.push('', '== Каналы ==');
   for (const c of state.adminChannels || []) {
     lines.push(`${c.name}\t@${c.owner}\t${c.verified ? 'проверен' : ''}\tподписчиков:${c.subs}`);
+  }
+  lines.push('', '== Устройства ==');
+  for (const d of state.adminDevices || []) {
+    lines.push(`${d.id}\tаккаунтов:${d.accounts}\t${d.premium ? 'Premium' : ''}\t${(d.usernames || []).map((u) => '@' + u).join(', ')}`);
   }
   lines.push('', '== Журнал ==');
   for (const r of state.adminLog || []) {

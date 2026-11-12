@@ -829,6 +829,7 @@ const q = {
     `SELECT u.username, u.display_name, u.bio, u.avatar_color, u.avatar_image, u.created_at,
             u.is_admin, u.verified, u.banned, u.badge_image, u.nicknames, u.last_seen,
             u.has_password, u.phone, u.profile_hidden, u.last_seen_hidden, u.premium_until,
+            u.device_id,
             (SELECT COALESCE(w.balance, 0) FROM wallets w WHERE w.username = u.username) AS rockets,
             (SELECT COUNT(*) FROM messages m WHERE m.sender = u.username) AS sent,
             (SELECT COUNT(*) FROM messages m WHERE m.recipient = u.username) AS received,
@@ -836,7 +837,22 @@ const q = {
             (SELECT COUNT(*) FROM channel_subs cs WHERE cs.username = u.username) AS subs
        FROM users u ORDER BY u.created_at ASC`
   ),
+  // Every device that has created at least one account, with how many and
+  // whether any of them holds Premium. This is the panel's view of the
+  // per-device account cap.
+  adminListDevices: db.prepare(
+    `SELECT device_id, COUNT(*) AS accounts, MAX(premium_until) AS premium_until,
+            MIN(created_at) AS first_at, MAX(created_at) AS last_at,
+            GROUP_CONCAT(username, char(31)) AS usernames
+       FROM users WHERE device_id IS NOT NULL
+      GROUP BY device_id ORDER BY accounts DESC, last_at DESC`
+  ),
+  // Detach every account from a device, so its slots free up and it can
+  // register again. Accounts themselves are untouched.
+  clearDevice: db.prepare('UPDATE users SET device_id = NULL WHERE device_id = ?'),
   countUsers: db.prepare('SELECT COUNT(*) AS c FROM users'),
+  countDevices: db.prepare('SELECT COUNT(DISTINCT device_id) AS c FROM users WHERE device_id IS NOT NULL'),
+  countPremium: db.prepare('SELECT COUNT(*) AS c FROM users WHERE premium_until > ?'),
   countMessages: db.prepare('SELECT COUNT(*) AS c FROM messages'),
   countGroups: db.prepare('SELECT COUNT(*) AS c FROM groups'),
   countAnnouncements: db.prepare('SELECT COUNT(*) AS c FROM announcements'),
@@ -3933,7 +3949,13 @@ function handleAdminOverview(ws, msg, rid) {
       announcements: q.countAnnouncements.get().c,
       sessions: q.countSessions.get().c,
       flames: q.countDialogStreaks.get().c,
-      stories: q.countStories.get().c
+      stories: q.countStories.get().c,
+      devices: q.countDevices.get().c,
+      premium: q.countPremium.get(Date.now()).c,
+      // What the per-device account cap is right now, so the panel can label the
+      // device tab without hard-coding the numbers.
+      accountsPerDevice: ACCOUNTS_PER_DEVICE,
+      accountsPerDevicePremium: ACCOUNTS_PER_DEVICE_PREMIUM
     },
     isAdmin: true,
     announcements: q.recentAnnouncements.all().map((a) => ({
@@ -3978,6 +4000,26 @@ function handleAdminUsers(ws, msg, rid) {
       premiumUntil: r.premium_until || null,
       premium: premiumUntil(r) > 0
     }))
+  });
+}
+
+/** One row per device, so an admin can see and free a device's account slots. */
+function handleAdminDevices(ws, msg, rid) {
+  if (!requireAdmin(ws, rid)) return;
+  const now = Date.now();
+  const items = q.adminListDevices.all().map((d) => ({
+    id: d.device_id,
+    accounts: d.accounts,
+    usernames: String(d.usernames || '').split('\u001f').filter(Boolean),
+    premium: !!(d.premium_until && Number(d.premium_until) > now),
+    firstAt: d.first_at,
+    lastAt: d.last_at
+  }));
+  reply(ws, rid, {
+    t: 'admin.devices',
+    items,
+    perDevice: ACCOUNTS_PER_DEVICE,
+    perDevicePremium: ACCOUNTS_PER_DEVICE_PREMIUM
   });
 }
 
@@ -4049,6 +4091,17 @@ function handleAdminAction(ws, msg, rid) {
     }
     logAdmin(actor, 'channelDelete', null, ch.name);
     return reply(ws, rid, { t: 'admin.ok', action: 'channelDelete', channelId });
+  }
+
+  // Freeing a device targets a device id, not a username: it detaches every
+  // account from the device so the person can register again. Accounts and
+  // their messages are untouched.
+  if (msg.action === 'deviceClear') {
+    const deviceId = typeof msg.deviceId === 'string' ? msg.deviceId : '';
+    if (!deviceId) return bad(ws, rid, 'No such device');
+    const n = q.clearDevice.run(deviceId).changes || 0;
+    logAdmin(actor, 'deviceClear', null, `${deviceId.slice(0, 12)}… -> ${n}`);
+    return reply(ws, rid, { t: 'admin.ok', action: 'deviceClear', deviceId, freed: n });
   }
 
   const target = typeof msg.username === 'string' ? msg.username : '';
@@ -4311,6 +4364,7 @@ const handlers = {
   'story.delete': handleStoryDelete,
   'admin.overview': handleAdminOverview,
   'admin.users': handleAdminUsers,
+  'admin.devices': handleAdminDevices,
   'admin.channels': handleAdminChannels,
   'admin.action': handleAdminAction
 };

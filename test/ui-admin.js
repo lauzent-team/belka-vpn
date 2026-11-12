@@ -72,15 +72,15 @@ async function main() {
   await signIn(admin.win, URL, { username: ADMIN });
   await signIn(other.win, URL, { username: otherName });
 
-  await step('the admin panel opens with the four tabs', async () => {
+  await step('the admin panel opens with the five tabs', async () => {
     await openAdmin(admin.win);
     const tabs = await admin.win.$$eval('.admin-tab', (els) => els.map((e) => e.dataset.tab));
-    assert.deepStrictEqual(tabs, ['users', 'channels', 'log', 'broadcast']);
+    assert.deepStrictEqual(tabs, ['users', 'devices', 'channels', 'log', 'broadcast']);
   });
 
   await step('the stats strip shows the expanded counters', async () => {
     const labels = await admin.win.$$eval('#admin-stats .admin-stat-label', (els) => els.map((e) => e.textContent));
-    for (const want of ['Пользователей', 'Онлайн', 'Сообщений', 'Каналов', 'Проверено', 'Заблокировано', 'Огоньков']) {
+    for (const want of ['Пользователей', 'Онлайн', 'Сообщений', 'Каналов', 'Устройств', 'Premium', 'Проверено', 'Заблокировано', 'Огоньков']) {
       assert.ok(labels.includes(want), `stats should include ${want}, got ${labels.join(', ')}`);
     }
   });
@@ -104,6 +104,25 @@ async function main() {
   await step('a tab switch shows the log pane', async () => {
     await admin.win.click('.admin-tab[data-tab="log"]');
     await admin.win.waitForSelector('.admin-tabpane[data-tab="log"].active', { timeout: 8000 });
+  });
+
+  await step('the devices tab lists devices and frees one', async () => {
+    await admin.win.click('.admin-tab[data-tab="devices"]');
+    await admin.win.waitForSelector('.admin-tabpane[data-tab="devices"].active', { timeout: 8000 });
+    await admin.win.waitForSelector('#admin-devices .admin-user', { timeout: 8000 });
+    const rows = await admin.win.$$eval('#admin-devices .admin-user', (els) => els.length);
+    assert.ok(rows >= 1, 'at least one device should be listed');
+    const names = await admin.win.$$eval('#admin-devices .admin-user .admin-user-meta', (els) => els.map((e) => e.textContent));
+    assert.ok(names.some((n) => n.includes('@')), 'a device row should name its accounts');
+    // Freeing a device detaches its accounts; the panel then drops the row.
+    const before = await admin.win.$$eval('#admin-devices .admin-user', (els) => els.length);
+    await admin.win.click('#admin-devices .admin-user [data-act="deviceClear"]');
+    await admin.win.waitForSelector('#confirm-backdrop:not([hidden])', { timeout: 8000 });
+    await admin.win.click('#btn-confirm-yes');
+    await admin.win.waitForFunction(
+      (n) => document.querySelectorAll('#admin-devices .admin-user').length < n,
+      before, { timeout: 8000 }
+    );
   });
 
   await step('the broadcast tab sends an announcement and logs it', async () => {

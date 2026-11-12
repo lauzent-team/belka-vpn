@@ -379,6 +379,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('sleephy:deleteStory', async (_e, payload) => client.deleteStory(payload));
   ipcMain.handle('sleephy:adminOverview', async () => client.adminOverview());
   ipcMain.handle('sleephy:adminUsers', async () => client.adminUsers());
+  ipcMain.handle('sleephy:adminDevices', async () => client.adminDevices());
   ipcMain.handle('sleephy:adminChannels', async () => client.adminChannels());
   ipcMain.handle('sleephy:adminAction', async (_e, payload) => client.adminAction(payload));
 

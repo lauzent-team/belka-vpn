@@ -112,6 +112,7 @@ contextBridge.exposeInMainWorld('sleephy', {
   deleteStory: (payload) => invoke('sleephy:deleteStory', payload),
   adminOverview: () => invoke('sleephy:adminOverview'),
   adminUsers: () => invoke('sleephy:adminUsers'),
+  adminDevices: () => invoke('sleephy:adminDevices'),
   adminChannels: () => invoke('sleephy:adminChannels'),
   adminAction: (payload) => invoke('sleephy:adminAction', payload),
   listAccounts: () => invoke('sleephy:listAccounts'),
