@@ -63,7 +63,7 @@ fs.mkdirSync(OUT, { recursive: true });
   await win.click('#btn-peer-profile');
   await win.waitForSelector('#profile-backdrop:not([hidden])');
   await new Promise((r) => setTimeout(r, 400));
-  await win.screenshot({ path: path.join(OUT, '6-chat-menu.png') });
+  await win.screenshot({ path: path.join(OUT, '6-profile-actions.png') });
 
   await app.close();
   server.kill('SIGTERM');
