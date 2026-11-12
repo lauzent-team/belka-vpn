@@ -841,6 +841,9 @@ const els = {
   fmTime: $('fm-time'),
   fmDur: $('fm-dur'),
   fmSeek: $('fm-seek'),
+  fmVolume: $('fm-volume'),
+  fmVolumeNum: $('fm-volume-num'),
+  btnFmMute: $('btn-fm-mute'),
   fmList: $('fm-list'),
   fmListCount: $('fm-list-count'),
   fmEmpty: $('fm-empty'),
@@ -871,6 +874,8 @@ const els = {
   rocketsBalance: $('rockets-balance'),
   rocketBundles: $('rocket-bundles'),
   rocketsNote: $('rockets-note'),
+  rocketsPending: $('rockets-pending'),
+  premiumPending: $('premium-pending'),
   storiesBar: $('stories-bar'),
   storyAdd: $('btn-story-add'),
   storyAddAvatar: $('story-add-avatar'),
@@ -1294,11 +1299,11 @@ const state = {
   // Бурмалда FM: the station, its playlist and the element that plays it.
   // mode 'one' = the station repeats the current track forever, which is what
   // Бурмалда FM is for: it plays as background and never falls silent.
-  fm: { playlist: [], index: -1, mode: 'one', shuffle: false, playing: false, audio: null, dir: null },
+  fm: { playlist: [], index: -1, mode: 'one', shuffle: false, playing: false, audio: null, dir: null, volume: 0.5, muted: false },
   // Rockets and Premium. The relay owns the real numbers; these mirror them
   // for the interface and are refreshed from the relay on sign-in and on any
   // change, never computed locally.
-  wallet: { balance: 0, premium: { active: false, until: null }, bundles: [], gifts: {}, pending: null }
+  wallet: { balance: 0, premium: { active: false, until: null }, bundles: [], gifts: {}, pending: null, pendingKind: null, pendingNotice: null }
 };
 
 
@@ -5688,6 +5693,12 @@ function applyWallet(res) {
   if (res.premium) state.wallet.premium = res.premium;
   if (Array.isArray(res.bundles) && res.bundles.length) state.wallet.bundles = res.bundles;
   if (res.gifts && Object.keys(res.gifts).length) state.wallet.gifts = res.gifts;
+  // A wallet push from the relay means a payment was settled; there is nothing
+  // left to wait for, so drop the open-checkout notice.
+  if (res.paymentStatus === 'paid') {
+    state.wallet.pending = null;
+    state.wallet.pendingNotice = null;
+  }
   renderWallet();
   if (!els.giftsBackdrop.hidden) renderGiftShelf();
 }
@@ -5737,15 +5748,40 @@ function renderWallet() {
       els.rocketBundles.append(btn);
     }
   }
+  renderPendingNotices();
 }
 
 /**
- * Pay for something. The relay hands back a checkout URL when a real provider
- * is configured; that opens in the system browser, and the relay is told to
- * confirm once the user is back. With the mock provider the relay settles it
- * immediately and there is nothing to open.
+ * The "waiting for payment" line under the item being bought. It is the only
+ * place the state of an open checkout is shown inside the app, so it stays put
+ * across window reloads and turns into a cancellation notice when the user
+ * backs out of the browser without paying.
+ */
+function renderPendingNotices() {
+  const notice = state.wallet.pendingNotice;
+  const targets = [['rockets', els.rocketsPending], ['premium', els.premiumPending]];
+  for (const [kind, el] of targets) {
+    if (!el) continue;
+    const show = !!notice && notice.kind === kind;
+    el.hidden = !show;
+    el.classList.toggle('is-cancelled', !!(show && notice.cancelled));
+    if (show) {
+      el.textContent = notice.cancelled
+        ? 'Оплата отменена. Средства не списаны, покупка не зачислена.'
+        : 'Ожидаем подтверждение оплаты. Завершите оплату в открывшемся окне браузера.';
+    }
+  }
+}
+
+/**
+ * Pay for something. The relay always answers with a checkout URL, so the app
+ * opens a real payment screen in the system browser: the user confirms or
+ * cancels there, and the wallet is credited only on a confirmation. A provider
+ * that settles immediately (the mock used by tests) comes back already paid and
+ * needs no screen.
  */
 async function startPayment(request) {
+  if (!state.username) return null;
   let res;
   try {
     res = await api.payCreate(request);
@@ -5753,17 +5789,31 @@ async function startPayment(request) {
     toast(err.message || 'Не удалось создать платёж');
     return null;
   }
+  if (res.status === 'paid') {
+    applyWallet(res);
+    toast(res.kind === 'premium' ? 'Premium активирован' : 'Ракеты зачислены');
+    return res.id;
+  }
   if (res.checkoutUrl) {
-    await api.openExternal(res.checkoutUrl);
+    // A browser that will not open must not break the flow: the payment is
+    // created either way and the link is shown so it can be opened by hand.
+    let opened = false;
+    try { opened = await api.openExternal(res.checkoutUrl); } catch { opened = false; }
     // Remember what is being paid for. The confirmation runs when the window
     // next has focus — the moment the user is back from the browser.
     state.wallet.pending = res.id;
-    toast('Оплатите в открывшемся окне и вернитесь сюда', 6000);
+    state.wallet.pendingKind = res.kind;
+    state.wallet.pendingNotice = { kind: res.kind, cancelled: false };
+    renderWallet();
+    if (opened) {
+      toast('Открыл страницу оплаты. Подтвердите оплату или нажмите «Отмена» в браузере.', 7000);
+    } else {
+      toast('Не удалось открыть страницу оплаты: ' + res.checkoutUrl, 10000);
+    }
     return res.id;
   }
-  applyWallet(res);
-  toast(res.kind === 'premium' ? 'Premium активирован' : 'Ракеты зачислены');
-  return res.id;
+  toast('Платёжный сервис не вернул ссылку на оплату');
+  return null;
 }
 
 async function buyPremium() {
@@ -5802,7 +5852,13 @@ async function settlePendingPayment() {
   if (!res) return; // relay away: keep the id and try on the next focus
   state.wallet.pending = null;
   if (res.paymentStatus === 'paid') {
+    state.wallet.pendingNotice = null;
+    renderWallet();
     toast('Оплата подтверждена');
+  } else if (res.paymentStatus === 'cancelled') {
+    state.wallet.pendingNotice = { kind: state.wallet.pendingKind, cancelled: true };
+    renderWallet();
+    toast('Оплата отменена. Средства не списаны, покупка не зачислена.', 6000);
   } else {
     toast('Оплата пока не подтверждена. Если вы только что заплатили, подождите минуту и вернитесь в это окно.', 8000);
   }
@@ -5883,6 +5939,9 @@ function ensureFmAudio() {
   if (fm.audio) return fm.audio;
   const audio = new Audio();
   audio.preload = 'metadata';
+  // The listener's chosen level applies to every track, including the one that
+  // starts on open, so it is set on the element itself and not per track.
+  audio.volume = fm.muted ? 0 : fm.volume;
   audio.addEventListener('timeupdate', () => {
     if (!fm.audio || !fm.audio.duration) return;
     els.fmSeek.value = String((fm.audio.currentTime / fm.audio.duration) * 100);
@@ -5893,6 +5952,18 @@ function ensureFmAudio() {
   audio.addEventListener('error', () => { fm.playing = false; renderFm(); });
   fm.audio = audio;
   return audio;
+}
+
+/** Push the chosen level onto the player and the slider. */
+function applyFmVolume() {
+  const fm = state.fm;
+  if (fm.audio) fm.audio.volume = fm.muted ? 0 : fm.volume;
+  if (els.fmVolume) els.fmVolume.value = String(Math.round(fm.volume * 100));
+  if (els.fmVolumeNum) els.fmVolumeNum.textContent = String(Math.round(fm.volume * 100));
+  if (els.btnFmMute) {
+    els.btnFmMute.classList.toggle('off', fm.muted || fm.volume === 0);
+    els.btnFmMute.title = fm.muted ? 'Включить звук' : 'Выключить звук';
+  }
 }
 
 function playFmIndex(i) {
@@ -5929,6 +6000,7 @@ function fmAdvance(dir) {
 async function openFm() {
   els.fmOverlay.hidden = false;
   await loadFmStation();
+  applyFmVolume();
   const fm = state.fm;
   // Opening the tab is a user gesture, so the broadcast can start on its own;
   // repeat-one then keeps it going for as long as the app is open.
@@ -5954,6 +6026,23 @@ els.fmSeek.addEventListener('input', () => {
   const fm = state.fm;
   if (!fm.audio || !fm.audio.duration) return;
   fm.audio.currentTime = (Number(els.fmSeek.value) / 100) * fm.audio.duration;
+});
+
+els.fmVolume.addEventListener('input', () => {
+  const fm = state.fm;
+  fm.volume = Math.min(1, Math.max(0, Number(els.fmVolume.value) / 100));
+  // Dragging the slider up from zero is an unmute: leaving it silent would
+  // look broken when the user just asked for sound.
+  if (fm.volume > 0) fm.muted = false;
+  applyFmVolume();
+  persistSettings({ fmVolume: fm.volume, fmMuted: fm.muted });
+});
+
+els.btnFmMute.addEventListener('click', () => {
+  const fm = state.fm;
+  fm.muted = !fm.muted;
+  applyFmVolume();
+  persistSettings({ fmVolume: fm.volume, fmMuted: fm.muted });
 });
 
 /* -------------------------------- events -------------------------------- */
@@ -7119,6 +7208,13 @@ async function loadAppearance() {
   applyTheme(state.settings.theme === 'light' ? 'light' : 'dark');
   applyLanguage(state.settings.language);
   applyWallpaper(WALLPAPERS.includes(state.settings.wallpaper) ? state.settings.wallpaper : 'none');
+  // Restore the FM level alongside the other cosmetic settings, so the station
+  // comes back at the volume the listener last chose.
+  if (typeof state.settings.fmVolume === 'number' && state.settings.fmVolume >= 0 && state.settings.fmVolume <= 1) {
+    state.fm.volume = state.settings.fmVolume;
+  }
+  if (typeof state.settings.fmMuted === 'boolean') state.fm.muted = state.settings.fmMuted;
+  applyFmVolume();
   buildWallpaperPicker();
   document.documentElement.classList.toggle('reduce-motion', state.settings.reduceMotion === true);
 }

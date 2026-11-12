@@ -121,15 +121,18 @@ const GIFT_CATALOGUE = {
   star: { emoji: '🌟', name: 'Звезда', cost: 100 }
 };
 
-// Where top-ups are collected. `mock` settles instantly and is the default so
-// the app works out of the box; `yoomoney` asks the adapter to build a real
-// payment link. The adapter (server/pay-adapter.js) is the only part that
-// talks to the provider and holds the secret.
-const PAY_PROVIDER = (process.env.SLEEPHY_PAY_PROVIDER || 'mock').toLowerCase();
+// Where top-ups are collected. `checkout` is the default: the relay serves its
+// own payment page and waits for the user to confirm or cancel there, so a
+// purchase really goes through a payment screen instead of settling on a click.
+// `mock` still settles at once, which is what the automated tests use;
+// `yoomoney` asks the adapter to build a real provider link.
+const PAY_PROVIDER = (process.env.SLEEPHY_PAY_PROVIDER || 'checkout').toLowerCase();
 const PAY_ADAPTER_URL = process.env.SLEEPHY_PAY_ADAPTER || '';
 const PAY_ADAPTER_TOKEN = process.env.SLEEPHY_PAY_ADAPTER_TOKEN || '';
 // Public base of the relay, used to build the return URL a provider redirects
-// to. Only needed when a real provider is configured.
+// to, and the checkout link handed to the app. When it is empty the link is
+// built from the address the client is already talking to, which is correct for
+// a single-host deployment.
 const PAY_PUBLIC_URL = process.env.SLEEPHY_PAY_PUBLIC_URL || '';
 
 /* ----------------------------- storage ----------------------------- */
@@ -820,6 +823,9 @@ const q = {
   getPayment: db.prepare('SELECT * FROM payments WHERE id = ?'),
   setPaymentPaid: db.prepare(
     `UPDATE payments SET status = 'paid', provider_ref = ?, paid_at = ? WHERE id = ? AND status = 'pending'`
+  ),
+  setPaymentCancelled: db.prepare(
+    `UPDATE payments SET status = 'cancelled', paid_at = ? WHERE id = ? AND status = 'pending'`
   ),
   paymentsForUser: db.prepare('SELECT * FROM payments WHERE username = ? ORDER BY id DESC LIMIT 50'),
   setPremiumUntil: db.prepare('UPDATE users SET premium_until = ?, updated_at = ? WHERE username = ?'),
@@ -2266,7 +2272,21 @@ async function providerCreatePayment(payment) {
   return typeof data.checkoutUrl === 'string' ? data.checkoutUrl : null;
 }
 
-/** Create a pending top-up (Rockets or Premium) and a way to pay for it. */
+/** The public base of this relay, from configuration or the request itself. */
+function publicBase(req) {
+  if (PAY_PUBLIC_URL) return PAY_PUBLIC_URL.replace(/\/+$/, '');
+  const host = (req && req.headers && req.headers.host) || `127.0.0.1:${PORT}`;
+  const forwarded = req && req.headers && req.headers['x-forwarded-proto'];
+  const local = /^(127\.0\.0\.1|localhost)(:\d+)?$/i.test(host);
+  const proto = forwarded ? String(forwarded).split(',')[0].trim() : (local ? 'http' : 'https');
+  return `${proto}://${host}`;
+}
+
+/**
+ * Create a pending top-up (Rockets or Premium) and a way to pay for it.
+ * Every provider now returns a checkout URL: the mock one points back at the
+ * relay's own payment page, and a real one points at the provider.
+ */
 async function handlePayCreate(ws, msg, rid) {
   if (!ws.username) return bad(ws, rid, 'Not authenticated');
   const kind = msg.kind === 'premium' ? 'premium' : 'rockets';
@@ -2287,23 +2307,42 @@ async function handlePayCreate(ws, msg, rid) {
   const id = crypto.randomBytes(12).toString('base64url');
   q.insertPayment.run(id, ws.username, kind, amount, rockets, months, PAY_PROVIDER, Date.now());
 
-  // With no real provider the payment is settled here and now, which is what
-  // makes the app usable before any credentials exist. With one, the client is
-  // handed a checkout URL and the credit waits for the provider's confirmation.
-  if (PAY_PROVIDER === 'mock' || !PAY_ADAPTER_URL) {
+  // The mock provider is a convenience for tests and local runs: it settles at
+  // once so no browser is involved. Every other provider hands the app a real
+  // checkout URL and credits nothing until that payment is confirmed.
+  if (PAY_PROVIDER === 'mock') {
     settlePayment(id, 'mock:' + id);
     reply(ws, rid, { t: 'payment', id, kind, amountRub: MONEY.rubles(amount), status: 'paid', ...walletState(ws.username), _id: rid });
     return;
   }
 
-  let checkoutUrl = null;
-  try {
-    checkoutUrl = await providerCreatePayment(q.getPayment.get(id));
-  } catch {
-    reply(ws, rid, { t: 'error', message: 'Платёжный сервис недоступен, попробуйте позже' });
-    return;
+  // The relay's own checkout page is the payment screen when no external
+  // provider is configured; a real provider replaces the link through the
+  // adapter. Nothing is credited here either way.
+  const payment = q.getPayment.get(id);
+  let checkoutUrl = `${publicBase(ws._req)}/pay/checkout?id=${id}`;
+  if (PAY_PROVIDER !== 'checkout' && PAY_ADAPTER_URL) {
+    try {
+      checkoutUrl = (await providerCreatePayment(payment)) || checkoutUrl;
+    } catch {
+      reply(ws, rid, { t: 'error', message: 'Платёжный сервис недоступен, попробуйте позже' });
+      return;
+    }
   }
   reply(ws, rid, { t: 'payment', id, kind, amountRub: MONEY.rubles(amount), status: 'pending', checkoutUrl, _id: rid });
+}
+
+/**
+ * Mark a pending payment as cancelled. The user backed out of the checkout, so
+ * nothing is credited; a later claim finds it cancelled and does nothing. Only
+ * the owner of the payment may cancel it.
+ */
+function handlePayCancel(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const payment = q.getPayment.get(String(msg.id || ''));
+  if (!payment || payment.username !== ws.username) return bad(ws, rid, 'Платёж не найден');
+  if (payment.status === 'pending') q.setPaymentCancelled.run(Date.now(), payment.id);
+  reply(ws, rid, { ...walletState(ws.username), paymentStatus: payment.status === 'pending' ? 'cancelled' : payment.status, _id: rid });
 }
 
 /**
@@ -2350,9 +2389,16 @@ async function handlePayClaim(ws, msg, rid) {
     return reply(ws, rid, { ...walletState(ws.username), paymentStatus: payment.status, _id: rid });
   }
 
-  if (PAY_PROVIDER === 'mock' || !PAY_ADAPTER_URL) {
+  if (PAY_PROVIDER === 'mock') {
     settlePayment(payment.id, 'mock:' + payment.id);
     return reply(ws, rid, { ...walletState(ws.username), paymentStatus: 'paid', _id: rid });
+  }
+
+  // The relay's own checkout page settles the payment itself, and with no
+  // adapter there is nothing to ask, so a claim just reports the current
+  // status: paid if the user confirmed, cancelled if they backed out.
+  if (PAY_PROVIDER === 'checkout' || !PAY_ADAPTER_URL) {
+    return reply(ws, rid, { ...walletState(ws.username), paymentStatus: payment.status, _id: rid });
   }
 
   const url = payAdapterEndpoint('/verify');
@@ -3665,6 +3711,7 @@ const handlers = {
   'wallet.get': handleWalletGet,
   'pay.create': handlePayCreate,
   'pay.claim': handlePayClaim,
+  'pay.cancel': handlePayCancel,
   'gift.send': handleGiftSend,
   'admin.grant': handleAdminGrant,
   'chats.list': handleChatsList,
@@ -3713,10 +3760,117 @@ const handlers = {
 };
 
 /* -------------------------------- server -------------------------------- */
-// The page a provider sends the browser to after a payment. It says only that
-// the browser made it back; the app is what asks the adapter to confirm, and
-// the confirmation is what credits anything. Nothing here can move money, so it
-// is safe to render for anyone who knows a payment id.
+/** Answer an HTTP request with a small JSON body. */
+function json(res, code, obj) {
+  const body = JSON.stringify(obj);
+  res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) });
+  res.end(body);
+}
+
+/**
+ * The relay's own payment page. This is the screen the app opens for a top-up
+ * when no external provider is configured: it shows what is being bought and
+ * its price, and offers "Оплатить" and "Отмена". Confirming posts to
+ * /pay/confirm, which credits the wallet; cancelling (or simply leaving) posts
+ * to /pay/cancel, which credits nothing. It is a plain page so it opens in the
+ * system browser without any provider account.
+ */
+function payCheckoutPage(payment) {
+  const id = String(payment.id || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+  const amount = MONEY.rubles(payment.amount_rub);
+  const title = payment.kind === 'premium'
+    ? 'SleePhy Premium, 1 месяц'
+    : `SleePhy Rockets, ${Math.trunc(payment.rockets || 0)} ракет`;
+  const safeTitle = title.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SleePhy — оплата</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+       background:#0f1115;color:#e8eaf0;font:16px/1.5 -apple-system,Segoe UI,Roboto,sans-serif}
+  main{width:min(26rem,92vw);padding:2.25rem;border-radius:18px;background:#171a21;
+       box-shadow:0 24px 70px rgba(0,0,0,0.5);text-align:center}
+  .brand{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:1.5rem}
+  .logo{width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,#7b2ff7,#f107a3)}
+  .brand b{font-size:1.05rem;letter-spacing:.3px}
+  h1{margin:0 0 .35rem;font-size:1.2rem}
+  .item{color:#9aa3b2;margin:0 0 1.25rem}
+  .price{font-size:2rem;font-weight:700;margin:0 0 1.5rem}
+  .price small{font-size:1rem;font-weight:400;color:#9aa3b2}
+  button{width:100%;padding:.85rem 1rem;border:0;border-radius:12px;font-size:1rem;
+         font-weight:600;cursor:pointer;transition:filter .15s}
+  button:hover{filter:brightness(1.08)}
+  .pay{background:linear-gradient(135deg,#7b2ff7,#f107a3);color:#fff;margin-bottom:.6rem}
+  .cancel{background:#232833;color:#c9cfda}
+  .done{display:none;padding:1rem 0}
+  .done .mark{font-size:2.5rem}
+  .done p{color:#9aa3b2;margin:.5rem 0 0}
+  .note{margin-top:1.25rem;font-size:12.5px;color:#6f7787}
+</style></head><body><main>
+  <div class="brand"><span class="logo"></span><b>SleePhy</b></div>
+  <div id="form">
+    <h1>Оплата покупки</h1>
+    <p class="item">${safeTitle}</p>
+    <p class="price">${amount}&nbsp;₽</p>
+    <button class="pay" id="btn-pay">Оплатить</button>
+    <button class="cancel" id="btn-cancel">Отмена</button>
+    <p class="note">Это демонстрационная страница оплаты SleePhy. Средства не списываются.</p>
+  </div>
+  <div class="done" id="done">
+    <div class="mark" id="done-mark">✅</div>
+    <h1 id="done-title">Готово</h1>
+    <p id="done-text"></p>
+  </div>
+</main>
+<script>
+  var ID = ${JSON.stringify(id)};
+  var settled = false;
+  function show(mark, title, text) {
+    document.getElementById('form').style.display = 'none';
+    var d = document.getElementById('done');
+    d.style.display = 'block';
+    document.getElementById('done-mark').textContent = mark;
+    document.getElementById('done-title').textContent = title;
+    document.getElementById('done-text').textContent = text;
+  }
+  function post(path) {
+    return fetch(path + '?id=' + encodeURIComponent(ID), { method: 'POST' })
+      .then(function (r) { return r.json(); }).catch(function () { return {}; });
+  }
+  document.getElementById('btn-pay').addEventListener('click', function () {
+    settled = true; // a decision was made: pagehide must not cancel it now
+    post('/pay/confirm').then(function (r) {
+      if (r && r.ok) show('✅', 'Оплата принята', 'Вернитесь в приложение SleePhy — покупка будет зачислена.');
+      else show('⚠️', 'Не удалось оплатить', 'Платёж не найден или уже закрыт.');
+    });
+  });
+  document.getElementById('btn-cancel').addEventListener('click', function () {
+    settled = true;
+    post('/pay/cancel').then(function () {
+      show('🚫', 'Оплата отменена', 'Средства не списаны, покупка не зачислена. Можно закрыть эту страницу.');
+    });
+  });
+  // Leaving the page — the back button, closing the tab, following any link —
+  // is a cancellation unless the payment was already confirmed. sendBeacon
+  // survives the unload, so the relay learns about it and the app can say the
+  // purchase was cancelled instead of leaving it hanging.
+  window.addEventListener('pagehide', function () {
+    if (settled) return;
+    settled = true;
+    if (navigator.sendBeacon) navigator.sendBeacon('/pay/cancel?id=' + encodeURIComponent(ID));
+  });
+</script>
+</body></html>`;
+}
+
+/**
+ * The page a provider sends the browser to after a payment. It says only that
+ * the browser made it back; the app is what asks the adapter to confirm, and
+ * the confirmation is what credits anything. Nothing here can move money, so it
+ * is safe to render for anyone who knows a payment id.
+ */
 function payReturnPage(id) {
   const safe = String(id || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8">
@@ -3746,6 +3900,39 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(body) });
     res.end(body);
     return;
+  }
+  // The relay's own checkout page, opened by the app for a top-up.
+  if (req.url === '/pay/checkout' || req.url.startsWith('/pay/checkout?')) {
+    const id = new URL(req.url, 'http://localhost').searchParams.get('id') || '';
+    const payment = q.getPayment.get(id);
+    if (!payment) { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); res.end('Платёж не найден'); return; }
+    const body = payCheckoutPage(payment);
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(body) });
+    res.end(body);
+    return;
+  }
+  // Confirming the checkout credits the wallet. This is the "provider
+  // confirmation" for the built-in checkout; a real provider reaches the wallet
+  // through the adapter instead. Only a payment the relay itself is waiting on
+  // is settled, so the endpoint cannot be used to invent a purchase.
+  if (req.url === '/pay/confirm' || req.url.startsWith('/pay/confirm?')) {
+    const id = new URL(req.url, 'http://localhost').searchParams.get('id') || '';
+    const payment = q.getPayment.get(id);
+    if (!payment) return json(res, 404, { ok: false, error: 'not found' });
+    if (payment.status === 'pending' && PAY_PROVIDER === 'checkout') {
+      settlePayment(payment.id, 'checkout:' + payment.id);
+    }
+    const now = q.getPayment.get(id);
+    return json(res, 200, { ok: now && now.status === 'paid', status: now ? now.status : 'unknown' });
+  }
+  // Backing out of the checkout. Nothing is credited, and a later claim finds
+  // the payment cancelled and does nothing.
+  if (req.url === '/pay/cancel' || req.url.startsWith('/pay/cancel?')) {
+    const id = new URL(req.url, 'http://localhost').searchParams.get('id') || '';
+    const payment = q.getPayment.get(id);
+    if (!payment) return json(res, 404, { ok: false, error: 'not found' });
+    if (payment.status === 'pending') q.setPaymentCancelled.run(Date.now(), payment.id);
+    return json(res, 200, { ok: true, status: 'cancelled' });
   }
   // One stable link for "the current installer". It redirects to whatever the
   // latest release holds, so it cannot go stale the way a pinned version can.
@@ -3782,9 +3969,12 @@ const server = http.createServer((req, res) => {
 // plus JSON overhead; 16 MB leaves headroom without allowing unbounded frames.
 const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 * 1024 });
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   ws.isAlive = true;
   ws.username = null;
+  // Kept so a checkout link can be built from the address the client reached
+  // the relay on, without any extra configuration.
+  ws._req = req;
   ws.on('pong', () => { ws.isAlive = true; });
 
   ws.on('message', (raw) => {

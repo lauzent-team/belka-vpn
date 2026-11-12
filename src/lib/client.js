@@ -915,6 +915,11 @@ class SleePhyClient {
     return this.request({ t: 'pay.claim', id });
   }
 
+  /** Give up on a checkout: the relay marks it cancelled and credits nothing. */
+  async payCancel({ id }) {
+    return this.request({ t: 'pay.cancel', id });
+  }
+
   /** Buy a gift. The relay debits the Rockets; the message itself is separate. */
   async giftSend({ to, gift }) {
     return this.request({ t: 'gift.send', to, gift });

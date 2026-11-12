@@ -108,6 +108,24 @@ async function main() {
     assert.strictEqual((await win.textContent('.fm-track-title')).trim(), 'Мой эфир');
   });
 
+  await step('the volume slider is there and drives the readout', async () => {
+    assert.ok(await win.isVisible('#fm-volume'), 'the volume slider is shown');
+    assert.strictEqual((await win.textContent('#fm-volume-num')).trim(), '50', 'defaults to 50%');
+    await win.fill('#fm-volume', '80');
+    await win.dispatchEvent('#fm-volume', 'input');
+    assert.strictEqual((await win.textContent('#fm-volume-num')).trim(), '80', 'the readout follows the slider');
+  });
+
+  await step('the mute button silences the station and comes back', async () => {
+    await win.click('#btn-fm-mute');
+    assert.strictEqual((await win.textContent('#fm-volume-num')).trim(), '80', 'the level is remembered');
+    assert.ok(await win.evaluate(() => document.getElementById('btn-fm-mute').classList.contains('off')),
+      'the button shows the muted state');
+    await win.click('#btn-fm-mute');
+    assert.ok(!(await win.evaluate(() => document.getElementById('btn-fm-mute').classList.contains('off'))),
+      'and clears it again');
+  });
+
   await step('no renderer errors were logged', async () => {
     const noisy = errors.filter((e) => !/Autofill|DevTools/.test(e));
     assert.deepStrictEqual(noisy, [], 'no uncaught errors');

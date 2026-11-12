@@ -291,6 +291,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('sleephy:wallet', async () => client.wallet());
   ipcMain.handle('sleephy:payCreate', async (_e, payload) => client.payCreate(payload));
   ipcMain.handle('sleephy:payClaim', async (_e, payload) => client.payClaim(payload));
+  ipcMain.handle('sleephy:payCancel', async (_e, payload) => client.payCancel(payload));
   ipcMain.handle('sleephy:giftSend', async (_e, payload) => client.giftSend(payload));
 
   // Open a checkout link in the system browser. Only http(s) is allowed, so a
