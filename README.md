@@ -1,116 +1,149 @@
 # SleePhy
 
-An end-to-end encrypted messenger. The server is a **blind relay** — it stores
-and forwards ciphertext it cannot read.
+**Десктопный мессенджер с настоящим сквозным шифрованием.** Сервер — «слепой»
+релей: он хранит и пересылает только шифротекст, который не может прочитать.
 
-> Status: working MVP. Text messaging between two accounts works, with real
-> end-to-end encryption and a real relay server. See [What is not done yet](#what-is-not-done-yet).
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-2b2b2b?style=flat-square)](#download)
+[![Encryption](https://img.shields.io/badge/encryption-libsodium%20%C2%B7%20X25519-5a4bff?style=flat-square)](https://doc.libsodium.org/)
+[![License](https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.16.7-blue?style=flat-square)](https://github.com/lauzent-team/belka-vpn/releases/latest)
+
+<a id="download"></a>
+
+## ⬇️ Скачать
+
+| Сборка | Файл | Как поставить |
+| --- | --- | --- |
+| **Windows 10/11 (x64)** | [**SleePhy-Setup-0.16.7.exe**](https://github.com/lauzent-team/belka-vpn/releases/latest/download/SleePhy-Setup-0.16.7.exe) | Запустить установщик, дальше — как обычную программу |
+| Linux | `npm run dist:linux` → AppImage | См. [сборку из исходников](#run-it-locally) |
+
+Установщик уже настроен на рабочий релей: **ничего вводить не нужно**, только
+придумайте логин и пароль. Пароль шифрует ваши ключи на этом устройстве и
+никуда не отправляется.
 
 ![Chat](shots/3-chat.png)
 
-## What works
+## Почему SleePhy
 
-**Accounts and profiles**
-- Create an account and sign in with a username and password
-  (the password protects the keys on your device)
-- Phone sign-in is built but parked: the button is disabled and shows "Скоро",
-  because delivering codes needs a funded SMS provider
-- **Claim a username** — it is unique, and nobody else can take it
-- **Change your username** at any time; the old one is freed immediately
-- Profile: display name, bio, avatar colour and **social links** (Telegram,
-  Instagram, X, GitHub, a website…), shown as chips on your profile
-- **Privacy switches, enforced by the relay**: hide your last-seen time, and
-  hide your profile (name, bio, picture and social links) from everyone but
-  yourself
+- 🔐 **Ключи рождаются на вашем устройстве.** Приватный ключ шифруется паролем
+  и лежит в `sleephy-identity.json` (`0600`). Он не покидает машину.
+- 🙈 **Сервер слепой.** Переписка уходит в релей шифротекстом; в базе сервера
+  нет ни одного открытого слова. Тесты это проверяют напрямую.
+- 🧮 **Без самодельной криптографии.** Всё на [libsodium](https://doc.libsodium.org/):
+  X25519, `crypto_box` (XSalsa20-Poly1305), scrypt.
+- 🖥️ **Настольное приложение.** Electron, нативные установщики для Windows и
+  Linux — не вкладка в браузере.
+- 🧭 **Честный список того, чего пока нет** — ниже, в разделе
+  [«Что ещё не сделано»](#what-is-not-done-yet). Проект не выдаёт себя за более
+  защищённый, чем он есть.
 
-**Messaging**
-- Search for users by username and start a chat
-- Text messages with **end-to-end encryption** — the relay never sees plaintext
-- **Saved Messages** — notes you send to yourself, readable only by you
-- **Replies** with a quoted original
-- **Edit and delete** your own messages
-- **Reactions** (👍 ❤️ 😂 🔥 😮 😢)
-- **Typing indicators** and **online presence**
-- **Огонёк** — a flame inside each chat: the days in a row the two of you have
-  written to each other, shown in the chat header and on the row in the chat
-  list. On the day a series starts, a centered note appears in the transcript.
-  The relay counts the days; it stores no message content
-- **Self-destructing messages** — set a timer on a one-to-one chat and every new
-  message vanishes for both people when it runs out. Each bubble shows a live
-  countdown. The relay holds only ciphertext, so the clock it enforces wipes the
-  stored ciphertext (and any attachment) in place, then tells both devices to
-  drop the bubble; an offline device learns on its next history read
-- **Scheduled messages ("send later")** — write a message, choose a time in the
-  attachment menu, and the relay holds the ciphertext until then and releases it
-  automatically. The **Отложенные** drawer entry lists everything waiting, with
-  the time and a preview; you can send one early or cancel it. The relay stores
-  only ciphertext and the send time, so it never learns what is being sent
-- **Key verification (safety numbers)** — open a contact's profile to see a
-  twelve-group code derived on your device from both public keys. It is the same
-  on both ends and never sent to the relay, so reading it aloud over another
-  channel proves the server did not substitute a key. Mark a contact verified to
-  keep a tick next to their name
-- Offline delivery: messages sent while you were away arrive on reconnect
-- Message history, decrypted locally, grouped by day
-- **Drafts** — what you typed but did not send is kept per chat and shown in the
-  chat list as `Черновик: …`
+## Что уже работает
 
-**Groups, channels and extras**
-- **Group chats** with a member list and sender names on each bubble
-- **Channels** — one-to-many broadcasts you can discover and follow
-- **Bots** and **mini-games** (tic-tac-toe, battleship) played in a chat, one
-  move per encrypted message
-- **Gifts** — a small sticker-like present in a chat, paid for with **Rockets**
-- **Polls** — a question with options, single- or multiple-choice, sent as an
-  ordinary encrypted message; the tally is local and updates on both devices
-- **Stories** — a 24-hour post (a caption, a picture, or both) shared with your
-  contacts and the people you have talked to. Each viewer gets their own
-  encrypted copy, so the relay stores only ciphertext and never learns the text,
-  the picture or who watched what. The author sees a view count, not a list
+**Аккаунты и профили**
 
-**Rockets and Premium**
-- **SleePhy Rockets** — an in-app currency bought in fixed bundles. The relay
-  holds the price list, so a client cannot invent a bundle or a price; a top-up
-  is credited exactly once per provider confirmation, and every movement is
-  written to a ledger. New accounts get a small welcome grant so the first gift
-  works. Rockets are spent on **gifts** (see above)
-- **SleePhy Premium** — a monthly subscription. The relay records the expiry;
-  buying again while still subscribed **extends** it rather than restarting the
-  clock. The subscriber's profile shows a Premium mark. Payment goes through a
-  provider (see below); the app never sees card details
-- The wallet and Premium state live on the relay and are pushed to every device,
-  so a balance settled on one device shows on the other
+- Регистрация и вход по логину и паролю; пароль защищает ключи на устройстве
+- **Уникальный @username** — можно занять и менять в любой момент
+- Профиль: имя, био, цвет аватара и **соцсети** (Telegram, Instagram, X, GitHub…)
+  отдельными чипами
+- **Приватность, которую держит релей**: скрыть время последнего визита и
+  скрыть профиль от всех, кроме себя
 
-**Calls and music**
-- **Calls** — one-to-one and **group** audio and video calls, with a ring card,
-  mute, camera toggle, screen share and a running timer. Media flows
-  peer-to-peer (WebRTC); the relay forwards only the handshake, so it never
-  hears or sees the call. A group call is a mesh: one connection per participant
-- **Бурмалда FM** — a built-in music player. Drop your own audio files and a
-  playlist into the app's media folder and it plays them with shuffle, repeat
-  one/all, a seek bar and a track list
+**Переписка**
 
-**Search**
-- Find people and channels by username from the top box
-- **In-chat search** with filters — by sender (me / them), by type (media, photo,
-  voice, file, links, polls, gifts, games) and by date (today, week, month);
-  matches are highlighted and the count is shown
-- **Global search** — the same top box also searches message text across every
-  chat, group and channel at once. The relay hands the device the newest slice of
-  each conversation and the text is decrypted and matched locally, so the query
-  itself never leaves the device. Results are grouped under "Сообщения", show the
-  chat and sender, and open that chat at the message
+- Поиск людей по username и старт чата
+- Текст с **E2E-шифрованием** — релей не видит открытый текст
+- **Избранное** — заметки самому себе, читает только владелец
+- **Ответы** с цитатой, **редактирование** и **удаление** своих сообщений
+- **Реакции** (👍 ❤️ 😂 🔥 😮 😢), **индикатор набора** и **онлайн-статус**
+- **Огонёк** — счётчик дней подряд, что вы писали друг другу
+- **Самоуничтожающиеся сообщения** — таймер на чат, каждый пузырь с обратным
+  отсчётом; релей стирает шифротекст по истечении
+- **Отложенные сообщения** — «отправить позже», релей держит шифротекст до часа
+  отправки
+- **Проверка ключей (safety number)** — двенадцать групп цифр из обоих публичных
+  ключей; одинаковы на обоих концах и никогда не идут на сервер
+- Доставка офлайн-сообщений при переподключении, история по дням, черновики
 
-**Chat management**
-- Pin, mute and archive conversations
-- Unread badges, with a separate section for archived chats
-- **Chat folders** ("папки") — named filters by chat type (personal, groups,
-  channels, bots, saved) with an unread-only option and an exclusive mode that
-  takes its chats out of the main list
-- Mark as read, clear history, delete a chat
+**Группы, каналы и прочее**
 
-**Desktop**
-- Build for Windows (`.exe`) and Linux (AppImage)
+- **Групповые чаты** со списком участников и именами на пузырях
+- **Каналы** — вещание «один-ко-многим», можно находить и подписываться
+- **Боты** и **мини-игры** (крестики-нолики, морской бой) прямо в чате
+- **Подарки** — коллекция: подарок приходит в инвентарь, его можно поставить на
+  профиль или продать обратно за ракеты
+- **Опросы**, **сторис** (24 часа, у каждого зрителя своя шифрованная копия)
+
+**Ракеты и Premium**
+
+- **SleePhy Rockets** — внутренняя валюта фиксированными наборами; цены держит
+  релей, пополнение зачисляется ровно один раз на подтверждение провайдера
+- **SleePhy Premium** — подписка на месяц; повторная покупка **продлевает**, а не
+  начинает заново
+
+**Звонки и музыка**
+
+- **Звонки** — один-на-один и групповые, аудио и видео, с демонстрацией экрана.
+  Медиа идёт peer-to-peer (WebRTC); релей пересылает только рукопожатие
+- **Бурмалда FM** — встроенный плеер со своей музыкой и плейлистом
+
+**Поиск и управление чатами**
+
+- Поиск людей и каналов, **поиск внутри чата** с фильтрами, **глобальный поиск**
+  по тексту сообщений — запрос расшифровывается и ищется локально
+- **Папки чатов**, закрепление, мьют, архив, непрочитанные, очистка истории
+- Действия с чатом теперь в **профиле собеседника**, а не в отдельном меню
+
+## Скриншоты
+
+| Вход | Чат | Профиль |
+| --- | --- | --- |
+| ![Auth](shots/1-auth.png) | ![Chat](shots/3-chat.png) | ![Profile](shots/4-profile.png) |
+
+| Настройки | Список чатов | Код входа |
+| --- | --- | --- |
+| ![Settings](shots/5-settings.png) | ![Chat list](shots/2-main-empty.png) | ![Code](shots/2-code.png) |
+
+## Что ещё не сделано
+
+Честный список. Приложение не следует описывать как более защищённое, чем оно есть.
+
+- **Нет forward secrecy.** Компрометация приватного ключа раскрывает прошлые
+  сообщения. Лечится протоколом с ratchet (Double Ratchet).
+- **Проверка ключей ручная.** Профиль показывает safety number, но приложение не
+  заставляет сверять его до первого сообщения.
+- **Метаданные видит сервер** — кто с кем, когда и какого размера сообщения.
+- **Нет мультидевайса** — один ключ на аккаунт, привязан к одному устройству.
+- **Звонки best-effort** — зависят от signaling-релея и ICE/STUN.
+- **История живёт на сервере** (шифротекстом) до «Очистить историю».
+- **У релея нет rate limiting** — нужен до выхода в публичный интернет.
+- **Платежи по умолчанию не живые** — провайдер `mock` двигает нулевую сумму.
+- **Аккаунт нельзя восстановить.** Потеряли пароль — потеряли ключи.
+
+
+---
+
+# SleePhy (English)
+
+An end-to-end encrypted desktop messenger. The server is a **blind relay** — it
+stores and forwards ciphertext it cannot read.
+
+> Status: working MVP. Text messaging between two accounts works, with real
+> end-to-end encryption and a real relay server. See
+> [What is not done yet](#what-is-not-done-yet).
+
+**Highlights**
+
+- Keys are generated on your device; the private key is encrypted with your
+  password and never leaves the machine.
+- The relay never sees plaintext — the end-to-end test asserts the database
+  contains no readable message.
+- No hand-rolled cryptography: everything is [libsodium](https://doc.libsodium.org/)
+  (X25519, `crypto_box`, scrypt).
+- Native Windows installer and Linux AppImage.
+- Accounts and profiles, replies, edits, deletes, reactions, typing and presence,
+  a per-chat streak, self-destructing and scheduled messages, key verification,
+  groups, channels, bots and mini-games, gifts, polls and stories, Rockets and
+  Premium, audio/video calls and a built-in music player.
 
 ## How the encryption works
 
@@ -179,7 +212,7 @@ overrides it.
 ## Build a Windows installer
 
 ```bash
-npm run dist:win      # -> dist/SleePhy-Setup-0.16.6.exe
+npm run dist:win      # -> dist/SleePhy-Setup-0.16.7.exe
 ```
 
 Building a Windows `.exe` from Linux/macOS uses Wine; the CI workflow does this
