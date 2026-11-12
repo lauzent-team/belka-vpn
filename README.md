@@ -6,7 +6,7 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-2b2b2b?style=flat-square)](#download)
 [![Encryption](https://img.shields.io/badge/encryption-libsodium%20%C2%B7%20X25519-5a4bff?style=flat-square)](https://doc.libsodium.org/)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.16.8-blue?style=flat-square)](https://github.com/lauzent-team/belka-vpn/releases/latest)
+[![Version](https://img.shields.io/badge/version-0.16.9-blue?style=flat-square)](https://github.com/lauzent-team/belka-vpn/releases/latest)
 
 <a id="download"></a>
 
@@ -14,7 +14,7 @@
 
 | Сборка | Файл | Как поставить |
 | --- | --- | --- |
-| **Windows 10/11 (x64)** | [**SleePhy-Setup-0.16.8.exe**](https://github.com/lauzent-team/belka-vpn/releases/latest/download/SleePhy-Setup-0.16.8.exe) | Запустить установщик, дальше — как обычную программу |
+| **Windows 10/11 (x64)** | [**SleePhy-Setup-0.16.9.exe**](https://github.com/lauzent-team/belka-vpn/releases/latest/download/SleePhy-Setup-0.16.9.exe) | Запустить установщик, дальше — как обычную программу |
 | Linux | `npm run dist:linux` → AppImage | См. [сборку из исходников](#run-it-locally) |
 
 Установщик уже настроен на рабочий релей: **ничего вводить не нужно**, только
@@ -220,7 +220,7 @@ overrides it.
 ## Build a Windows installer
 
 ```bash
-npm run dist:win      # -> dist/SleePhy-Setup-0.16.8.exe
+npm run dist:win      # -> dist/SleePhy-Setup-0.16.9.exe
 ```
 
 Building a Windows `.exe` from Linux/macOS uses Wine; the CI workflow does this
