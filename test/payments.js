@@ -166,6 +166,61 @@ async function main() {
     );
   });
 
+  await step('a received gift lands in the recipient\'s inventory', async () => {
+    const inv = await B.client.giftInventory();
+    assert.strictEqual(inv.items.length, 1, 'one gift received');
+    assert.strictEqual(inv.items[0].gift, 'teddy', 'the teddy');
+    assert.strictEqual(inv.items[0].from, alice, 'from alice');
+    assert.strictEqual(inv.items[0].sellValue, 4, 'a 5-Rocket teddy sells for 4');
+    assert.strictEqual(inv.equipped, null, 'nothing equipped yet');
+  });
+
+  await step('the catalogue carries each gift\'s resale value', async () => {
+    const w = await A.client.wallet();
+    assert.strictEqual(w.gifts.crown.sellValue, 93, 'a 100-Rocket crown sells for 93');
+    assert.strictEqual(w.gifts.rose.sellValue, 1, 'the cheapest still sells for something');
+  });
+
+  await step('equipping a gift shows it on the profile', async () => {
+    const inv = await B.client.giftInventory();
+    const res = await B.client.giftEquip({ id: inv.items[0].id });
+    assert.strictEqual(res.equipped.gift, 'teddy', 'the teddy is on the profile');
+    const seen = await A.client.getProfile(bob);
+    assert.ok(seen.profile.gift, 'a stranger sees the equipped gift');
+    assert.strictEqual(seen.profile.gift.gift, 'teddy', 'and it is the teddy');
+  });
+
+  await step('equipping a second gift replaces the first', async () => {
+    await A.client.giftSend({ to: bob, gift: 'rose' });
+    const inv = await B.client.giftInventory();
+    const rose = inv.items.find((g) => g.gift === 'rose');
+    const res = await B.client.giftEquip({ id: rose.id });
+    assert.strictEqual(res.equipped.gift, 'rose', 'the rose is now on the profile');
+    assert.strictEqual(res.items.filter((g) => g.equipped).length, 1, 'only one gift at a time');
+  });
+
+  await step('a gift cannot be equipped or sold by someone who does not own it', async () => {
+    const inv = await B.client.giftInventory();
+    const id = inv.items[0].id;
+    await assert.rejects(() => A.client.giftEquip({ id }), /Подарок не найден/);
+    await assert.rejects(() => A.client.giftSell({ id }), /Подарок не найден/);
+  });
+
+  await step('selling a gift credits its resale value and removes it', async () => {
+    const inv = await B.client.giftInventory();
+    const teddy = inv.items.find((g) => g.gift === 'teddy');
+    const before = (await B.client.wallet()).balance;
+    const res = await B.client.giftSell({ id: teddy.id });
+    assert.strictEqual(res.sold, 4, 'the teddy sells for 4');
+    assert.strictEqual(res.balance, before + 4, 'and the Rockets arrived');
+    assert.ok(!res.items.find((g) => g.id === teddy.id), 'the teddy is gone from the collection');
+  });
+
+  await step('a sold gift cannot be sold again', async () => {
+    const inv = await B.client.giftInventory();
+    assert.ok(!inv.items.find((g) => g.gift === 'teddy'), 'the sold teddy is not listed');
+  });
+
   await step('one account cannot claim another account\'s payment', async () => {
     const res = await A.client.payCreate({ kind: 'rockets', rockets: 50 });
     await assert.rejects(

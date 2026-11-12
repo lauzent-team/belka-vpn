@@ -42,9 +42,23 @@ async function launch(label) {
 
 
 async function openChatWith(win, username) {
-  await win.fill('#search', username);
-  await win.press('#search', 'Enter');
-  await win.waitForSelector('#chat-view:not([hidden])', { timeout: 8000 });
+  // The directory lookup that backs search can lag right after sign-up, so
+  // retry the query instead of failing on the first empty result list.
+  for (let i = 0; i < 8; i++) {
+    await win.fill('#search', username);
+    await win.press('#search', 'Enter');
+    try {
+      await win.waitForSelector(`#search-results .chat-item[data-username="${username}"]`, { timeout: 5000 });
+      await win.click(`#search-results .chat-item[data-username="${username}"]`);
+      await win.waitForSelector('#chat-view:not([hidden])', { timeout: 5000 });
+      // The results dropdown overlays the header; dismiss it so the header
+      // buttons (profile, actions) are clickable.
+      if (await win.isVisible('#btn-search-clear')) await win.click('#btn-search-clear');
+      await win.waitForSelector('#search-panel', { state: 'hidden', timeout: 5000 });
+      return;
+    } catch { await new Promise((r) => setTimeout(r, 800)); }
+  }
+  throw new Error('could not open the chat with ' + username);
 }
 
 async function main() {
@@ -244,11 +258,11 @@ async function main() {
     assert.ok(chip.includes('🔥'), `expected the fire reaction, got: ${chip}`);
   });
 
-  await step('chat can be pinned from the chat menu', async () => {
+  await step('chat can be pinned from the profile', async () => {
     await openChatWith(a.win, bob);
-    await a.win.click('#btn-chat-menu');
-    await a.win.waitForSelector('#chatmenu-backdrop:not([hidden])');
-    await a.win.click('#chatmenu-body .menu-item[data-action="pin"]');
+    await a.win.click('#btn-peer-profile');
+    await a.win.waitForSelector('#profile-backdrop:not([hidden])');
+    await a.win.click('#profile-chat-actions-list .menu-item[data-action="pin"]');
     await a.win.waitForFunction(
       () => {
         const item = document.querySelector('.chat-item.active');
@@ -259,9 +273,7 @@ async function main() {
   });
 
   await step('chat can be muted and archived', async () => {
-    await a.win.click('#btn-chat-menu');
-    await a.win.waitForSelector('#chatmenu-backdrop:not([hidden])');
-    await a.win.click('#chatmenu-body .menu-item[data-action="mute"]');
+    await a.win.click('#profile-chat-actions-list .menu-item[data-action="mute"]');
     await a.win.waitForFunction(
       () => {
         const item = document.querySelector('.chat-item.active');
@@ -269,20 +281,19 @@ async function main() {
       },
       { timeout: 8000 }
     );
-    await a.win.click('#btn-chat-menu');
-    await a.win.waitForSelector('#chatmenu-backdrop:not([hidden])');
-    await a.win.click('#chatmenu-body .menu-item[data-action="archive"]');
+    await a.win.click('#profile-chat-actions-list .menu-item[data-action="archive"]');
     await a.win.waitForFunction(
       () => !document.getElementById('section-archived').hidden,
       { timeout: 8000 }
     );
     assert.strictEqual(await a.win.textContent('#archived-count'), '1');
+    await a.win.click('#btn-profile-close');
   });
 
   await step('clearing history empties the conversation', async () => {
-    await a.win.click('#btn-chat-menu');
-    await a.win.waitForSelector('#chatmenu-backdrop:not([hidden])');
-    await a.win.click('#chatmenu-body .menu-item[data-action="clear"]');
+    await a.win.click('#btn-peer-profile');
+    await a.win.waitForSelector('#profile-backdrop:not([hidden])');
+    await a.win.click('#profile-chat-actions-list .menu-item[data-action="clear"]');
     await a.win.waitForSelector('#confirm-backdrop:not([hidden])');
     await a.win.click('#btn-confirm-yes');
     await a.win.waitForFunction(

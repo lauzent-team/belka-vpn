@@ -335,10 +335,6 @@
                 <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-lock"></use></svg>
                 <span>E2E</span>
               </span>
-              <button class="icon-btn" id="btn-chat-menu" title="Chat options"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-more"></use></svg></button>
-                  <circle cx="12" cy="19" r="1.7" fill="currentColor"/>
-                </svg>
-              </button>
             </div>
           </header>
 
@@ -464,7 +460,20 @@
           </div>
 
           <!-- read-only view -->
+          <div class="profile-tabs" id="profile-tabs" role="tablist">
+            <button class="profile-tab active" data-tab="profile" role="tab">Профиль</button>
+            <button class="profile-tab" data-tab="gifts" role="tab">Подарки <span class="profile-tab-count" id="profile-gifts-count" hidden>0</span></button>
+          </div>
+
           <div id="profile-view">
+            <div class="profile-tab-pane active" data-tab="profile">
+            <div class="profile-gift-card" id="profile-gift-card" hidden>
+              <span class="profile-gift-emoji" id="profile-gift-emoji">🎁</span>
+              <div class="profile-gift-meta">
+                <span class="profile-gift-name" id="profile-gift-name"></span>
+                <span class="profile-gift-label">Подарок на профиле</span>
+              </div>
+            </div>
             <div class="setting-row">
               <div>
                 <span class="setting-title">Username</span>
@@ -478,12 +487,6 @@
               </div>
             </div>
             <div class="profile-socials" id="profile-socials" hidden></div>
-            <div class="setting-sep" id="profile-crypto-sep"></div>
-            <div id="profile-crypto">
-              <span class="setting-title">Public key</span>
-              <code class="key-box" id="profile-pubkey">—</code>
-              <p class="setting-note">Verify this with your contact in person. Your private key never leaves your device.</p>
-            </div>
             <div class="safety-block" id="profile-safety" hidden>
               <div class="safety-head">
                 <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-shield"></use></svg>
@@ -504,6 +507,28 @@
               <button class="btn-primary" id="btn-profile-gift">Подарить</button>
               <button class="btn-secondary" id="btn-profile-message">Send message</button>
               <button class="btn-secondary" id="btn-profile-edit">Edit profile</button>
+            </div>
+            </div><!-- /profile tab -->
+
+            <div class="profile-tab-pane" data-tab="gifts">
+              <div class="gift-inventory" id="profile-gifts-list"></div>
+              <p class="setting-note" id="profile-gifts-empty" hidden>Пока нет подарков. Подарки, которые вам подарили, появятся здесь.</p>
+            </div><!-- /gifts tab -->
+
+            <div class="chat-actions-block" id="profile-chat-actions" hidden>
+              <span class="setting-title">Действия с чатом</span>
+              <div class="chat-actions" id="profile-chat-actions-list">
+                <button class="menu-item" data-action="pin"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-pin"></use></svg></span><span id="pa-pin-label">Pin</span></button>
+                <button class="menu-item" data-action="mute"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-bell"></use></svg></span><span id="pa-mute-label">Mute</span></button>
+                <button class="menu-item" data-action="archive"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-archive"></use></svg></span><span id="pa-archive-label">Archive</span></button>
+                <button class="menu-item" data-action="ttl" id="pa-ttl"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-clock"></use></svg></span><span id="pa-ttl-label">Автоудаление</span></button>
+                <button class="menu-item" data-action="read"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-check"></use></svg></span><span>Mark as read</span></button>
+                <button class="menu-item" data-action="clear"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-broom"></use></svg></span><span>Clear history</span></button>
+                <button class="menu-item" data-action="channel-settings" id="pa-channel-settings" hidden><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-gear"></use></svg></span><span>Настройки канала</span></button>
+                <button class="menu-item" data-action="channel-link" id="pa-channel-link" hidden><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-copy"></use></svg></span><span>Скопировать @адрес</span></button>
+                <button class="menu-item" data-action="leave" id="pa-leave"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"></use></svg></span><span id="pa-leave-label">Покинуть канал</span></button>
+                <button class="menu-item danger" data-action="delete" id="pa-delete"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"></use></svg></span><span>Delete chat</span></button>
+              </div>
             </div>
           </div>
 
@@ -1073,28 +1098,6 @@
       </div>
     </div>
 
-
-    <!-- ========================= CHAT OPTIONS ========================= -->
-    <div class="modal-backdrop" id="chatmenu-backdrop" hidden>
-      <div class="modal modal-sheet">
-        <header class="modal-head">
-          <h3 id="chatmenu-title">Chat</h3>
-          <button class="icon-btn" id="btn-chatmenu-close" title="Close"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"></use></svg></button>
-        </header>
-        <div class="modal-body modal-menu" id="chatmenu-body">
-          <button class="menu-item" data-action="pin"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-pin"></use></svg></span><span id="menu-pin-label">Pin</span></button>
-          <button class="menu-item" data-action="mute"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-bell"></use></svg></span><span id="menu-mute-label">Mute</span></button>
-          <button class="menu-item" data-action="archive"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-archive"></use></svg></span><span id="menu-archive-label">Archive</span></button>
-          <button class="menu-item" data-action="ttl" id="menu-ttl"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-clock"></use></svg></span><span id="menu-ttl-label">Автоудаление</span></button>
-          <button class="menu-item" data-action="read"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-check"></use></svg></span><span>Mark as read</span></button>
-          <button class="menu-item" data-action="clear"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-broom"></use></svg></span><span>Clear history</span></button>
-          <button class="menu-item" data-action="channel-settings" id="menu-channel-settings" hidden><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-gear"></use></svg></span><span>Настройки канала</span></button>
-          <button class="menu-item" data-action="channel-link" id="menu-channel-link" hidden><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-copy"></use></svg></span><span>Скопировать @адрес</span></button>
-          <button class="menu-item" data-action="leave" id="menu-leave"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"></use></svg></span><span id="menu-leave-label">Покинуть канал</span></button>
-          <button class="menu-item danger" data-action="delete" id="menu-delete"><span class="menu-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"></use></svg></span><span>Delete chat</span></button>
-        </div>
-      </div>
-    </div>
 
     <!-- ======================= AUTO-DELETE TIMER ======================= -->
     <div class="modal-backdrop" id="ttl-backdrop" hidden>

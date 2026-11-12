@@ -1013,7 +1013,25 @@ const els = {
   peerSub: $('peer-sub'),
   peerTtl: $('peer-ttl'),
   peerTtlLabel: $('peer-ttl-label'),
-  btnChatMenu: $('btn-chat-menu'),
+  profileTabs: $('profile-tabs'),
+  profileGiftsCount: $('profile-gifts-count'),
+  profileGiftCard: $('profile-gift-card'),
+  profileGiftEmoji: $('profile-gift-emoji'),
+  profileGiftName: $('profile-gift-name'),
+  profileGiftsList: $('profile-gifts-list'),
+  profileGiftsEmpty: $('profile-gifts-empty'),
+  profileChatActions: $('profile-chat-actions'),
+  profileChatActionsList: $('profile-chat-actions-list'),
+  paPinLabel: $('pa-pin-label'),
+  paMuteLabel: $('pa-mute-label'),
+  paArchiveLabel: $('pa-archive-label'),
+  paTtl: $('pa-ttl'),
+  paTtlLabel: $('pa-ttl-label'),
+  paLeave: $('pa-leave'),
+  paLeaveLabel: $('pa-leave-label'),
+  paChannelSettings: $('pa-channel-settings'),
+  paChannelLink: $('pa-channel-link'),
+  paDelete: $('pa-delete'),
   messages: $('messages'),
   composer: $('composer'),
   composerInput: $('composer-input'),
@@ -1037,7 +1055,6 @@ const els = {
   profileView: $('profile-view'),
   profileViewUsername: $('profile-view-username'),
   profileViewBio: $('profile-view-bio'),
-  profilePubkey: $('profile-pubkey'),
   profileSafety: $('profile-safety'),
   profileSafetyNumber: $('profile-safety-number'),
   btnSafetyCopy: $('btn-safety-copy'),
@@ -1047,8 +1064,6 @@ const els = {
   btnProfileMessage: $('btn-profile-message'),
   btnProfileEdit: $('btn-profile-edit'),
   btnProfileGift: $('btn-profile-gift'),
-  profileCrypto: $('profile-crypto'),
-  profileCryptoSep: $('profile-crypto-sep'),
   profileForm: $('profile-form'),
   avatarPreview: $('avatar-preview'),
   btnAvatarPick: $('btn-avatar-pick'),
@@ -1089,10 +1104,6 @@ const els = {
   setPubkey: $('set-pubkey'),
   btnLogout: $('btn-logout'),
 
-  chatmenuBackdrop: $('chatmenu-backdrop'),
-  chatmenuTitle: $('chatmenu-title'),
-  chatmenuBody: $('chatmenu-body'),
-  btnChatmenuClose: $('btn-chatmenu-close'),
   ttlBackdrop: $('ttl-backdrop'),
   ttlOptions: $('ttl-options'),
   btnTtlClose: $('btn-ttl-close'),
@@ -3207,37 +3218,45 @@ function applyEdited(id, text, editedAt) {
 }
 
 /* ------------------------------ chat menu ------------------------------ */
-function openChatMenu() {
-  const chat = activeChat();
-  if (!chat) return;
-  const isSaved = state.activePeer === SAVED;
-  const channel = isChannelKey(state.activePeer) ? state.channels.get(channelIdOf(state.activePeer)) : null;
-  els.chatmenuTitle.textContent = isSaved ? 'Saved Messages' : displayNameFor(state.activePeer);
-  els.menuPinLabel.textContent = chat.pinned ? 'Unpin' : 'Pin';
-  els.menuMuteLabel.textContent = chat.muted ? 'Unmute' : 'Mute';
-  els.menuArchiveLabel.textContent = chat.archived ? 'Unarchive' : 'Archive';
+/**
+ * Fill the chat-actions block that lives at the bottom of the profile. These
+ * are the actions that used to sit behind the chat header's three-dot button;
+ * they moved here so the profile is the one place a chat is managed from.
+ */
+function renderProfileChatActions() {
+  const key = state.activePeer;
+  const chat = key ? activeChat() : null;
+  if (!chat) { els.profileChatActions.hidden = true; return; }
+  const isSaved = key === SAVED;
+  const channel = isChannelKey(key) ? state.channels.get(channelIdOf(key)) : null;
+  els.paPinLabel.textContent = chat.pinned ? 'Unpin' : 'Pin';
+  els.paMuteLabel.textContent = chat.muted ? 'Unmute' : 'Mute';
+  els.paArchiveLabel.textContent = chat.archived ? 'Unarchive' : 'Archive';
   // Auto-delete is a 1:1 feature; hide the entry for Saved, groups and channels.
-  const ttlEligible = !isMultiKey(state.activePeer) && state.activePeer !== SAVED;
-  els.menuTtl.hidden = !ttlEligible;
+  const ttlEligible = !isMultiKey(key) && key !== SAVED;
+  els.paTtl.hidden = !ttlEligible;
   if (ttlEligible) {
-    els.menuTtlLabel.textContent = chat.ttl
+    els.paTtlLabel.textContent = chat.ttl
       ? `${i18n.t('Автоудаление')}: ${ttlLabel(chat.ttl)}`
       : i18n.t('Автоудаление');
   }
-  els.chatmenuBody.querySelectorAll('[data-action="delete"]').forEach((b) => { b.hidden = isSaved; });
+  els.paDelete.hidden = isSaved;
   // Leaving applies to channels only, and never to the channel's own owner.
-  els.menuLeave.hidden = !channel || channel.isOwner;
-  els.menuLeaveLabel.textContent = 'Покинуть канал';
+  els.paLeave.hidden = !channel || channel.isOwner;
+  els.paLeaveLabel.textContent = 'Покинуть канал';
   // Channel settings are for the owner; the shareable @handle is for everyone.
-  els.menuChannelSettings.hidden = !channel || !channel.isOwner;
-  els.menuChannelLink.hidden = !channel || !channel.handle;
-  els.chatmenuBackdrop.hidden = false;
+  els.paChannelSettings.hidden = !channel || !channel.isOwner;
+  els.paChannelLink.hidden = !channel || !channel.handle;
+  els.profileChatActions.hidden = false;
 }
 
-els.btnChatMenu.addEventListener('click', openChatMenu);
-els.btnChatmenuClose.addEventListener('click', () => { els.chatmenuBackdrop.hidden = true; });
-els.chatmenuBackdrop.addEventListener('click', (e) => {
-  if (e.target === els.chatmenuBackdrop) els.chatmenuBackdrop.hidden = true;
+els.profileChatActionsList.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.menu-item');
+  if (!btn) return;
+  await runChatAction(btn.dataset.action, state.activePeer);
+  // Deleting or leaving ends the chat, so the profile has nothing left to show.
+  if (!state.activePeer) closeProfile();
+  else renderProfileChatActions();
 });
 
 /**
@@ -3336,13 +3355,6 @@ async function runChatAction(action, key) {
     toast(err.message || 'Something went wrong');
   }
 }
-
-els.chatmenuBody.addEventListener('click', async (e) => {
-  const btn = e.target.closest('.menu-item');
-  if (!btn) return;
-  els.chatmenuBackdrop.hidden = true;
-  await runChatAction(btn.dataset.action, state.activePeer);
-});
 
 els.btnArchivedToggle.addEventListener('click', () => {
   const open = els.archivedList.hidden;
@@ -3724,6 +3736,7 @@ async function showProfile(username, { self = false } = {}) {
   els.profileBackdrop.hidden = false;
   els.profileForm.hidden = true;
   els.profileView.hidden = false;
+  els.profileTabs.hidden = false;
   els.usernameBlock.hidden = !self;
   els.usernameSep.hidden = !self;
   els.profileTitle.textContent = self ? 'My profile' : 'Profile';
@@ -3761,11 +3774,20 @@ async function showProfile(username, { self = false } = {}) {
   els.btnProfileMessage.hidden = isSelf;
   els.btnProfileEdit.hidden = !isSelf;
   els.profileActions.hidden = false;
-  // The raw public key is a developer's detail; a peer's profile shows only the
-  // safety number, which is the check a person can actually act on.
-  els.profileCrypto.hidden = !isSelf;
-  els.profileCryptoSep.hidden = !isSelf;
   els.btnProfileGift.hidden = isSelf;
+  // The gift shown on the profile, if one is equipped. Visible to everyone.
+  renderProfileGiftCard(p.gift);
+  // The gifts tab is where the owner manages what they have received: putting
+  // one on the profile or selling it back. Only their own profile shows it.
+  const giftsTab = els.profileTabs.querySelector('[data-tab="gifts"]');
+  giftsTab.hidden = !isSelf;
+  setProfileTab('profile');
+  if (isSelf) loadProfileGifts();
+  else { els.profileGiftsList.innerHTML = ''; els.profileGiftsCount.hidden = true; }
+  // Chat actions sit at the bottom of the profile, for the chat that is open.
+  // Your own profile manages no chat, so they stay hidden there.
+  if (isSelf) els.profileChatActions.hidden = true;
+  else renderProfileChatActions();
 
   // Fill the edit form for later use.
   els.profileName.value = p.displayName || '';
@@ -3773,7 +3795,6 @@ async function showProfile(username, { self = false } = {}) {
   buildSwatches(p.avatarColor || 'mint');
   avatarPending = undefined;
   paintAvatarPicker();
-  renderPubkey(p.username);
   renderSafetyNumber(p.username);
 }
 
@@ -3783,16 +3804,6 @@ function refreshProfilePresence(username) {
   const text = peerPresenceText(username);
   els.profilePresence.textContent = text || 'не в сети';
   els.profilePresence.classList.toggle('online', !!state.presence.get(username));
-}
-
-async function renderPubkey(username) {
-  els.profilePubkey.textContent = '…';
-  try {
-    const res = await api.directory(username);
-    els.profilePubkey.textContent = res.publicKey || '—';
-  } catch {
-    els.profilePubkey.textContent = '—';
-  }
 }
 
 /**
@@ -3828,6 +3839,124 @@ async function loadVerifiedPeers() {
       && !Array.isArray(s.verifiedPeers)) ? { ...s.verifiedPeers } : {};
   } catch { /* offline: keep what we have */ }
 }
+
+/* ------------------------------ profile gifts ------------------------------ */
+
+/** Show or hide the profile's tab panes. The profile tab always exists; the
+ *  gifts tab exists only on your own profile. */
+function setProfileTab(tab) {
+  els.profileTabs.querySelectorAll('.profile-tab').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  });
+  els.profileView.querySelectorAll('.profile-tab-pane').forEach((pane) => {
+    pane.classList.toggle('active', pane.dataset.tab === tab);
+  });
+}
+
+els.profileTabs.addEventListener('click', (e) => {
+  const btn = e.target.closest('.profile-tab');
+  if (!btn || btn.hidden) return;
+  setProfileTab(btn.dataset.tab);
+});
+
+/** Paint the "equipped gift" card at the top of a profile. `gift` is what the
+ *  relay put on the public profile; absent means nothing is equipped. */
+function renderProfileGiftCard(gift) {
+  if (!gift) { els.profileGiftCard.hidden = true; return; }
+  els.profileGiftEmoji.textContent = gift.emoji || '🎁';
+  els.profileGiftName.textContent = gift.name || 'Подарок';
+  els.profileGiftCard.dataset.tier = gift.tier || 'common';
+  els.profileGiftCard.hidden = false;
+}
+
+/** Fetch the collection and paint the gifts tab. Only the owner ever calls
+ *  this: a stranger sees just the equipped gift, on the profile card. */
+async function loadProfileGifts() {
+  if (state.profileTarget !== state.username) return;
+  let items = [];
+  try {
+    const res = await api.giftInventory();
+    items = res.items || [];
+  } catch { /* offline: show the empty note */ }
+  renderProfileGifts(items);
+}
+
+function renderProfileGifts(items) {
+  els.profileGiftsList.innerHTML = '';
+  els.profileGiftsEmpty.hidden = items.length > 0;
+  els.profileGiftsCount.hidden = items.length === 0;
+  els.profileGiftsCount.textContent = String(items.length);
+  for (const gift of items) {
+    const row = document.createElement('div');
+    row.className = 'gift-item';
+    row.dataset.tier = gift.tier || 'common';
+    if (gift.equipped) row.classList.add('equipped');
+
+    const emoji = document.createElement('span');
+    emoji.className = 'gift-item-emoji';
+    emoji.textContent = gift.emoji || '🎁';
+
+    const meta = document.createElement('div');
+    meta.className = 'gift-item-meta';
+    const name = document.createElement('span');
+    name.className = 'gift-item-name';
+    name.textContent = gift.name || 'Подарок';
+    const sub = document.createElement('span');
+    sub.className = 'gift-item-sub';
+    sub.textContent = gift.from ? `от @${gift.from}` : 'подарок';
+    meta.append(name, sub);
+
+    const actions = document.createElement('div');
+    actions.className = 'gift-item-actions';
+    const equip = document.createElement('button');
+    equip.className = 'btn-secondary gift-item-btn';
+    equip.dataset.act = 'equip';
+    equip.dataset.id = String(gift.id);
+    equip.textContent = gift.equipped ? 'Снять' : 'В профиль';
+    const sell = document.createElement('button');
+    sell.className = 'btn-secondary gift-item-btn';
+    sell.dataset.act = 'sell';
+    sell.dataset.id = String(gift.id);
+    sell.dataset.value = String(gift.sellValue || 0);
+    sell.textContent = `Продать · ${gift.sellValue} 🚀`;
+    actions.append(equip, sell);
+
+    row.append(emoji, meta, actions);
+    els.profileGiftsList.append(row);
+  }
+}
+
+els.profileGiftsList.addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const id = Number(btn.dataset.id);
+  if (!Number.isFinite(id)) return;
+  btn.disabled = true;
+  try {
+    if (btn.dataset.act === 'equip') {
+      const res = await api.giftEquip({ id });
+      renderProfileGifts(res.items || []);
+      renderProfileGiftCard(res.equipped);
+      toast(res.equipped ? 'Подарок в профиле' : 'Подарок снят с профиля');
+    } else {
+      const value = Number(btn.dataset.value) || 0;
+      const ok = await confirmDialog({
+        title: 'Продать подарок?',
+        text: `Вы получите ${value} 🚀. Подарок исчезнет из коллекции.`,
+        confirmLabel: 'Продать'
+      });
+      if (!ok) { btn.disabled = false; return; }
+      const res = await api.giftSell({ id });
+      renderProfileGifts(res.items || []);
+      renderProfileGiftCard(res.equipped);
+      if (typeof res.balance === 'number') { state.wallet.balance = res.balance; renderWallet(); }
+      toast(`Продано за ${res.sold} 🚀`);
+    }
+  } catch (err) {
+    toast(err.message || 'Не удалось выполнить');
+    btn.disabled = false;
+  }
+});
 
 els.btnSafetyCopy.addEventListener('click', async () => {
   const code = els.profileSafetyNumber.textContent;
@@ -3996,6 +4125,8 @@ els.btnProfileEdit.addEventListener('click', () => {
   state.editingProfile = true;
   els.profileView.hidden = true;
   els.profileForm.hidden = false;
+  els.profileTabs.hidden = true;
+  els.profileChatActions.hidden = true;
   els.usernameBlock.hidden = true;
   els.usernameSep.hidden = true;
   // Seed the socials editor from the live self profile.
@@ -4018,8 +4149,10 @@ els.btnProfileCancel.addEventListener('click', () => {
   state.editingProfile = false;
   els.profileForm.hidden = true;
   els.profileView.hidden = false;
+  els.profileTabs.hidden = false;
   els.usernameBlock.hidden = false;
   els.usernameSep.hidden = false;
+  renderProfileChatActions();
 });
 
 els.profileForm.addEventListener('submit', async (e) => {
@@ -6214,6 +6347,12 @@ api.onEvent((evt) => {
       applyWallet(evt);
       break;
 
+    case 'gifts.changed':
+      // Someone just sent us a gift; refresh the profile's gifts tab if it is
+      // open so the new present appears without reopening the profile.
+      if (!els.profileBackdrop.hidden && state.profileTarget === state.username) loadProfileGifts();
+      break;
+
     case 'call.answered': {
       const call = state.call;
       if (!call || evt.callId !== call.callId) break;
@@ -7446,7 +7585,6 @@ document.addEventListener('keydown', (e) => {
     if (!els.confirmBackdrop.hidden) return settleConfirm(false);
     if (!els.forwardBackdrop.hidden) return void (els.forwardBackdrop.hidden = true);
     if (!els.profileBackdrop.hidden) return closeProfile();
-    if (!els.chatmenuBackdrop.hidden) return void (els.chatmenuBackdrop.hidden = true);
     if (!els.settingsBackdrop.hidden) return void (els.settingsBackdrop.hidden = true);
     if (state.selecting) return exitSelectMode();
     if (!els.chatSearchBar.hidden) return closeChatSearch();

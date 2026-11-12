@@ -462,6 +462,12 @@ class SleePhyClient {
       });
       return;
     }
+    if (msg.t === 'gifts.changed') {
+      // A gift was just received (or one of our own devices changed the
+      // collection). The renderer refetches the inventory when it cares.
+      this.emit({ type: 'gifts.changed' });
+      return;
+    }
     if (msg.t === 'announcement') {
       this.emit({ type: 'announcement', from: msg.from, text: msg.text, ts: msg.ts });
       return;
@@ -929,6 +935,21 @@ class SleePhyClient {
   /** Gift Premium: the relay debits the Rockets and extends the recipient. */
   async giftPremium({ to, months }) {
     return this.request({ t: 'gift.premium', to, months });
+  }
+
+  /** The gifts this account has received, for the profile's gifts tab. */
+  async giftInventory() {
+    return this.request({ t: 'gift.inventory' });
+  }
+
+  /** Put a received gift on the profile, or take it off. */
+  async giftEquip({ id }) {
+    return this.request({ t: 'gift.equip', id });
+  }
+
+  /** Sell a received gift back for Rockets. */
+  async giftSell({ id }) {
+    return this.request({ t: 'gift.sell', id });
   }
 
   async receiveMessage(msg) {

@@ -914,6 +914,61 @@ body.theme-light .att-dl:hover { background: rgba(0, 0, 0, 0.13); }
 .profile-actions .btn-ghost { flex: 1; min-width: 100px; margin-top: 0; }
 .profile-form { display: flex; flex-direction: column; gap: 12px; }
 
+/* ------------------------- profile tabs and gifts ------------------------- */
+.profile-tabs {
+  display: flex; gap: 4px; padding: 3px; margin: 0 0 12px;
+  background: var(--bg-3); border-radius: 11px;
+}
+.profile-tab {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  border: 0; background: none; color: var(--text-dim); cursor: pointer;
+  padding: 8px 10px; border-radius: 8px; font-weight: 600; font-size: 13px;
+  transition: background 0.14s var(--ease), color 0.14s var(--ease);
+}
+.profile-tab:hover { color: var(--text); }
+.profile-tab.active { background: var(--bg-2); color: var(--text); }
+.profile-tab-count {
+  min-width: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--accent); color: #fff; font-size: 11px; line-height: 18px; text-align: center;
+}
+.profile-tab-pane { display: none; }
+.profile-tab-pane.active { display: block; }
+
+/* The gift the owner has put on their profile, shown to everyone. */
+.profile-gift-card {
+  display: flex; align-items: center; gap: 12px; margin: 4px 0 12px;
+  padding: 12px 14px; border-radius: 12px;
+  background: linear-gradient(135deg, rgba(126, 105, 255, 0.16), rgba(90, 200, 250, 0.12));
+  border: 1px solid var(--border);
+}
+.profile-gift-emoji { font-size: 30px; line-height: 1; animation: gift-float 3.2s var(--ease) infinite; }
+.profile-gift-meta { display: flex; flex-direction: column; }
+.profile-gift-name { font-weight: 700; font-size: 14px; }
+.profile-gift-label { font-size: 11.5px; color: var(--text-faint); }
+@keyframes gift-float {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-4px) rotate(-6deg); }
+}
+
+.gift-inventory { display: flex; flex-direction: column; gap: 8px; }
+.gift-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: 12px; background: var(--bg-3);
+  border: 1px solid transparent;
+}
+.gift-item.equipped { border-color: var(--accent); }
+.gift-item-emoji { font-size: 26px; line-height: 1; flex: none; }
+.gift-item-meta { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.gift-item-name { font-weight: 600; font-size: 13.5px; }
+.gift-item-sub { font-size: 11.5px; color: var(--text-faint); }
+.gift-item-actions { display: flex; gap: 6px; flex: none; }
+.gift-item-btn { padding: 6px 10px; font-size: 12px; min-width: 0; width: auto; }
+
+/* The chat actions moved off the header's three-dot button and onto the
+   bottom of the profile, so a chat is managed from one place. */
+.chat-actions-block { margin-top: 16px; display: flex; flex-direction: column; gap: 4px; }
+.chat-actions { display: flex; flex-direction: column; gap: 1px; margin-top: 4px; }
+
 .swatches { display: flex; flex-wrap: wrap; gap: 8px; }
 .swatch { width: 32px; height: 32px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; transition: transform 0.14s var(--ease); }
 .swatch:hover { transform: scale(1.08); }

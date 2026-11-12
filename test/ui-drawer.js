@@ -292,10 +292,10 @@ async function main() {
   });
 
   await step('the owner can open channel settings and rename it', async () => {
-    await A.win.click('#btn-chat-menu');
-    await A.win.waitForSelector('#chatmenu-backdrop:not([hidden])', { timeout: 5000 });
-    assert.ok(await A.win.isVisible('#menu-channel-settings'), 'the owner should see channel settings');
-    await A.win.click('#menu-channel-settings');
+    await A.win.click('#btn-peer-profile');
+    await A.win.waitForSelector('#profile-backdrop:not([hidden])', { timeout: 5000 });
+    assert.ok(await A.win.isVisible('#pa-channel-settings'), 'the owner should see channel settings');
+    await A.win.click('#pa-channel-settings');
     await A.win.waitForSelector('#chset-backdrop:not([hidden])', { timeout: 5000 });
     assert.strictEqual(await A.win.inputValue('#chset-handle'), '@' + channelHandle);
     assert.ok((await A.win.textContent('#chset-subs')).includes('@' + alice), 'the subscriber list should show the owner');
@@ -322,9 +322,9 @@ async function main() {
   });
 
   await step('the channel is gone from the subscriber list after leaving', async () => {
-    await B.win.click('#btn-chat-menu');
-    await B.win.waitForSelector('#chatmenu-backdrop:not([hidden])', { timeout: 5000 });
-    await B.win.click('#menu-leave');
+    await B.win.click('#btn-peer-profile');
+    await B.win.waitForSelector('#profile-backdrop:not([hidden])', { timeout: 5000 });
+    await B.win.click('#pa-leave');
     await B.win.waitForSelector('#confirm-backdrop:not([hidden])', { timeout: 5000 });
     await B.win.click('#btn-confirm-yes');
     await B.win.waitForFunction(

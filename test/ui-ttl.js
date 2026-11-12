@@ -74,20 +74,22 @@ async function main() {
     assert.ok(await a.win.isHidden('#peer-ttl'), 'no timer chip by default');
   });
 
-  await step('the chat menu offers an auto-delete entry', async () => {
-    await a.win.click('#btn-chat-menu');
-    await a.win.waitForSelector('#chatmenu-backdrop:not([hidden])', { timeout: 8000 });
-    assert.ok(await a.win.isVisible('#menu-ttl'), 'auto-delete entry should be visible in a DM');
+  await step('the profile offers an auto-delete entry', async () => {
+    await a.win.click('#btn-peer-profile');
+    await a.win.waitForSelector('#profile-backdrop:not([hidden])', { timeout: 8000 });
+    assert.ok(await a.win.isVisible('#pa-ttl'), 'auto-delete entry should be visible in a DM');
   });
 
   await step('choosing a timer opens the picker and sets it', async () => {
-    await a.win.click('#menu-ttl');
+    await a.win.click('#pa-ttl');
     await a.win.waitForSelector('#ttl-backdrop:not([hidden])', { timeout: 8000 });
     const count = await a.win.locator('#ttl-options .menu-item').count();
     assert.ok(count > 1, 'the picker should offer several values');
     // The 1-minute choice is the sixth row (Off, 1s, 5s, 10s, 30s, 1m).
     await a.win.click('#ttl-options .menu-item:nth-child(6)');
     await a.win.waitForSelector('#ttl-backdrop', { state: 'hidden', timeout: 8000 });
+    await a.win.click('#btn-profile-close');
+    await a.win.waitForSelector('#profile-backdrop', { state: 'hidden', timeout: 8000 });
   });
 
   await step('the header chip shows the chosen timer', async () => {
@@ -111,9 +113,9 @@ async function main() {
   });
 
   await step('turning auto-delete off hides the chip again', async () => {
-    await a.win.click('#btn-chat-menu');
-    await a.win.waitForSelector('#chatmenu-backdrop:not([hidden])', { timeout: 8000 });
-    await a.win.click('#menu-ttl');
+    await a.win.click('#btn-peer-profile');
+    await a.win.waitForSelector('#profile-backdrop:not([hidden])', { timeout: 8000 });
+    await a.win.click('#pa-ttl');
     await a.win.waitForSelector('#ttl-backdrop:not([hidden])', { timeout: 8000 });
     await a.win.click('#ttl-options .menu-item:nth-child(1)');
     await a.win.waitForSelector('#ttl-backdrop', { state: 'hidden', timeout: 8000 });

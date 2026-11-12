@@ -139,6 +139,20 @@ const GIFT_CATALOGUE = {
   star: { emoji: '🌟', name: 'Звезда', cost: 100, tier: 'legendary' }
 };
 
+/**
+ * What a received gift sells back for. Slightly less than it cost, so a gift is
+ * never a way to turn Rockets into more Rockets: a 100-Rocket gift returns 93,
+ * a 50 returns 46, and so on. Floored to a whole Rocket with a floor of one, so
+ * even the cheapest gift returns something.
+ */
+const GIFT_RESALE_RATE = 0.93;
+function giftSellValue(cost) {
+  return Math.max(1, Math.floor(Math.trunc(Number(cost) || 0) * GIFT_RESALE_RATE));
+}
+// Bake the resale value into the catalogue the app is handed, so the shelf and
+// the profile can show "sell for N" without duplicating the rate.
+for (const g of Object.values(GIFT_CATALOGUE)) g.sellValue = giftSellValue(g.cost);
+
 // Where top-ups are collected. `checkout` is the default: the relay serves its
 // own payment page and waits for the user to confirm or cancel there, so a
 // purchase really goes through a payment screen instead of settling on a click.
@@ -392,6 +406,22 @@ db.exec(`
     paid_at    INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(username, id);
+  -- Gifts a user has received, so they can be shown in a profile, sold back for
+  -- Rockets, or equipped. One row per received gift; the equipped flag marks the
+  -- one (at most one) the owner has put on their profile, and sold_at marks a
+  -- row that was sold so it no longer appears but the history is kept.
+  CREATE TABLE IF NOT EXISTS gift_inventory (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner      TEXT NOT NULL,
+    gift       TEXT NOT NULL,
+    from_user  TEXT,
+    note       TEXT,
+    equipped   INTEGER NOT NULL DEFAULT 0,
+    sold_at    INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_gift_owner ON gift_inventory(owner, id);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_gift_equipped ON gift_inventory(owner) WHERE equipped = 1;
 `);
 
 // Columns added after the first release. Existing databases are upgraded in
@@ -869,7 +899,20 @@ const q = {
   setPremiumUntil: db.prepare('UPDATE users SET premium_until = ?, updated_at = ? WHERE username = ?'),
   deleteUserWallet: db.prepare('DELETE FROM wallets WHERE username = ?'),
   deleteUserLedger: db.prepare('DELETE FROM rocket_ledger WHERE username = ?'),
-  deleteUserPayments: db.prepare('DELETE FROM payments WHERE username = ?')
+  deleteUserPayments: db.prepare('DELETE FROM payments WHERE username = ?'),
+  insertGift: db.prepare(
+    `INSERT INTO gift_inventory (owner, gift, from_user, note, created_at)
+     VALUES (?, ?, ?, ?, ?)`
+  ),
+  giftsForUser: db.prepare(
+    'SELECT * FROM gift_inventory WHERE owner = ? AND sold_at IS NULL ORDER BY id DESC'
+  ),
+  getGift: db.prepare('SELECT * FROM gift_inventory WHERE id = ? AND owner = ?'),
+  getEquippedGift: db.prepare('SELECT * FROM gift_inventory WHERE owner = ? AND equipped = 1 AND sold_at IS NULL'),
+  equipGift: db.prepare('UPDATE gift_inventory SET equipped = 1 WHERE id = ? AND owner = ?'),
+  unequipGifts: db.prepare('UPDATE gift_inventory SET equipped = 0 WHERE owner = ?'),
+  sellGift: db.prepare('UPDATE gift_inventory SET sold_at = ?, equipped = 0 WHERE id = ? AND owner = ?'),
+  deleteUserGifts: db.prepare('DELETE FROM gift_inventory WHERE owner = ?')
 };
 
 /* Statements used only by the username rename, which rewrites every reference. */
@@ -893,7 +936,9 @@ const renameStmts = {
   storyAudience: db.prepare('UPDATE story_audience SET viewer = ? WHERE viewer = ?'),
   wallets: db.prepare('UPDATE wallets SET username = ? WHERE username = ?'),
   ledger: db.prepare('UPDATE rocket_ledger SET username = ? WHERE username = ?'),
-  payments: db.prepare('UPDATE payments SET username = ? WHERE username = ?')
+  payments: db.prepare('UPDATE payments SET username = ? WHERE username = ?'),
+  giftsOwner: db.prepare('UPDATE gift_inventory SET owner = ? WHERE owner = ?'),
+  giftsFrom: db.prepare('UPDATE gift_inventory SET from_user = ? WHERE from_user = ?')
 };
 
 /* --------------------------- password KDF --------------------------- */
@@ -1310,7 +1355,17 @@ function publicProfile(user, viewer) {
       : undefined,
     // The owner account may set its own nickname list; tell its own devices so
     // the editor appears. Not sent to anyone else.
-    owner: isSelf ? isOwner(user.username) : undefined
+    owner: isSelf ? isOwner(user.username) : undefined,
+    // The gift the owner has chosen to show on their profile, if any. This is
+    // public — it is the point of equipping one — and is shown on the card.
+    gift: (() => {
+      if (hidden) return null;
+      const row = q.getEquippedGift.get(user.username);
+      if (!row) return null;
+      const g = GIFT_CATALOGUE[row.gift];
+      if (!g) return null;
+      return { gift: row.gift, emoji: g.emoji, name: g.name, tier: g.tier };
+    })()
   };
 }
 
@@ -1802,6 +1857,8 @@ function handleUsernameSet(ws, msg, rid) {
     renameStmts.wallets.run(next, prev);
     renameStmts.ledger.run(next, prev);
     renameStmts.payments.run(next, prev);
+    renameStmts.giftsOwner.run(next, prev);
+    renameStmts.giftsFrom.run(next, prev);
     // The pair must stay sorted (`a` < `b`). Renaming can flip that, so rebuild
     // each affected row in place instead of patching one column.
     for (const row of q.dialogStreaksFor.all(prev, prev)) {
@@ -2658,6 +2715,11 @@ function handleGiftSend(ws, msg, rid) {
     return reply(ws, rid, { t: 'error', message: 'Недостаточно ракет', need: gift.cost, balance });
   }
   const next = moveRockets(ws.username, -gift.cost, 'gift', `${msg.gift} -> ${to}`);
+  // The gift itself rides as an ordinary encrypted message, so the relay never
+  // sees the note. Only the fact that this gift now sits in the recipient's
+  // collection is recorded here, so it can be shown on their profile later.
+  q.insertGift.run(to, msg.gift, ws.username, null, Date.now());
+  deliverToUser(to, { t: 'gifts.changed' });
   reply(ws, rid, { t: 'gift.ok', gift: msg.gift, to, balance: next, _id: rid });
 }
 
@@ -2690,6 +2752,81 @@ function handleGiftPremium(ws, msg, rid) {
   // sender gets its new balance back in the reply.
   deliverToUser(to, walletState(to));
   reply(ws, rid, { t: 'gift.ok', gift: 'premium', months, to, balance: next, _id: rid });
+}
+
+/**
+ * The gifts someone owns: what they can put on their profile or sell back.
+ * `gift.inventory` returns the whole collection plus the equipped one, which is
+ * also what a viewer sees on a profile. Only the owner's own devices get the
+ * ids and sell values; a stranger sees just the equipped gift's look.
+ */
+function giftInventoryView(owner) {
+  const rows = q.giftsForUser.all(owner);
+  return rows.map((row) => {
+    const gift = GIFT_CATALOGUE[row.gift] || { emoji: '🎁', name: 'Подарок', cost: 0, tier: 'common', sellValue: 0 };
+    return {
+      id: row.id,
+      gift: row.gift,
+      from: row.from_user || null,
+      equipped: !!row.equipped,
+      sellValue: giftSellValue(gift.cost),
+      emoji: gift.emoji,
+      name: gift.name,
+      tier: gift.tier
+    };
+  });
+}
+
+function handleGiftInventory(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const items = giftInventoryView(ws.username);
+  reply(ws, rid, { t: 'gifts', items, equipped: items.find((g) => g.equipped) || null, _id: rid });
+}
+
+/**
+ * Put a received gift on the profile, or take it off. At most one gift is
+ * equipped: equipping clears whatever was there before, so a profile shows one
+ * present, not a pile. The owner must actually hold the gift.
+ */
+function handleGiftEquip(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const id = Math.trunc(Number(msg.id));
+  if (!Number.isFinite(id)) return bad(ws, rid, 'Подарок не найден');
+  const row = q.getGift.get(id, ws.username);
+  if (!row || row.sold_at) return bad(ws, rid, 'Подарок не найден');
+  // Toggle: equipping a gift that is already on the profile takes it off.
+  if (row.equipped) {
+    q.unequipGifts.run(ws.username);
+  } else {
+    q.unequipGifts.run(ws.username);
+    q.equipGift.run(id, ws.username);
+  }
+  const items = giftInventoryView(ws.username);
+  reply(ws, rid, { t: 'gifts', items, equipped: items.find((g) => g.equipped) || null, _id: rid });
+  // The equipped gift is public, so peers' view of the profile changes.
+  broadcastProfile(ws.username, publicProfile(q.getUser.get(ws.username), ws.username));
+}
+
+/**
+ * Sell a received gift back for Rockets. The relay prices it from its own
+ * table, so a tampered client cannot name its own price, and a gift can only be
+ * sold once: the row is marked sold in the same step that credits the balance.
+ */
+function handleGiftSell(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  const id = Math.trunc(Number(msg.id));
+  if (!Number.isFinite(id)) return bad(ws, rid, 'Подарок не найден');
+  const row = q.getGift.get(id, ws.username);
+  if (!row || row.sold_at) return bad(ws, rid, 'Подарок не найден');
+  const gift = GIFT_CATALOGUE[row.gift];
+  if (!gift) return bad(ws, rid, 'Такого подарка нет');
+  const value = giftSellValue(gift.cost);
+  q.sellGift.run(Date.now(), id, ws.username);
+  const balance = moveRockets(ws.username, value, 'gift-sale', `${row.gift} sold`);
+  const items = giftInventoryView(ws.username);
+  reply(ws, rid, { t: 'gifts', items, equipped: items.find((g) => g.equipped) || null, sold: value, balance, _id: rid });
+  // Selling may have removed the equipped gift, so peers' view changes too.
+  broadcastProfile(ws.username, publicProfile(q.getUser.get(ws.username), ws.username));
 }
 
 /** The owner can hand out Rockets and Premium, e.g. to seed a promotion or
@@ -3918,6 +4055,7 @@ function deleteUserData(username) {
     q.deleteUserWallet.run(username);
     q.deleteUserLedger.run(username);
     q.deleteUserPayments.run(username);
+    q.deleteUserGifts.run(username);
     q.deleteUser.run(username);
     db.exec('COMMIT');
   } catch {
@@ -3969,6 +4107,9 @@ const handlers = {
   'pay.cancel': handlePayCancel,
   'gift.send': handleGiftSend,
   'gift.premium': handleGiftPremium,
+  'gift.inventory': handleGiftInventory,
+  'gift.equip': handleGiftEquip,
+  'gift.sell': handleGiftSell,
   'admin.grant': handleAdminGrant,
   'chats.list': handleChatsList,
   'chat.settings': handleChatSettings,

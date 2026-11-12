@@ -295,6 +295,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('sleephy:payCancel', async (_e, payload) => client.payCancel(payload));
   ipcMain.handle('sleephy:giftSend', async (_e, payload) => client.giftSend(payload));
   ipcMain.handle('sleephy:giftPremium', async (_e, payload) => client.giftPremium(payload));
+  ipcMain.handle('sleephy:giftInventory', async () => client.giftInventory());
+  ipcMain.handle('sleephy:giftEquip', async (_e, payload) => client.giftEquip(payload));
+  ipcMain.handle('sleephy:giftSell', async (_e, payload) => client.giftSell(payload));
 
   // Open a checkout link in the system browser. Only http(s) is allowed, so a
   // provider response can never ask the shell to run a local file or a custom

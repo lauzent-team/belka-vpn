@@ -60,8 +60,8 @@ fs.mkdirSync(OUT, { recursive: true });
   await win.screenshot({ path: path.join(OUT, '5-settings.png') });
 
   await win.click('#btn-settings-close');
-  await win.click('#btn-chat-menu');
-  await win.waitForSelector('#chatmenu-backdrop:not([hidden])');
+  await win.click('#btn-peer-profile');
+  await win.waitForSelector('#profile-backdrop:not([hidden])');
   await new Promise((r) => setTimeout(r, 400));
   await win.screenshot({ path: path.join(OUT, '6-chat-menu.png') });
 
