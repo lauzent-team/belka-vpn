@@ -98,6 +98,30 @@ async function main() {
     assert.strictEqual(a.client.username, 'ann');
   });
 
+  // A wiped profile, or a fresh install of a name that already exists on the
+  // relay, has the password but not the key: the key only ever lived on the
+  // first device. Sign-in must fail cleanly and leave no session behind, or the
+  // UI reads a signed-in user with no vault and sticks on an unlock screen.
+  await step('a device without the key cannot sign in and keeps no session', async () => {
+    const fresh = device('fresh');
+    await fresh.client.connect(URL);
+    let message = '';
+    try { await fresh.client.login({ username: 'ann', password: PASSWORD }); }
+    catch (err) { message = err.message || ''; }
+    assert.ok(/no key on this device/i.test(message), `expected a key-loss message, got "${message}"`);
+    assert.strictEqual(fresh.client.username, null, 'no user may be adopted');
+    assert.strictEqual(fresh.client.status().unlocked, false, 'the vault must stay locked');
+    assert.strictEqual(fresh.client.status().hasStoredIdentity, false, 'nothing may be written');
+  });
+
+  await step('that device can still create its own account', async () => {
+    const fresh = device('fresh2');
+    await fresh.client.connect(URL);
+    await fresh.client.register({ username: 'erin', password: PASSWORD });
+    assert.strictEqual(fresh.client.username, 'erin');
+    assert.ok(fresh.client.status().unlocked, 'the new vault should be open');
+  });
+
   const b = device('b');
 
   await step('a second account registers on the same device', async () => {

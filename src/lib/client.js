@@ -672,6 +672,18 @@ class SleePhyClient {
     const res = await this.request({
       t: 'register', username, password, salt, verifier, publicKey: identity.publicKey,
       deviceId: this.ensureDeviceId()
+    }).catch((err) => {
+      // The relay reserves a name once it exists, and it can never hand the
+      // account back: the key that opens it lived only on the device that made
+      // it. Say that, instead of leaving a bare "already taken" that reads like
+      // a naming clash when it is really a lost account.
+      if (/already taken/i.test((err && err.message) || '')) {
+        throw new Error(
+          'The name you chose is already taken on the relay. If it is your own account ' +
+          'from another device, its key lived only there and cannot be restored — choose a different name.'
+        );
+      }
+      throw err;
     });
     this.applySession(res);
 
@@ -693,13 +705,23 @@ class SleePhyClient {
   async login({ username, password }) {
     username = bareUsername(username);
     const res = await this.request({ t: 'login', username, password });
+
+    // The key is checked and opened *before* the session is adopted. A device
+    // that lost its keys — a wiped profile, a fresh install of an account that
+    // already exists on the relay — must not be left holding a live token for an
+    // account it cannot open: the UI would then read a signed-in username with
+    // no vault and strand the person on an unlock screen no password satisfies.
+    const id = this.keyRecordFor(username);
+    if (!id) {
+      throw new Error(
+        'This account has no key on this device. The key was kept only here and is gone, ' +
+        'so the account cannot be opened again. Create a new account with a different name.'
+      );
+    }
+    const secretKey = await this.openRecord(id, password);
+
     this.applySession(res);
     this.publicKey = res.publicKey;
-
-    const id = this.keyRecordFor(username);
-    if (!id) throw new Error('No key material for this account on this device');
-
-    const secretKey = await this.openRecord(id, password);
     this.secretKey = secretKey;
     const updated = { ...id, username, token: this.token, publicKey: this.publicKey };
     this.writeIdentity(updated);

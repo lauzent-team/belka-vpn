@@ -326,6 +326,31 @@ that true, and all three matter:
 whole identity file, so the sealed private key survives and the user can still
 unlock with their password.
 
+### When the key is gone (v0.16.13)
+
+The private key lives only in the profile (`sleephy-identity.json`), sealed under
+the password. There is no escrow and no recovery, so **deleting the profile
+destroys every account it held, permanently** — the relay keeps the name and the
+public key, but nobody can ever open that account again. Two things make that
+bearable, and both matter:
+
+- **`login()` must not adopt a session it cannot open.** It used to apply the
+  relay's token *before* checking for the key record, so a device without the key
+  ended up with a live `username` and no vault: the UI read a signed-in user,
+  showed the unlock screen, and no password could satisfy it. The key record is
+  now checked and opened **first**, and a missing one throws before any state
+  changes. `test/accounts.js` covers it.
+- **The errors must say what happened.** A bare "No key material" and a bare
+  "Username already taken" read like bugs; they are the expected result of a
+  wiped profile. Both now name the cause and the way out (pick a different name),
+  with Russian rows in `i18n.js` so the message is not English-only.
+
+An account stranded this way can only be freed by deleting its row from the
+relay's database — the name is held until then. `ADMINS` names are protected from
+the admin panel's `delete`, so a stranded owner account is freed at the DB, not
+in the UI. If the owner name itself is stranded, set `SLEEPHY_ADMINS` to a new
+name and restart; the next login of that name is flagged admin.
+
 ## A peer's checkmark and picture (v0.6.3)
 
 A peer's badge (the checkmark, or the admin-set picture that replaces it) and

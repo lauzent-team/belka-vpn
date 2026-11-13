@@ -1196,6 +1196,18 @@ const PAIRS = [
     "Это имя уже занято"
   ],
   [
+    "This account has no key on this device. The key was kept only here and is gone, so the account cannot be opened again. Create a new account with a different name.",
+    "На этом устройстве нет ключа для этого аккаунта. Ключ хранился только здесь и пропал, поэтому открыть аккаунт уже нельзя. Создайте новый аккаунт с другим именем."
+  ],
+  [
+    "No key material on this device",
+    "На этом устройстве нет ключа для аккаунта"
+  ],
+  [
+    "The name you chose is already taken on the relay. If it is your own account from another device, its key lived only there and cannot be restored — choose a different name.",
+    "Это имя уже занято на релее. Если это ваш аккаунт с другого устройства, ключ хранился только там и восстановить его нельзя — выберите другое имя."
+  ],
+  [
     "Enter a phone number in international format, e.g. +79991234567",
     "Введите номер в международном формате, например +79991234567"
   ],
