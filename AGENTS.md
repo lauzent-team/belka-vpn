@@ -478,11 +478,11 @@ arriving now can change a header that is already on screen.
   is in Russian because that is the user's language. Only ports 80/443 open;
   12000 and 8791 stay on localhost.
 - **`deploy/free/` is the container path.** A `Dockerfile` (prod deps only — the
-  image needs `ws`, `node:sqlite` and `src/lib`, not electron) plus `amvera.yml`.
+  image needs `ws`, `node:sqlite` and `src/lib`, not electron) plus `amvera.yaml`.
   Two traps it documents: the relay needs **Node ≥ 22.13** because `node:sqlite`
   is behind `--experimental-sqlite` before that, and the SQLite file must live on
   the mounted volume (`SLEEPHY_DB=/data/sleephy.db`) or every redeploy wipes the
-  accounts. `amvera.yml` has only meta/build/run — env vars go in the Amvera UI.
+  accounts. `amvera.yaml` has only meta/build/run — env vars go in the Amvera UI.
 - **`deploy/amvera/relay.env.example` is the variable list for that UI.** Amvera
   has no `.env` reader in the image (the relay never calls `dotenv`), so the file
   is a copy-paste source, not something the container loads. Amvera needs no
