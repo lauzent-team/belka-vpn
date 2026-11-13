@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('sleephy', {
   setPassword: (password) => invoke('sleephy:setPassword', password),
   unlock: (password) => invoke('sleephy:unlock', password),
   logout: () => invoke('sleephy:logout'),
+  signOut: () => invoke('sleephy:signOut'),
   send: (payload) => invoke('sleephy:send', payload),
   history: (payload) => invoke('sleephy:history', payload),
   directory: (username) => invoke('sleephy:directory', username),

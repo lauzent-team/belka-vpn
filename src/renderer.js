@@ -5423,7 +5423,7 @@ els.setIce.addEventListener('change', async () => {
 
 els.btnLogout.addEventListener('click', async () => {
   els.settingsBackdrop.hidden = true;
-  await api.logout();
+  await api.signOut();
   resetToAuth();
   toast('Вы вышли. Ключи остались на устройстве — можно войти снова.');
 });

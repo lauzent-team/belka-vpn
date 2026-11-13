@@ -1049,6 +1049,34 @@ function resolveToken(token) {
   return row.username;
 }
 
+/**
+ * Drop every session token an account holds, in memory and on disk.
+ *
+ * This is the only lever that kills a token which has already leaked: a copied
+ * profile carries the token, and until it is revoked it replays as a full
+ * sign-in — with the account's admin rights if it has any. Closing sockets
+ * (`kickUser`) does not do this; the token outlives the connection.
+ *
+ * `keepToken` spares one token, so a device can revoke every *other* session
+ * without signing itself out.
+ */
+function revokeUserTokens(username, keepToken) {
+  if (!username) return;
+  for (const [tok, rec] of [...tokens]) {
+    if (rec.username === username && tok !== keepToken) tokens.delete(tok);
+  }
+  try { q.deleteUserSessions.run(username); } catch { /* best effort */ }
+  const kept = keepToken && tokens.get(keepToken);
+  if (kept) { try { q.insertSession.run(keepToken, kept.username, kept.exp); } catch { /* best effort */ } }
+}
+
+/** Drop one token, in memory and on disk. Used by a plain sign-out. */
+function revokeToken(token) {
+  if (!token) return;
+  tokens.delete(token);
+  try { q.deleteSession.run(token); } catch { /* best effort */ }
+}
+
 /* ------------------------------ helpers ------------------------------ */
 const USERNAME_RE = /^[a-z0-9_]{3,32}$/;
 // A username is stored bare (`alice`); the leading `@` is how people write and
@@ -1741,7 +1769,27 @@ function handlePasswordSet(ws, msg, rid) {
   // The client sends salt + verifier so the server never sees the password and
   // the same secret can protect the local key file.
   q.setPassword.run(salt, verifier, 1, Date.now(), ws.username);
+  // A password change is the user's "someone else may hold my token" lever, and
+  // the only one they have: they cannot force-log-out themselves through the
+  // admin panel. Drop every other session, keep this device signed in.
+  revokeUserTokens(ws.username, ws.token);
   reply(ws, rid, { t: 'ok', action: 'password.set' });
+}
+
+/**
+ * Sign this device out for real: revoke the token, not just the socket.
+ *
+ * Without this a copied profile kept working after a sign-out — the token was
+ * still valid on the relay, so anyone holding the file could replay it. Only
+ * *this* device's token is dropped, so signing out on a phone never signs out
+ * the desktop. Use the admin "forceLogout" action to drop every device.
+ */
+function handleLogout(ws, msg, rid) {
+  if (!ws.username) return bad(ws, rid, 'Not authenticated');
+  // Revoke the token bound to this socket, never one named in the message: a
+  // caller must not be able to kill a token it does not hold.
+  revokeToken(ws.token);
+  reply(ws, rid, { t: 'ok', action: 'logout' });
 }
 
 /* ------------------------------- handlers ------------------------------- */
@@ -1830,6 +1878,7 @@ function handleRegister(ws, msg, rid) {
 
   const token = issueToken(username);
   ws.username = username;
+  ws.token = token;
   bindSocket(username, ws);
   reply(ws, rid, {
     t: 'ok', action: 'register', username, token, publicKey,
@@ -1862,6 +1911,7 @@ function handleLogin(ws, msg, rid) {
 
   const token = issueToken(username);
   ws.username = username;
+  ws.token = token;
   bindSocket(username, ws);
   reply(ws, rid, {
     t: 'ok', action: 'login', username, token, publicKey: user.public_key,
@@ -1878,6 +1928,7 @@ function handleResume(ws, msg, rid) {
   if (!user) return bad(ws, rid, 'Unknown account');
   if (user.banned) return bad(ws, rid, 'This account has been blocked by an administrator');
   ws.username = username;
+  ws.token = msg.token;
   bindSocket(username, ws);
   // Attach the device id to an account that predates it, so the per-device
   // account cap starts counting it. Only ever fills a blank, never overwrites.
@@ -4212,8 +4263,11 @@ function handleAdminAction(ws, msg, rid) {
       break;
     case 'forceLogout':
       // Drop every device of the account without blocking it, so the owner can
-      // simply sign in again. Useful after a suspected key theft.
+      // simply sign in again. Revoke the tokens too: a kicked socket whose token
+      // is still valid would let the same device walk straight back in, which is
+      // the opposite of what an admin asking for a sign-out wants.
       if (target === actor) return bad(ws, rid, 'You cannot sign yourself out here');
+      revokeUserTokens(target);
       kickUser(target, 'Signed out by an administrator');
       break;
     case 'resetProfile':
@@ -4379,7 +4433,8 @@ const handlers = {
   'admin.users': handleAdminUsers,
   'admin.devices': handleAdminDevices,
   'admin.channels': handleAdminChannels,
-  'admin.action': handleAdminAction
+  'admin.action': handleAdminAction,
+  logout: handleLogout
 };
 
 /* -------------------------------- server -------------------------------- */

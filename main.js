@@ -239,6 +239,15 @@ app.whenReady().then(async () => {
     await client.connect();
     return { ok: true };
   });
+  // A real sign-out also revokes this device's token on the relay, so a copied
+  // profile folder can no longer be replayed as a live session. Switching to
+  // another account uses `sleephy:logout` above and keeps the token.
+  ipcMain.handle('sleephy:signOut', async () => {
+    await client.logout();
+    client = newClient();
+    await client.connect();
+    return { ok: true };
+  });
   ipcMain.handle('sleephy:send', async (_e, payload) => client.sendMessage(payload));
   ipcMain.handle('sleephy:history', async (_e, payload) => client.history(payload));
   ipcMain.handle('sleephy:directory', async (_e, username) => {

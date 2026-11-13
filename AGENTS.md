@@ -351,6 +351,32 @@ the admin panel's `delete`, so a stranded owner account is freed at the DB, not
 in the UI. If the owner name itself is stranded, set `SLEEPHY_ADMINS` to a new
 name and restart; the next login of that name is flagged admin.
 
+### Revoking a token (v0.16.14)
+
+The profile folder holds a live session token in `sleephy-identity.json` and
+`sleephy-accounts.json`. Anyone who copies that folder — a backup, a synced disk,
+a link pasted into a chat — holds a working sign-in, **including the account's
+admin rights**. A sign-out used to close the socket only, so the copied token kept
+replaying. Three changes close that:
+
+- **`logout` is now a relay request, not just a local wipe.** `handleLogout`
+  revokes the token bound to the socket (`ws.token`, set on register/login/resume)
+  and `client.logout()` sends it before clearing local state. It revokes **only
+  that device's** token, so signing out on a phone never signs out the desktop.
+  The token is taken from the socket, never from the message: a caller must not be
+  able to kill a token it does not hold.
+- **`forceLogout` revokes every token of the account**, not just the sockets.
+  Otherwise the kicked device walked straight back in with the token it already
+  held. `revokeUserTokens()` drops both the in-memory map and the `sessions` rows.
+- **A password change revokes every *other* session.** This is the only lever a
+  user has against a token they think leaked — they cannot `forceLogout`
+  themselves (`target === actor` is refused) — so `handlePasswordSet` keeps the
+  acting device's token and drops the rest.
+
+`test/session.js` covers all three. A relay that is unreachable must still sign
+the user out locally: `client.logout()` swallows the request error and clears
+state either way.
+
 ## A peer's checkmark and picture (v0.6.3)
 
 A peer's badge (the checkmark, or the admin-set picture that replaces it) and

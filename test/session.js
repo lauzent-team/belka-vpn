@@ -117,6 +117,134 @@ async function main() {
     assert.strictEqual(fresh.serverUrl, URL, 'the saved address should be used at construction');
   });
 
+  await step('signing out revokes the token, so a copied profile cannot be replayed', async () => {
+    const d = device('signout');
+    await d.client.connect(URL);
+    await d.client.register({ username: 'sam', password: PASSWORD });
+    const leaked = d.client.readIdentity().token;
+
+    // The token works from another device while it is valid...
+    const thief = new SleePhyClient({ userDataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'sleephy-thief-')), onEvent: () => {} });
+    await thief.connect(URL);
+    const before = await thief.request({ t: 'resume', token: leaked, deviceId: 'thief' });
+    assert.strictEqual(before.username, 'sam', 'the token should replay before the sign-out');
+
+    // ...and stops working the moment the owner signs out.
+    await d.client.logout();
+    let refused = false;
+    try { await thief.request({ t: 'resume', token: leaked, deviceId: 'thief-2' }); }
+    catch (err) { refused = /expired|session/i.test(err.message); }
+    assert.ok(refused, 'a revoked token must be refused');
+    thief.disconnect();
+  });
+
+  await step('signing out on one device leaves another device signed in', async () => {
+    const first = device('dev-one');
+    await first.client.connect(URL);
+    await first.client.register({ username: 'dual', password: PASSWORD });
+    const firstToken = first.client.readIdentity().token;
+
+    // A second device is the account moved across by copying its key files, the
+    // only way to hold the same account twice. It signs in and gets its own token.
+    const secondDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sleephy-dev-two-'));
+    fs.copyFileSync(path.join(first.dir, 'sleephy-identity.json'), path.join(secondDir, 'sleephy-identity.json'));
+    fs.copyFileSync(path.join(first.dir, 'sleephy-accounts.json'), path.join(secondDir, 'sleephy-accounts.json'));
+    const second = new SleePhyClient({ userDataDir: secondDir, onEvent: () => {} });
+    await second.connect(URL);
+    await second.login({ username: 'dual', password: PASSWORD });
+    const secondToken = second.readIdentity().token;
+    assert.notStrictEqual(firstToken, secondToken, 'each device should hold its own token');
+
+    await first.client.logout();
+    // The other device is untouched: only the signing-out device's token dies.
+    const still = await second.request({ t: 'resume', token: secondToken, deviceId: 'probe' });
+    assert.strictEqual(still.username, 'dual', 'the other device must stay signed in');
+    first.client.disconnect();
+    second.disconnect();
+  });
+
+  await step('changing the password revokes every other session but keeps this one', async () => {
+    const owner = device('owner');
+    await owner.client.connect(URL);
+    await owner.client.register({ username: 'pwown', password: PASSWORD });
+
+    // The account is on a second device, with its own token — as if it leaked.
+    const otherDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sleephy-other-'));
+    fs.copyFileSync(path.join(owner.dir, 'sleephy-identity.json'), path.join(otherDir, 'sleephy-identity.json'));
+    fs.copyFileSync(path.join(owner.dir, 'sleephy-accounts.json'), path.join(otherDir, 'sleephy-accounts.json'));
+    const other = new SleePhyClient({ userDataDir: otherDir, onEvent: () => {} });
+    await other.connect(URL);
+    await other.login({ username: 'pwown', password: PASSWORD });
+    const otherToken = other.readIdentity().token;
+
+    const mine = owner.client.readIdentity().token;
+    await owner.client.setPassword(PASSWORD + '-new');
+
+    // The other device's token is dead...
+    let refused = false;
+    try { await other.request({ t: 'resume', token: otherToken, deviceId: 'other' }); }
+    catch (err) { refused = /expired|session/i.test(err.message); }
+    assert.ok(refused, 'another device should be signed out by a password change');
+
+    // ...but the device that changed the password stays signed in.
+    const still = await owner.client.request({ t: 'resume', token: mine, deviceId: 'mine' });
+    assert.strictEqual(still.username, 'pwown', 'the acting device must stay signed in');
+    owner.client.disconnect();
+    other.disconnect();
+  });
+
+  await step('an admin forceLogout revokes the token too, not just the socket', async () => {
+    const { spawn: spawnRelay } = require('child_process');
+    // A relay whose admin is a known name, so this device can force a sign-out.
+    const adminPort = PORT + 1;
+    const adminUrl = `ws://127.0.0.1:${adminPort}`;
+    const adminDb = path.join(os.tmpdir(), `sleephy-signout-admin-${Date.now()}.db`);
+    const relay = spawnRelay(process.execPath, [path.join(__dirname, '..', 'server', 'index.js')], {
+      env: { ...process.env, SLEEPHY_PORT: String(adminPort), SLEEPHY_DB: adminDb, SLEEPHY_ADMINS: 'boss' },
+      stdio: ['ignore', 'ignore', 'pipe']
+    });
+    relay.stderr.on('data', (d) => process.stderr.write('[server] ' + d));
+    try {
+      const deadline = Date.now() + 8000;
+      for (;;) {
+        const ok = await new Promise((resolve) => {
+          const ws = new WebSocket(adminUrl);
+          ws.on('open', () => { ws.close(); resolve(true); });
+          ws.on('error', () => resolve(false));
+        });
+        if (ok) break;
+        if (Date.now() > deadline) throw new Error('admin relay did not start');
+        await wait(150);
+      }
+
+      const boss = device('boss');
+      await boss.client.connect(adminUrl);
+      await boss.client.register({ username: 'boss', password: PASSWORD });
+
+      const victim = device('victim');
+      await victim.client.connect(adminUrl);
+      await victim.client.register({ username: 'target', password: PASSWORD });
+      const victimToken = victim.client.readIdentity().token;
+
+      await boss.client.adminAction({ action: 'forceLogout', username: 'target' });
+
+      // The socket is kicked, but the real check is the token: it must be dead.
+      const ghost = new SleePhyClient({ userDataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'sleephy-ghost-')), onEvent: () => {} });
+      await ghost.connect(adminUrl);
+      let refused = false;
+      try { await ghost.request({ t: 'resume', token: victimToken, deviceId: 'ghost' }); }
+      catch (err) { refused = /expired|session/i.test(err.message); }
+      assert.ok(refused, 'a force-logged-out token must be refused, not just its socket closed');
+      ghost.disconnect();
+      boss.client.disconnect();
+      victim.client.disconnect();
+    } finally {
+      relay.kill('SIGTERM');
+      await wait(200);
+      for (const f of [adminDb, `${adminDb}-wal`, `${adminDb}-shm`]) { try { fs.rmSync(f, { force: true }); } catch {} }
+    }
+  });
+
   await step('an avatar image round-trips through the relay', async () => {
     const b = device('b');
     await b.client.connect(URL);

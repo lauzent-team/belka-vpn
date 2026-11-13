@@ -1881,6 +1881,21 @@ class SleePhyClient {
     this.profile = null;
   }
 
+  /**
+   * Sign out and revoke this device's token on the relay.
+   *
+   * A local-only sign-out left the token valid on the server, so a copy of the
+   * profile folder could be replayed as a live session. Telling the relay first
+   * drops the token; a relay that cannot be reached must not trap the user, so
+   * the local sign-out happens either way.
+   */
+  async logout() {
+    if (this.ws && this.token) {
+      try { await this.request({ t: 'logout' }); } catch { /* offline: clear locally */ }
+    }
+    this.signOut();
+  }
+
   /** Forget every account on this device. */
   forgetAllAccounts() {
     this.disconnect();
